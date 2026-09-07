@@ -1,0 +1,14 @@
+# canvas-api-guard: recommended Codex settings. Merge these three lines into
+# ~/.codex/config.toml (keep everything else you already have there).
+
+# Commands run in a sandbox with NO network. Only a command a rule allows, or a
+# person approves, leaves it. That is what makes the guard the only path to Canvas.
+sandbox_mode       = "workspace-write"
+
+# Approvals are interactive: Codex stops and asks.
+approval_policy    = "on-request"
+
+# A PERSON answers every prompt. The alternative, "auto_review", lets a reviewer
+# model approve on your behalf - including a Canvas write that missed the rules.
+# This is the line that matters most.
+approvals_reviewer = "user"
