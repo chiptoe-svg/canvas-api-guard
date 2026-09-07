@@ -13,10 +13,22 @@
 #     path, not a chokepoint.
 #   * It does not contain a determined user, or an agent that can run sudo: such an actor can
 #     edit this script, delete the log, or bypass the tool entirely. install.sh prints optional
-#     chflags commands that raise that cost without eliminating it, and the log is not
-#     protected against root.
+#     immutable/append-only commands that raise that cost without eliminating it, and the log
+#     is not protected against root.
 #   * It does not verify that the confirming human understood the change - only that a
 #     confirmation of a recorded kind occurred.
+#   * Under Codex: the sandbox is Codex's boundary and the rules file is Codex's prompt. Both
+#     are configuration in the user's home directory, and the user can change them. A write
+#     wrapped in a shell script, invoked by an unlisted path, or built through a variable may
+#     miss the rules; it then runs inside the sandbox, fails there (no network, no credential
+#     store), and Codex asks the person to escalate it - a prompt, not a silent write, as long
+#     as approvals_reviewer is "user". A Codex write is logged as confirmation "yes-flag": the
+#     person's approval happened in Codex's prompt, which this script cannot observe.
+#   * The token is readable by any command running as the user OUTSIDE the sandbox, including
+#     one the person approved without reading closely. Closing that requires running this
+#     script as a different user; it is not done here.
+#   * Every read this script returns flows through the agent to its provider. Nothing here
+#     changes where that data goes.
 #
 # WHAT IT DOES GIVE. A complete, append-only, local record of everything done through it,
 # written before the fact, and a required confirmation whose mode is recorded beside the change
