@@ -109,7 +109,29 @@ log before request, cold refusal).
    the evidence object gains a `next` key. The host-pinning check applies to
    the link before it is printed; a next link on another host is reported as
    such and not printed as a path.
-3. **Header comment gains the Codex paragraph** of the threat model below.
+3. **Every log line carries a `source` field** saying how the guard was
+   invoked, so a line can be correlated with Codex's own transcript or with a
+   person's terminal session:
+   - `tty`: whether stdin was a terminal.
+   - `parent`: the parent process name (`ps -o comm=` on macOS, `/proc/<pid>/comm`
+     on Linux), or `null` if it cannot be read.
+   - `agent_env`: the names, never the values, of recognised agent markers
+     present in the environment: `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`,
+     `AI_AGENT`, `CLAUDE_CODE_SESSION_ID`. Observed on 2026-09-07: Codex sets
+     the two `CODEX_*` names inside its sandbox; whether a rule-allowed command
+     running outside the sandbox still sees them is checked in the live
+     verification. Codex exposes no session identifier to child processes, so
+     none is promised.
+   The field is a hint for correlation, not an identity: an environment can
+   be forged and a parent can be a wrapper shell. The confirmation kind stays
+   the authoritative statement of who confirmed a write.
+4. **Reads stay logged.** Considered and kept: a read of a roster or a
+   gradebook is access to an education record, and "what did the agent look
+   at" is the first question after an incident. The log records the path and
+   the byte count of a read, never the body, so logging reads costs nothing in
+   privacy and a few hundred bytes a call in space. There is no switch to turn
+   it off; one fewer knob to review.
+5. **Header comment gains the Codex paragraph** of the threat model below.
 
 ### `install.sh` (changed)
 
@@ -245,6 +267,11 @@ All tests stay network-free and keychain-free; the existing 23 keep passing.
   `next: /api/v1/courses?page=2&per_page=10`; a response with no such header
   prints no `next:` line; a next link on another host is reported as off-host
   and not printed as a path.
+- **Source field.** With `sys.stdin`, the parent lookup and `os.environ`
+  patched: a TTY invocation records `tty: true`; a non-TTY one with
+  `CODEX_SANDBOX` set records `tty: false` and `agent_env: ["CODEX_SANDBOX"]`;
+  the values of those variables never appear in the log; a failed parent
+  lookup records `parent: null` and the call still succeeds.
 - **Rules matrix.** A test that locates a `codex` binary (PATH, then the
   ChatGPT app bundle path) and skips with a clear reason if none is found.
   When present it runs `codex execpolicy check --rules codex/canvas-api-guard.rules`
@@ -279,7 +306,9 @@ With the owner's permission given on 2026-09-07:
    Codex prompted for (b) and not for (a), including when Codex wrapped the
    command in `bash -lc`.
 3. Read the audit log and the session. Record the outcome in this spec under
-   "Verification results".
+   "Verification results", including which `CODEX_*` environment names a
+   rule-allowed command saw outside the sandbox (a throwaway `env | grep CODEX`
+   run through an allow rule answers it).
 4. If the shell-wrapped write did not prompt: revise the rules (e.g. add
    `["bash", "-lc"]`-prefixed patterns if Codex passes the script as one
    token) and repeat before writing code. If it cannot be made to prompt, the
