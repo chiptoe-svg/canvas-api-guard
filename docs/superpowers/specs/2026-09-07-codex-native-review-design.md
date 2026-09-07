@@ -346,6 +346,16 @@ bundled in the ChatGPT app), reviewer set to `user`, draft rules installed.**
   `approvals_reviewer = "user"` for every faculty member centrally, rather than relying on
   each one's config file. Worth raising with whoever administers the workspace.
 
+**2026-09-07, second non-interactive probe, after the source field landed.** Codex ran
+`/bin/zsh -lc './canvas_api_guard.py get …'` with no approval, and the guard's request line
+recorded `source: {"tty": false, "parent": "codex", "agent_env": [...]}`. The parent is
+`codex`, so a Codex-driven line is identifiable from the log alone. Of the two `CODEX_*`
+names, only `CODEX_SANDBOX_NETWORK_DISABLED` was present; `CODEX_SANDBOX` was not, which
+is consistent with the allow rule running the command outside the seatbelt while Codex
+still exports its network setting. (`AI_AGENT` and `CLAUDE_CODE_SESSION_ID` also appeared
+because the probe itself was launched from a Claude Code session; on a faculty machine
+they will not.)
+
 **Interactive session:** pending the owner (Task 10).
 
 ## Out of scope
