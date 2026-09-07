@@ -39,9 +39,9 @@ class GuardTestCase(unittest.TestCase):
         os.close(handle)
         self.addCleanup(os.unlink, self.log_path)
         # a token that must never appear in the log or on stdout
-        patcher = mock.patch.object(guard, "read_token_from_keychain", lambda: TOKEN)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.token_patcher = mock.patch.object(guard, "read_token", lambda: TOKEN)
+        self.token_patcher.start()
+        self.addCleanup(self.token_patcher.stop)
 
     def run_main(self, argv, stdin_is_tty=False):
         """Run main() with the log redirected, stdin non-TTY by default, stdout captured."""
@@ -132,7 +132,7 @@ class TestConfirmation(GuardTestCase):
         def no_network(*args, **kwargs):
             raise AssertionError("a request was made before the refusal")
 
-        with mock.patch.object(guard, "read_token_from_keychain", no_keychain), \
+        with mock.patch.object(guard, "read_token", no_keychain), \
                 mock.patch("urllib.request.urlopen", side_effect=no_network):
             for verb, extra in (("post", ["-d", "{}"]), ("put", ["-d", "{}"]),
                                 ("patch", ["-d", "{}"]), ("delete", [])):
@@ -225,7 +225,7 @@ class TestTokenIsNeverExposed(GuardTestCase):
         def explode():
             raise AssertionError("--dry-run must not read the token")
 
-        with mock.patch.object(guard, "read_token_from_keychain", explode):
+        with mock.patch.object(guard, "read_token", explode):
             code, output = self.run_main(
                 ["put", "courses/1/assignments/2/submissions/3", "--dry-run",
                  "-d", '{"submission": {"posted_grade": 95}}'])
@@ -299,6 +299,122 @@ class TestEvidence(GuardTestCase):
             code, output = self.run_main(["delete", "courses/1/assignments/2", "--yes"])
         self.assertEqual(code, 0)
         self.assertIn("read-back after delete: gone", output)
+
+
+class FakeProc(object):
+    def __init__(self, returncode=0, stdout=b""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, b""
+
+
+class TestCredentialStore(unittest.TestCase):
+    """The token lives in the macOS keychain or the Linux secret service. Nothing else.
+    Not a GuardTestCase: that fixture patches read_token away, and these test the real one."""
+
+    def setUp(self):
+        self.calls = []
+
+        def fake_run(argv, **kwargs):
+            self.calls.append((argv, kwargs.get("input")))
+            return FakeProc(stdout=(TOKEN + "\n").encode("utf-8"))
+        self.run_patch = mock.patch.object(guard.subprocess, "run", side_effect=fake_run)
+        self.run_patch.start()
+        self.addCleanup(self.run_patch.stop)
+
+    def test_macos_reads_from_the_keychain(self):
+        with mock.patch.object(guard.sys, "platform", "darwin"), \
+                mock.patch.object(guard.os.path, "exists", return_value=True):
+            self.assertEqual(guard.read_token(), TOKEN)
+        argv, _ = self.calls[0]
+        self.assertEqual(argv[:2], [guard.SECURITY_BIN, "find-generic-password"])
+        self.assertEqual(argv[-1], "-w")
+
+    def test_linux_reads_from_the_secret_service(self):
+        with mock.patch.object(guard.sys, "platform", "linux"), \
+                mock.patch.object(guard.shutil, "which", return_value="/usr/bin/secret-tool"):
+            self.assertEqual(guard.read_token(), TOKEN)
+        argv, _ = self.calls[0]
+        self.assertEqual(argv[:2], ["/usr/bin/secret-tool", "lookup"])
+        self.assertIn(guard.KEYCHAIN_SERVICE, argv)
+
+    def test_linux_without_secret_tool_refuses_and_names_the_package(self):
+        with mock.patch.object(guard.sys, "platform", "linux"), \
+                mock.patch.object(guard.shutil, "which", return_value=None):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.read_token()
+        self.assertIn("secret-tool", str(caught.exception))
+        self.assertIn("libsecret", str(caught.exception))
+        self.assertEqual(self.calls, [])
+
+    def test_an_unsupported_platform_refuses_before_any_subprocess(self):
+        with mock.patch.object(guard.sys, "platform", "win32"):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.read_token()
+        self.assertIn("macOS", str(caught.exception))
+        self.assertIn("Linux", str(caught.exception))
+        self.assertEqual(self.calls, [])
+
+    def test_an_empty_token_is_refused(self):
+        self.run_patch.stop()
+        self.addCleanup(self.run_patch.start)          # so the registered stop still works
+        with mock.patch.object(guard.subprocess, "run", return_value=FakeProc(stdout=b"\n")), \
+                mock.patch.object(guard.sys, "platform", "darwin"), \
+                mock.patch.object(guard.os.path, "exists", return_value=True):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.read_token()
+        self.assertIn("empty", str(caught.exception))
+
+    def test_set_token_on_macos_sends_the_secret_twice_and_reads_it_back(self):
+        """security asks for the password and a retype on stdin. Sending it once stored an
+        EMPTY token (observed 2026-09-07). The read-back makes that impossible to miss."""
+        with mock.patch.object(guard.sys, "platform", "darwin"), \
+                mock.patch.object(guard.os.path, "exists", return_value=True), \
+                mock.patch.object(guard.getpass, "getpass", return_value=TOKEN), \
+                mock.patch("sys.stdout", io.StringIO()):
+            guard.set_token()
+        store_argv, store_input = self.calls[0]
+        self.assertEqual(store_argv[:2], [guard.SECURITY_BIN, "add-generic-password"])
+        self.assertNotIn(TOKEN, store_argv)                      # never in argv
+        self.assertEqual(store_input, (TOKEN + "\n" + TOKEN + "\n").encode("utf-8"))
+        self.assertEqual(self.calls[1][0][:2], [guard.SECURITY_BIN, "find-generic-password"])
+
+    def test_set_token_on_linux_sends_the_secret_once(self):
+        with mock.patch.object(guard.sys, "platform", "linux"), \
+                mock.patch.object(guard.shutil, "which", return_value="/usr/bin/secret-tool"), \
+                mock.patch.object(guard.getpass, "getpass", return_value=TOKEN), \
+                mock.patch("sys.stdout", io.StringIO()):
+            guard.set_token()
+        store_argv, store_input = self.calls[0]
+        self.assertEqual(store_argv[:2], ["/usr/bin/secret-tool", "store"])
+        self.assertEqual(store_input, (TOKEN + "\n").encode("utf-8"))
+
+    def test_set_token_refuses_when_the_read_back_differs(self):
+        self.run_patch.stop()
+        self.addCleanup(self.run_patch.start)
+        responses = [FakeProc(), FakeProc(stdout=b"a-different-token\n")]  # store ok, read-back differs
+        with mock.patch.object(guard.subprocess, "run", side_effect=responses), \
+                mock.patch.object(guard.sys, "platform", "darwin"), \
+                mock.patch.object(guard.os.path, "exists", return_value=True), \
+                mock.patch.object(guard.getpass, "getpass", return_value=TOKEN):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.set_token()
+        self.assertIn("read back", str(caught.exception))
+
+
+class TestLinuxTokenNeverExposed(GuardTestCase):
+    def test_the_token_reaches_the_header_and_nothing_else_on_linux(self):
+        self.token_patcher.stop()                      # use the real read_token
+        self.addCleanup(self.token_patcher.start)
+        fake_proc = mock.Mock(returncode=0, stdout=(TOKEN + "\n").encode("utf-8"), stderr=b"")
+        with mock.patch.object(guard.sys, "platform", "linux"), \
+                mock.patch.object(guard.shutil, "which", return_value="/usr/bin/secret-tool"), \
+                mock.patch.object(guard.subprocess, "run", return_value=fake_proc), \
+                mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            code, output = self.run_main(["get", "courses/1"])
+        self.assertEqual(code, 0)
+        self.assertNotIn(TOKEN, self.log_text())
+        self.assertNotIn(TOKEN, output)
+        self.assertEqual(urlopen.call_args[0][0].get_header("Authorization"), "Bearer " + TOKEN)
 
 
 if __name__ == "__main__":

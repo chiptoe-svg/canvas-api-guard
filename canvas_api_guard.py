@@ -25,13 +25,14 @@
 # READ TOP TO BOTTOM: constants, token, logging, host pinning, the one request function,
 # confirmation, evidence, verbs, argparse, main.
 
-import argparse, datetime, getpass, json, os, subprocess, sys
+import argparse, datetime, getpass, json, os, shutil, subprocess, sys
 import urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
 USER_AGENT = "canvas-api-guard/1.0.0"
 KEYCHAIN_SERVICE = "canvas-api-guard"
 SECURITY_BIN = "/usr/bin/security"
+SECRET_TOOL = "secret-tool"          # Linux: the desktop secret service, via libsecret
 DEFAULT_DIR = os.path.expanduser("~/.canvas-api-guard")
 DEFAULT_LOG = os.path.join(DEFAULT_DIR, "audit.jsonl")
 CONFIG_NAME = "config.json"          # sits beside the log; holds the host, never a secret
@@ -43,38 +44,60 @@ class GuardError(Exception):
     """Any refusal or failure the user should see as one clear line."""
 
 # ------------------------------------------------------------------------------------- token
-# The token is in exactly two places in this file: read_token_from_keychain() reads it, and one
-# line in send_request() puts it into the Authorization header. It is never printed, logged,
-# echoed, stored in a file, or taken from argv or the environment - and under --dry-run, or on
-# a refused write, it is never even read.
-def read_token_from_keychain():
-    if not os.path.exists(SECURITY_BIN):
-        raise GuardError("macOS keychain not available at %s; refusing to run. There is no "
-                         "file or environment fallback for the token." % SECURITY_BIN)
-    proc = subprocess.run([SECURITY_BIN, "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a",
-                           getpass.getuser(), "-w"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+# The token is in exactly two places in this file: read_token() reads it, and one line in
+# send_request() puts it into the Authorization header. It is never printed, logged, echoed,
+# stored in a file, or taken from argv or the environment - and under --dry-run, or on a
+# refused write, it is never even read. It lives in the macOS keychain or the Linux secret
+# service; any other platform is refused.
+def credential_command(action):
+    """The platform command that reads ("read") or stores ("store") the token."""
+    user = getpass.getuser()
+    if sys.platform == "darwin":
+        if not os.path.exists(SECURITY_BIN):
+            raise GuardError("macOS keychain tool not found at %s; refusing to run" % SECURITY_BIN)
+        if action == "read":
+            return [SECURITY_BIN, "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", user, "-w"]
+        return [SECURITY_BIN, "add-generic-password", "-U", "-s", KEYCHAIN_SERVICE, "-a", user, "-w"]
+    if sys.platform.startswith("linux"):
+        tool = shutil.which(SECRET_TOOL)
+        if not tool:
+            raise GuardError("secret-tool not found; install libsecret-tools (Debian/Ubuntu) or "
+                             "libsecret (Fedora). There is no file or environment fallback.")
+        if action == "read":
+            return [tool, "lookup", "service", KEYCHAIN_SERVICE, "account", user]
+        return [tool, "store", "--label=" + KEYCHAIN_SERVICE, "service", KEYCHAIN_SERVICE,
+                "account", user]
+    raise GuardError("unsupported platform %r: the token can live only in the macOS keychain "
+                     "or the Linux secret service" % sys.platform)
+
+def read_token():
+    proc = subprocess.run(credential_command("read"), stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE)
     if proc.returncode != 0:
-        raise GuardError("no Canvas token in the keychain for service '%s'. Run: "
+        raise GuardError("no Canvas token stored for service '%s'. Run: "
                          "canvas_api_guard.py --set-token" % KEYCHAIN_SERVICE)
     token = proc.stdout.decode("utf-8").strip()
     if not token:
-        raise GuardError("keychain returned an empty token")
+        raise GuardError("the credential store returned an empty token; run --set-token again")
     return token
 
 def set_token():
     """Store a token, read with getpass: never from argv, never a file, never an env var."""
-    if not os.path.exists(SECURITY_BIN):
-        raise GuardError("macOS keychain not available at %s" % SECURITY_BIN)
-    secret = getpass.getpass("Canvas API token (not echoed): ")
-    if not secret.strip():
+    command = credential_command("store")            # refuses an unsupported platform first
+    secret = getpass.getpass("Canvas API token (not echoed): ").strip()
+    if not secret:
         raise GuardError("empty token; nothing stored")
-    proc = subprocess.run([SECURITY_BIN, "add-generic-password", "-U", "-s", KEYCHAIN_SERVICE,
-                           "-a", getpass.getuser(), "-w"], input=secret.encode("utf-8"),
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    payload = secret + "\n"
+    if sys.platform == "darwin":
+        payload += secret + "\n"      # security asks for the password and then a retype
+    proc = subprocess.run(command, input=payload.encode("utf-8"), stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE)
     if proc.returncode != 0:
-        raise GuardError("keychain refused to store the token: %s"
+        raise GuardError("the credential store refused the token: %s"
                          % proc.stderr.decode("utf-8", "replace").strip())
-    print("stored in keychain: service=%s account=%s" % (KEYCHAIN_SERVICE, getpass.getuser()))
+    if read_token() != secret:
+        raise GuardError("the token did not read back as stored; nothing usable was stored")
+    print("stored for service=%s account=%s" % (KEYCHAIN_SERVICE, getpass.getuser()))
 
 # ----------------------------------------------------------------------------------- logging
 # One JSON object per line, file mode 0600. The "request" line is written and fsynced BEFORE
@@ -154,7 +177,7 @@ def send_request(cfg, method, path, body=None):
         print("\n".join("  header   %s: %s" % (k, shown[k]) for k in sorted(shown)))
         print("  body     %s" % (json.dumps(body) if body is not None else "(none)"))
         return None
-    headers["Authorization"] = "Bearer " + read_token_from_keychain()     # the only use
+    headers["Authorization"] = "Bearer " + read_token()                   # the only use
     request = urllib.request.Request(url, data=payload, headers=headers, method=method)
     try:
         raw = urllib.request.urlopen(request, timeout=TIMEOUT)            # the only call
