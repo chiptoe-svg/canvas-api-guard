@@ -110,7 +110,7 @@ EOF
 
 chmod 0700 "$LAUNCHER"
 trap - EXIT HUP INT TERM
-"$OPEN_BIN" -a Terminal "$LAUNCHER" || {
+"$OPEN_BIN" "$LAUNCHER" || {
     rm -f "$LAUNCHER"
     die "macOS could not open the Terminal launcher; checkout retained at $CHECKOUT"
 }
