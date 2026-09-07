@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# never commit an audit log or a host config
+audit.jsonl
+config.json
