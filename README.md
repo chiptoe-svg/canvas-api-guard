@@ -100,6 +100,10 @@ bootstrap downloads that exact commit and opens a private, self-deleting `.comma
 Terminal. The user enters both the administrator password and Canvas token in Terminal; neither
 secret passes through Codex or appears in the launcher.
 
+The bootstrap addresses Terminal by its fixed macOS system path,
+`/System/Applications/Utilities/Terminal.app`; it does not depend on application-name lookup or
+the machine's `.command` file association.
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/FULL_COMMIT_SHA/install-from-github.sh \
   | sh -s -- --ref FULL_COMMIT_SHA --host school.instructure.com

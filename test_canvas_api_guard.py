@@ -834,11 +834,14 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("invalid Canvas host", proc.stderr)
 
-    def test_github_bootstrap_uses_the_command_file_association(self):
-        """Managed Macs may not resolve `open -a Terminal`; a .command opens by association."""
+    def test_github_bootstrap_uses_the_absolute_terminal_application(self):
+        """Managed Macs may lack both a Terminal name lookup and a .command association."""
         with open(self.BOOTSTRAP) as handle:
             script = handle.read()
-        self.assertIn('"$OPEN_BIN" "$LAUNCHER"', script)
+        self.assertIn(
+            "TERMINAL_APP=/System/Applications/Utilities/Terminal.app", script
+        )
+        self.assertIn('"$OPEN_BIN" -a "$TERMINAL_APP" "$LAUNCHER"', script)
         self.assertNotIn('-a Terminal', script)
 
 

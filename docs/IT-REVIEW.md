@@ -142,11 +142,13 @@ The user separately enters the token through hidden terminal input after install
 
 `install-from-github.sh` requires a full 40-character commit SHA and the Canvas host. It clones
 that exact commit into a private `/private/tmp` directory, verifies the checked-out SHA and clean
-state, then creates a mode-`0700`, token-free `.command` launcher. macOS Launch Services opens
-the launcher in Terminal, where the test suite and installation plan run before `sudo` requests
-the user's administrator password. After a successful installation, the guard itself requests
-the Canvas token with hidden input and stores it in Keychain. The launcher deletes only itself;
-the reviewed checkout remains available for inspection. No Canvas API request is made.
+state, then creates a mode-`0700`, token-free `.command` launcher. It opens that launcher with
+the explicit system application path `/System/Applications/Utilities/Terminal.app`, avoiding
+dependence on an application-name lookup or `.command` file association. The test suite and
+installation plan run there before `sudo` requests the user's administrator password. After a
+successful installation, the guard itself requests the Canvas token with hidden input and stores
+it in Keychain. The launcher deletes only itself; the reviewed checkout remains available for
+inspection. No Canvas API request is made.
 
 The raw bootstrap URL should use the same immutable commit supplied to `--ref`. A mutable branch
 URL such as `main` is not the reviewed installation contract.
@@ -158,7 +160,7 @@ immutable commit, checks out detached HEAD, verifies the resulting SHA, runs the
 and installation plan, then invokes the same root installer through the terminal's `sudo`.
 After installation, the guard requests the token through hidden input in that same terminal.
 
-This alternative does not use Launch Services or a generated launcher. On Linux it requires a
+This alternative does not open Terminal or use a generated launcher. On Linux it requires a
 working user Secret Service session and the trusted `secret-tool` path enforced by the guard.
 The checkout remains in the system temporary directory for review rather than being deleted
 automatically.

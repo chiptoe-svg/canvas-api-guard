@@ -7,6 +7,7 @@ set -eu
 REPOSITORY=https://github.com/chiptoe-svg/canvas-api-guard.git
 GIT_BIN=/usr/bin/git
 OPEN_BIN=/usr/bin/open
+TERMINAL_APP=/System/Applications/Utilities/Terminal.app
 CANVAS_HOST=
 SOURCE_REF=
 
@@ -47,6 +48,7 @@ esac
 [ "$(uname -s)" = Darwin ] || die "the .command workflow is available only on macOS"
 [ -x "$GIT_BIN" ] || die "git is required at $GIT_BIN"
 [ -x "$OPEN_BIN" ] || die "the macOS open command is required at $OPEN_BIN"
+[ -d "$TERMINAL_APP" ] || die "macOS Terminal is required at $TERMINAL_APP"
 
 INSTALL_ROOT=$(mktemp -d /private/tmp/canvas-api-guard-install.XXXXXX)
 chmod 0700 "$INSTALL_ROOT"
@@ -110,7 +112,7 @@ EOF
 
 chmod 0700 "$LAUNCHER"
 trap - EXIT HUP INT TERM
-"$OPEN_BIN" "$LAUNCHER" || {
+"$OPEN_BIN" -a "$TERMINAL_APP" "$LAUNCHER" || {
     rm -f "$LAUNCHER"
     die "macOS could not open the Terminal launcher; checkout retained at $CHECKOUT"
 }
