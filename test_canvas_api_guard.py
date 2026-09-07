@@ -785,6 +785,7 @@ class TestInstallerPlan(unittest.TestCase):
 
     ROOT = os.path.dirname(os.path.abspath(__file__))
     INSTALLER = os.path.join(ROOT, "install.sh")
+    BOOTSTRAP = os.path.join(ROOT, "install-from-github.sh")
 
     def run_installer(self, *args):
         import subprocess
@@ -810,6 +811,27 @@ class TestInstallerPlan(unittest.TestCase):
     def test_invalid_host_is_refused(self):
         proc = self.run_installer("--plan", "--host", "https://evil.example/x")
         self.assertEqual(proc.returncode, 2)
+        self.assertIn("invalid Canvas host", proc.stderr)
+
+    def run_bootstrap(self, *args):
+        import subprocess
+        return subprocess.run([self.BOOTSTRAP] + list(args), cwd=self.ROOT,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True)
+
+    def test_github_bootstrap_help_is_successful(self):
+        proc = self.run_bootstrap("--help")
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("FULL_COMMIT_SHA", proc.stdout)
+
+    def test_github_bootstrap_refuses_a_mutable_ref_before_network(self):
+        proc = self.run_bootstrap("--ref", "main", "--host", HOST)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("full lowercase hexadecimal commit SHA", proc.stderr)
+
+    def test_github_bootstrap_refuses_an_invalid_host_before_network(self):
+        proc = self.run_bootstrap("--ref", "a" * 40, "--host", "https://evil.example/x")
+        self.assertEqual(proc.returncode, 1)
         self.assertIn("invalid Canvas host", proc.stderr)
 
 

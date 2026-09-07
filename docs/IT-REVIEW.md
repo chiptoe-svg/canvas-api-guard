@@ -14,6 +14,7 @@ The runtime and installation boundary consists of:
 |---|---|
 | `canvas_api_guard.py` | credential retrieval, host/path validation, HTTP, audit, confirmation, and evidence |
 | `install.sh` | no-network plan and root-owned installation |
+| `install-from-github.sh` | immutable-commit download and visible macOS Terminal launcher |
 | `codex/canvas-api-guard.rules` | installed-path reads allowed; installed-path writes prompt; known credential reads forbidden |
 | `codex/config.toml` | recommended Codex sandbox and human-review settings |
 | `codex/skills/canvas-api-guard/SKILL.md` | operating procedure and data-handling instructions |
@@ -137,6 +138,19 @@ Actual installation:
 
 The user separately enters the token through hidden terminal input after installation.
 
+### Optional macOS GitHub bootstrap
+
+`install-from-github.sh` requires a full 40-character commit SHA and the Canvas host. It clones
+that exact commit into a private `/private/tmp` directory, verifies the checked-out SHA and clean
+state, then creates a mode-`0700`, token-free `.command` launcher. macOS Launch Services opens
+the launcher in Terminal, where the test suite and installation plan run before `sudo` requests
+the user's administrator password. After a successful installation, the guard itself requests
+the Canvas token with hidden input and stores it in Keychain. The launcher deletes only itself;
+the reviewed checkout remains available for inspection. No Canvas API request is made.
+
+The raw bootstrap URL should use the same immutable commit supplied to `--ref`. A mutable branch
+URL such as `main` is not the reviewed installation contract.
+
 ## Level 1 versus future Level 2
 
 Level 1 intentionally permits every supported method and path allowed by the Canvas token.
@@ -176,6 +190,8 @@ shasum -a 256 canvas_api_guard.py codex/canvas-api-guard.rules \
 python3 -m py_compile canvas_api_guard.py test_canvas_api_guard.py
 python3 -m unittest -v
 sh -n install.sh
+sh -n install-from-github.sh
+./install-from-github.sh --help
 ./install.sh --plan --host school.instructure.com
 rg -n "urlopen\(" canvas_api_guard.py
 rg -n "read_token\(\)" canvas_api_guard.py

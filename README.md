@@ -4,7 +4,8 @@ A small, audited Level 1 transport for using the Canvas REST API from Codex with
 putting a Canvas token in `.env`, a repository, a command, or agent-visible output.
 
 The review surface is deliberately small: one Python 3.9+ standard-library program,
-one POSIX installer, one Codex rules file, one Codex skill, and a stdlib test suite.
+one POSIX system installer, one macOS bootstrap, one Codex rules file, one Codex skill,
+and a stdlib test suite.
 
 ## The two-level design
 
@@ -91,6 +92,23 @@ Then the user—not Codex—enters the token in a visible terminal with hidden i
 
 The token is written to Keychain/Secret Service through stdin, read back for verification,
 and never accepted through argv, a file, or an environment variable.
+
+### One-command macOS installation from GitHub
+
+For a new Mac, Codex can run the immutable bootstrap URL supplied with a reviewed commit. The
+bootstrap downloads that exact commit and opens a private, self-deleting `.command` in macOS
+Terminal. The user enters both the administrator password and Canvas token in Terminal; neither
+secret passes through Codex or appears in the launcher.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/FULL_COMMIT_SHA/install-from-github.sh \
+  | sh -s -- --ref FULL_COMMIT_SHA --host school.instructure.com
+```
+
+The Terminal workflow compiles and tests the downloaded source, prints the installation plan,
+installs the root-owned files with `sudo`, stores the token, reports the installed version, and
+waits for Return before closing. It makes no Canvas API request. If Terminal cannot be opened,
+the bootstrap reports failure rather than claiming a prompt is visible.
 
 ## Usage
 
