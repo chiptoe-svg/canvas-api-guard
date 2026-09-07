@@ -58,7 +58,8 @@ echo '{"host": "school.instructure.com"}' > ~/.canvas-api-guard/config.json
 
 The token goes into the macOS keychain or the Linux secret service (`secret-tool`, from
 `libsecret-tools`). There is no file and no environment variable, and `--set-token` reads
-the token back before it reports success.
+the token back before it reports success. The token is only ever sent to the host in that
+file; `--host` must match it, and is otherwise accepted only under `--dry-run`.
 
 ## Usage
 
@@ -138,14 +139,16 @@ reach the keychain.
 ## The log
 
 `~/.canvas-api-guard/audit.jsonl`, mode 0600, one JSON object per line, `--log-path` to
-move it. Four kinds of line:
+move it. `--log-path` moves the log only; the host always comes from
+`~/.canvas-api-guard/config.json`. Four kinds of line:
 
 - `event: request` — written and fsynced **before** the call: timestamp, verb, path, url,
   `kind` (read or write), `confirmation`, `dry_run`, and for writes the request body.
 - `event: response` — after the call: status, ok, bytes. Never the response body.
 - `event: evidence` — the before/after summary of a write, with the confirmation mode.
-- `event: refusal` — a write that could not be confirmed, `confirmation: refused-no-tty`.
-  It stands alone: no request was made.
+- `event: refusal` — a call that was refused before it was made, and stands alone: no
+  request followed. `kind: write` with `confirmation: refused-no-tty` is a write that could
+  not be confirmed; `kind: host` is a call whose host was not the one on record.
 
 Every line also carries `source`: whether stdin was a terminal, the parent process name,
 and the names (never the values) of agent markers found in the environment, such as
@@ -242,12 +245,28 @@ $ codex execpolicy check --rules codex/canvas-api-guard.rules -- security find-g
 {"matchedRules":[...],"decision":"forbidden"}
 ```
 
+**8. The host is pinned to the config file, not to a flag.** Cold, with no
+`~/.canvas-api-guard/config.json`:
+
+```
+$ ./canvas_api_guard.py get courses --host other.example.com --log-path /tmp/demo.jsonl
+canvas-api-guard: no Canvas host configured; write /Users/you/.canvas-api-guard/config.json with {"host": "school.instructure.com"}. --host alone is accepted only under --dry-run, so the token is never sent to a host that is not on record
+$ echo $?
+2
+```
+
+With a config present, a `--host` that differs from the recorded one is refused the same
+way, before the credential store, the pre-read and any network call. This matters because a
+Codex rule matches a command prefix and cannot constrain the flags after it: an allowed
+`get` carries whatever `--host` the agent wrote, so the guard — not the rules file — is what
+keeps the token on one host.
+
 The test suite proves the same properties by running them, including a fake `urlopen` that
 reads the log from inside the call, and a matrix test that evaluates the shipped rules
 file with Codex's own checker (skipped when Codex is absent):
 
 ```sh
-python3 -m unittest -v      # 43 tests; no test reaches the network or a real credential store
+python3 -m unittest -v      # 48 tests; no test reaches the network or a real credential store
 ```
 
 Requires Python 3.9+. No pip, no venv, no dependencies.

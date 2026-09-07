@@ -26,13 +26,16 @@
 #     person's approval happened in Codex's prompt, which this script cannot observe.
 #   * The token is readable by any command running as the user OUTSIDE the sandbox, including
 #     one the person approved without reading closely. Closing that requires running this
-#     script as a different user; it is not done here.
+#     script as a different user; it is not done here. The rules file cannot constrain flags:
+#     an allowed `get` carries whatever `--host` the agent wrote, which is why the guard, not
+#     the rules, pins the host to the config file.
 #   * Every read this script returns flows through the agent to its provider. Nothing here
 #     changes where that data goes.
 #
 # WHAT IT DOES GIVE. A complete, append-only, local record of everything done through it,
 # written before the fact, and a required confirmation whose mode is recorded beside the change
-# it authorised - or refused, if no confirmation was possible.
+# it authorised - or refused, if no confirmation was possible. And one invariant above all:
+# THE TOKEN IS ONLY EVER SENT TO THE HOST RECORDED IN ~/.canvas-api-guard/config.json.
 #
 # READ TOP TO BOTTOM: constants, token, logging, host pinning, the one request function,
 # confirmation, evidence, verbs, argparse, main.
@@ -160,7 +163,9 @@ def log_event(log_path, fields):
 
 # ------------------------------------------------------------------------------- host pinning
 # Every URL this tool builds comes from canvas_url(). A path carrying a scheme, a netloc or a
-# ".." segment is refused: it could otherwise send the Authorization header off-host.
+# ".." segment is refused: it could otherwise send the Authorization header off-host. And the
+# host itself is pinned to the config file by refuse_unconfigured_host(), so no flag can point
+# a real request at a host the user has not put on record.
 def normalise_path(path):
     """Accept '/api/v1/x', 'api/v1/x' and 'x'; return '/api/v1/x' (plus any query string)."""
     raw = (path or "").strip()
@@ -193,6 +198,26 @@ def canvas_url(host, path):
     if check.scheme != "https" or check.netloc != host:
         raise GuardError("refusing a URL that leaves the pinned host: %r" % url)
     return url
+
+def refuse_unconfigured_host(cfg, explicit, configured, path):
+    """Refuse a real request whose host is not the one on record, BEFORE the credential store,
+    the pre-read or any network call. Under --dry-run no token is read and nothing is sent, so
+    any host is harmless there and --host may be used to preview a URL."""
+    if cfg.dry_run:
+        return
+    if configured is None:
+        message = ("no Canvas host configured; write %s with {\"host\": "
+                   "\"school.instructure.com\"}. --host alone is accepted only under --dry-run, "
+                   "so the token is never sent to a host that is not on record"
+                   % os.path.join(DEFAULT_DIR, CONFIG_NAME))
+    elif explicit and explicit != configured:
+        message = ("--host %r does not match the configured host %r; the token is only sent to "
+                   "the configured host" % (explicit, configured))
+    else:
+        return
+    log_event(cfg.log_path, {"event": "refusal", "kind": "host", "host": explicit,
+                             "path": normalise_path(path), "confirmation": None})
+    raise GuardError(message)
 
 # -------------------------------------------------------------------- the one request function
 # There is exactly one call to urlopen in this file. Everything else routes through here.
@@ -425,15 +450,17 @@ VERBS = {"get": do_get, "post": do_post, "delete": do_delete,
 # ---------------------------------------------------------------------------------- argparse
 def make_config(args):
     """What send_request needs. confirmation is set by confirm() before any write."""
-    return argparse.Namespace(host=read_host(args.host, args.log_path) or "", out=args.output,
+    configured = read_host()
+    return argparse.Namespace(host=args.host or configured or "", out=args.output,
                               log_path=args.log_path, dry_run=args.dry_run, yes=args.yes,
-                              confirmation=None)
+                              configured=configured, confirmation=None)
 
-def read_host(explicit, log_path):
-    """--host wins; otherwise the host recorded beside the log. The host is not a secret."""
-    path = os.path.join(os.path.dirname(log_path) or ".", CONFIG_NAME)
-    if explicit or not os.path.exists(path):
-        return explicit
+def read_host():
+    """The host on record, or None. It is read from the fixed config path and nowhere else:
+    --log-path must not be able to move it. The host is not a secret."""
+    path = os.path.join(DEFAULT_DIR, CONFIG_NAME)
+    if not os.path.exists(path):
+        return None
     with open(path) as handle:
         return (json.load(handle) or {}).get("host")
 
@@ -469,6 +496,7 @@ def main(argv=None):
         cfg = make_config(args)
         canvas_url(cfg.host, args.path)              # fail before anything else happens
         refuse_unconfirmed_write(cfg, args.verb, args.path)
+        refuse_unconfigured_host(cfg, args.host, cfg.configured, args.path)
         VERBS[args.verb](cfg, args.path, body)
         return 0
     except (GuardError, ValueError) as err:      # ValueError: an unparseable -d body

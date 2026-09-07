@@ -8,6 +8,7 @@ never reaches the network. Two tests prove that directly.
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from unittest import mock
@@ -39,14 +40,35 @@ class GuardTestCase(unittest.TestCase):
         handle, self.log_path = tempfile.mkstemp(prefix="cag-test-", suffix=".jsonl")
         os.close(handle)
         self.addCleanup(os.unlink, self.log_path)
+        # the config directory the guard pins the host to: never the real ~/.canvas-api-guard
+        self.config_dir = self.temp_config_dir(HOST)
+        self.pin_config_dir(self.config_dir)
         # a token that must never appear in the log or on stdout
         self.token_patcher = mock.patch.object(guard, "read_token", lambda: TOKEN)
         self.token_patcher.start()
         self.addCleanup(self.token_patcher.stop)
 
+    def temp_config_dir(self, host=None):
+        """A throwaway ~/.canvas-api-guard, holding config.json only when a host is given."""
+        directory = tempfile.mkdtemp(prefix="cag-test-config-")
+        self.addCleanup(shutil.rmtree, directory, True)
+        if host is not None:
+            with open(os.path.join(directory, guard.CONFIG_NAME), "w") as handle:
+                json.dump({"host": host}, handle)
+        return directory
+
+    def pin_config_dir(self, directory):
+        patcher = mock.patch.object(guard, "DEFAULT_DIR", directory)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def run_main(self, argv, stdin_is_tty=False):
         """Run main() with the log redirected, stdin non-TTY by default, stdout captured."""
         argv = list(argv) + ["--host", HOST, "--log-path", self.log_path]
+        return self.run_argv(argv, stdin_is_tty)
+
+    def run_argv(self, argv, stdin_is_tty=False):
+        """Run main() on exactly this argv, with the same patches run_main uses."""
         out, err = io.StringIO(), io.StringIO()
         stdin = io.StringIO()          # StringIO.isatty() is False
         if stdin_is_tty:
@@ -93,6 +115,67 @@ class TestHostPinning(GuardTestCase):
         code, _ = self.run_main(["get", "https://evil.example.com/api/v1/courses/1"])
         self.assertEqual(code, 2)
         self.assertEqual(self.log_lines(), [])
+
+
+class TestHostIsPinnedToTheConfig(GuardTestCase):
+    """The invariant: the token is only ever sent to the host recorded in the config file.
+    The rules file cannot constrain flags, so an allowed read carries whatever --host the
+    agent wrote; the guard, not the rules, is what pins the host."""
+
+    def no_keychain(self):
+        def explode():
+            raise AssertionError("the credential store was touched before the refusal")
+        return mock.patch.object(guard, "read_token", explode)
+
+    def no_network(self):
+        def explode(*args, **kwargs):
+            raise AssertionError("a request was made before the refusal")
+        return mock.patch("urllib.request.urlopen", side_effect=explode)
+
+    def test_a_host_that_differs_from_the_config_is_refused_before_the_credential_store(self):
+        with self.no_keychain(), self.no_network():
+            code, _ = self.run_argv(["get", "courses", "--host", "other.example.com",
+                                     "--log-path", self.log_path])
+        self.assertEqual(code, 2)
+        self.assertIn("does not match the configured host", self.last_stderr)
+        lines = self.log_lines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["event"], "refusal")
+        self.assertEqual(lines[0]["kind"], "host")
+
+    def test_no_configured_host_refuses_a_real_request(self):
+        self.pin_config_dir(self.temp_config_dir())          # no config.json in it
+        with self.no_keychain(), self.no_network():
+            code, _ = self.run_argv(["get", "courses", "--host", HOST,
+                                     "--log-path", self.log_path])
+        self.assertEqual(code, 2)
+        self.assertIn("no Canvas host configured", self.last_stderr)
+        self.assertEqual([line for line in self.log_lines() if line["event"] == "request"], [])
+
+    def test_dry_run_accepts_any_host_because_no_token_is_read(self):
+        self.pin_config_dir(self.temp_config_dir())
+        with self.no_keychain(), self.no_network():
+            code, output = self.run_argv(["get", "courses", "--host", "other.example.com",
+                                          "--dry-run", "--log-path", self.log_path])
+        self.assertEqual(code, 0)
+        self.assertIn("https://other.example.com/api/v1/courses", output)
+
+    def test_log_path_does_not_move_the_config(self):
+        elsewhere = self.temp_config_dir("evil.example.com")
+        log_path = os.path.join(elsewhere, "audit.jsonl")
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            code, _ = self.run_argv(["get", "courses/1", "--log-path", log_path])
+        self.assertEqual(code, 0)
+        self.assertTrue(urlopen.call_args[0][0].full_url.startswith("https://" + HOST + "/"),
+                        urlopen.call_args[0][0].full_url)
+
+    def test_the_matching_host_is_accepted(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            code, _ = self.run_argv(["get", "courses", "--host", HOST,
+                                     "--log-path", self.log_path])
+        self.assertEqual(code, 0)
 
 
 class TestPathNormalisation(GuardTestCase):

@@ -76,6 +76,9 @@ All on macOS 26.1 with the Codex CLI bundled in the ChatGPT app,
   refused with a clear message and named as out of scope.
 - **No dialog, no daemon, no service user, no two-phase approval** in this
   pass. Each is recorded under "Later" with the reason.
+- **Prefix rules leave the whole flag surface agent-controlled.** `allow` on
+  `get` allows `get … --host anything`. Anything the token must not do is
+  enforced in the guard, never in the rules; the rules only decide who is asked.
 
 ## Components
 
@@ -132,6 +135,16 @@ log before request, cold refusal).
    privacy and a few hundred bytes a call in space. There is no switch to turn
    it off; one fewer knob to review.
 5. **Header comment gains the Codex paragraph** of the threat model below.
+6. **The host is pinned to the config file.** `read_host()` reads
+   `~/.canvas-api-guard/config.json` and nothing else; `--log-path` moves the
+   log only. `refuse_unconfigured_host()` runs in `main()` after
+   `refuse_unconfirmed_write()` and before the verb: with no configured host, or
+   with a `--host` that differs from it, the call is refused before the
+   credential store, the pre-read and any network call, and a `refusal` line with
+   `kind: host` is logged. Under `--dry-run` no token is read and nothing is
+   sent, so any `--host` is accepted there. The invariant, stated in the header
+   comment: the token is only ever sent to the host recorded in
+   `~/.canvas-api-guard/config.json`.
 
 ### `install.sh` (changed)
 
@@ -292,6 +305,11 @@ Each with the command that shows it:
 2. Each rule decision: one `codex execpolicy check` line per row of the table.
 3. The cold refusal, unchanged: a write reaching the guard with no TTY and no
    `--yes` is refused before the credential store, the network, or the pre-read.
+4. The host is pinned to the config file, not to a flag:
+   `./canvas_api_guard.py get courses --host other.example.com` is refused
+   cold, before the credential store, and the same refusal follows a `--host`
+   that differs from the configured one. Numbered **8** in the README, after
+   the three Codex claims.
 
 ## Verification (first step of the plan, before any code)
 
