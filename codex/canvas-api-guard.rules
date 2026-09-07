@@ -9,14 +9,16 @@
 # When several rules match, the most restrictive wins.
 
 GUARD = "/usr/local/libexec/canvas_api_guard.py"
+READS = ["get", "count"]
 WRITES = ["post", "put", "patch", "delete"]
 
 prefix_rule(
-    pattern = [GUARD, "get"],
+    pattern = [GUARD, READS],
     decision = "allow",
     justification = "Canvas read through the guard: logged, no approval needed",
     match = ["/usr/local/libexec/canvas_api_guard.py get courses",
-             "/usr/local/libexec/canvas_api_guard.py get courses/1/students?per_page=100 -o json"],
+             "/usr/local/libexec/canvas_api_guard.py get courses/1/students?per_page=100 -o json",
+             "/usr/local/libexec/canvas_api_guard.py count courses/1/enrollments?per_page=100"],
     not_match = ["/usr/local/libexec/canvas_api_guard.py put courses/1",
                  "./canvas_api_guard.py get courses"],
 )

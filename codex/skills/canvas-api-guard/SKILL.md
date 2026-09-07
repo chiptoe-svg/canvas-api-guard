@@ -25,8 +25,11 @@ Python, use an alias or wrapper, or run a source-tree copy. The Canvas host and 
 are fixed by installation; never try to override either on the command line.
 
 ```bash
-/usr/local/libexec/canvas_api_guard.py get courses                    # list
+/usr/local/libexec/canvas_api_guard.py get \
+  "courses?enrollment_type=teacher&enrollment_state=active&state[]=available&include[]=term&per_page=100" -o json
 /usr/local/libexec/canvas_api_guard.py get "courses/123/students?per_page=100" -o json
+/usr/local/libexec/canvas_api_guard.py count \
+  "courses/123/enrollments?type[]=StudentEnrollment&state[]=active&per_page=100"
 /usr/local/libexec/canvas_api_guard.py get courses/123/assignments/9  # one object
 /usr/local/libexec/canvas_api_guard.py put courses/123/assignments/9 \
     -d '{"assignment": {"points_possible": 20}}' --dry-run
@@ -46,6 +49,20 @@ documentation; do not guess field names.
 Reads need no approval. A list prints how many items it returned and, when there are
 more, a `next:` line with the path of the next page. Follow it by passing that
 path back to `get`. Do not assume a list is complete until there is no `next:`.
+
+### Fast read paths
+
+For ordinary read questions, make one precise guard call immediately. Do not first fetch a
+broad collection that Canvas can filter, and do not pipe guard output through ad hoc shell or
+`jq` expressions when `count` can answer directly.
+
+- **Current classes taught:** use the filtered `courses?...` command above. Keep only
+  `TeacherEnrollment` courses in the current term from the returned `term` dates/name. Do not
+  start with unfiltered `get courses`, which returns historical and student enrollments too.
+- **How many active students:** once the course ID is known, use the `count` command above.
+  `count` follows every same-host Canvas pagination link internally and reports one total.
+- Reuse a course ID established earlier in the conversation. Resolve it again only when the
+  user changes course/term or the identity is genuinely uncertain.
 
 ## Writes: dry-run, show, then send
 

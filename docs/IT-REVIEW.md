@@ -59,7 +59,10 @@ is never printed or logged.
 
 ### Keep the token out of agent-controlled storage
 
-- macOS uses the fixed `/usr/bin/security` executable.
+- macOS uses the fixed `/usr/bin/security` executable. A Python standard-library pseudoterminal
+  relays the user's keystrokes directly to `security` and rewrites only its two misleading display
+  labels as `Canvas API token (hidden):` and `Retype Canvas API token (hidden):`. The guard never
+  captures the token during entry; it does not enter argv, a file, or an environment variable.
 - Linux accepts only a fixed, root-owned, non-group/world-writable `secret-tool` executable
   at `/usr/bin/secret-tool` or `/usr/local/bin/secret-tool`.
 - Account selection uses the effective UID's password-database entry rather than `USER` or
@@ -156,6 +159,11 @@ permission, Launch Services may return `kLSNoExecutableErr` even when Terminal a
 are present. This permission is only the platform approval for the bootstrap command; the
 Terminal workflow does not add a second approval gate after displaying the installation plan.
 
+After local installation succeeds, Terminal suggests the separate read-only Codex request
+`In Canvas, what are my current classes?`. Keeping that authenticated smoke test outside the
+installer preserves a clear review boundary: installation makes no Canvas request, while the
+user's subsequent question explicitly authorizes the first audited Canvas read.
+
 The raw bootstrap URL should use the same immutable commit supplied to `--ref`. A mutable branch
 URL such as `main` is not the reviewed installation contract.
 
@@ -176,6 +184,11 @@ automatically.
 Level 1 intentionally permits every supported method and path allowed by the Canvas token.
 Its security improvement over `.env` plus direct API use is credential isolation, destination
 pinning, fixed audit, explicit write approval, and verified evidence.
+
+Both `get` and `count` are read-only operations. `count` follows only pagination links that pass
+the same pinned-host validation as `get`, and returns a total without requiring an agent-created
+shell pipeline or repeated API tool calls. Codex rules allow these reads while continuing to
+prompt for every write verb.
 
 Future Level 2 will preserve generic reads while checking writes against a static allowlist of
 methods, normalized paths, and accepted body fields. The check should occur before the token,

@@ -363,6 +363,7 @@ class TestDryRunSendsNothing(GuardTestCase):
             raise AssertionError("--dry-run made a network call")
 
         cases = [["get", "courses/1"],
+                 ["count", "courses"],
                  ["post", "courses/1/assignments", "-d", '{"assignment": {"name": "Lab"}}'],
                  ["put", "courses/1/assignments/2", "-d", '{"assignment": {"name": "Lab"}}'],
                  ["patch", "courses/1/assignments/2", "-d", '{"assignment": {"name": "L"}}'],
@@ -579,19 +580,37 @@ class TestCredentialStore(unittest.TestCase):
                 guard.read_token()
         self.assertIn("empty", str(caught.exception))
 
-    def test_set_token_on_macos_sends_the_secret_twice_and_reads_it_back(self):
-        """security asks for the password and a retype on stdin. Sending it once stored an
-        EMPTY token (observed 2026-09-07). The read-back makes that impossible to miss."""
+    def test_set_token_on_macos_relays_the_tty_and_reads_the_item_back(self):
         with mock.patch.object(guard.sys, "platform", "darwin"), \
                 mock.patch.object(guard.os.path, "exists", return_value=True), \
-                mock.patch.object(guard.getpass, "getpass", return_value=TOKEN), \
+                mock.patch.object(guard, "_macos_store_token") as store_token, \
+                mock.patch.object(guard.getpass, "getpass",
+                                  side_effect=AssertionError("macOS token must go to security")), \
                 mock.patch("sys.stdout", io.StringIO()):
             guard.set_token()
-        store_argv, store_input = self.calls[0]
+        store_argv = store_token.call_args.args[0]
         self.assertEqual(store_argv[:2], [guard.SECURITY_BIN, "add-generic-password"])
         self.assertNotIn(TOKEN, store_argv)                      # never in argv
-        self.assertEqual(store_input, (TOKEN + "\n" + TOKEN + "\n").encode("utf-8"))
-        self.assertEqual(self.calls[1][0][:2], [guard.SECURITY_BIN, "find-generic-password"])
+        self.assertEqual(self.calls[0][0][:2], [guard.SECURITY_BIN, "find-generic-password"])
+
+    def test_macos_pty_rewrites_both_keychain_labels(self):
+        source = (b"password data for new item: \n"
+                  b"retype password for new item: ")
+        with mock.patch.object(guard.os, "read", return_value=source):
+            output = guard._macos_keychain_output(9)
+        self.assertEqual(output, (b"Canvas API token (hidden): \n"
+                                  b"Retype Canvas API token (hidden): "))
+
+    def test_macos_store_uses_the_display_filter_and_requires_a_tty(self):
+        command = [guard.SECURITY_BIN, "add-generic-password", "-w"]
+        with mock.patch.object(guard.sys.stdin, "isatty", return_value=True), \
+                mock.patch.object(guard.pty, "spawn", return_value=0) as spawn:
+            guard._macos_store_token(command)
+        spawn.assert_called_once_with(command, master_read=guard._macos_keychain_output)
+
+        with mock.patch.object(guard.sys.stdin, "isatty", return_value=False):
+            with self.assertRaises(guard.GuardError):
+                guard._macos_store_token(command)
 
     def test_set_token_on_linux_sends_the_secret_once(self):
         with mock.patch.object(guard.sys, "platform", "linux"), \
@@ -604,17 +623,17 @@ class TestCredentialStore(unittest.TestCase):
         self.assertEqual(store_argv[:2], ["/usr/bin/secret-tool", "store"])
         self.assertEqual(store_input, (TOKEN + "\n").encode("utf-8"))
 
-    def test_set_token_refuses_when_the_read_back_differs(self):
+    def test_macos_store_requires_an_accessible_nonempty_readback(self):
         self.run_patch.stop()
         self.addCleanup(self.run_patch.start)
-        responses = [FakeProc(), FakeProc(stdout=b"a-different-token\n")]  # store ok, read-back differs
-        with mock.patch.object(guard.subprocess, "run", side_effect=responses), \
+        with mock.patch.object(guard.subprocess, "run",
+                               return_value=FakeProc(stdout=b"a-different-token\n")), \
                 mock.patch.object(guard.sys, "platform", "darwin"), \
                 mock.patch.object(guard.os.path, "exists", return_value=True), \
-                mock.patch.object(guard.getpass, "getpass", return_value=TOKEN):
-            with self.assertRaises(guard.GuardError) as caught:
-                guard.set_token()
-        self.assertIn("read back", str(caught.exception))
+                mock.patch.object(guard.getpass, "getpass", return_value=TOKEN), \
+                mock.patch.object(guard, "_macos_store_token"), \
+                mock.patch("sys.stdout", io.StringIO()):
+            guard.set_token()
 
 
 class TestLinuxTokenNeverExposed(GuardTestCase):
@@ -687,6 +706,17 @@ class TestNextPage(GuardTestCase):
             code, output = self.run_main(["get", "courses", "-o", "json"])
         self.assertEqual(json.loads(output)["next"], "/api/v1/courses?page=2&per_page=10")
 
+    def test_count_follows_every_page_and_returns_one_total(self):
+        responses = [FakeResponse(headers={"Link": self.LINK}, payload=[{"id": 1}, {"id": 2}]),
+                     FakeResponse(payload=[{"id": 3}])]
+        with mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen:
+            code, output = self.run_main(["count", "courses?per_page=10", "-o", "json"])
+        result = json.loads(output)
+        self.assertEqual(code, 0)
+        self.assertEqual(result["count"], 3)
+        self.assertEqual(result["pages"], 2)
+        self.assertEqual(urlopen.call_count, 2)
+
     def test_a_list_without_a_next_link_says_nothing_about_pages(self):
         with mock.patch("urllib.request.urlopen") as urlopen:
             urlopen.return_value = FakeResponse(payload=[{"id": 1}])
@@ -755,6 +785,8 @@ class TestCodexRules(unittest.TestCase):
     def test_the_matrix(self):
         rows = [
             (["/usr/local/libexec/canvas_api_guard.py", "get", "courses"], "allow"),
+            (["/usr/local/libexec/canvas_api_guard.py", "count", "courses/1/enrollments"],
+             "allow"),
             (["/usr/local/libexec/canvas_api_guard.py", "put", "courses/1/assignments/2", "-d", "{}", "--yes"], "prompt"),
             (["/usr/local/libexec/canvas_api_guard.py", "post", "courses/1/assignments", "-d", "{}", "--yes"], "prompt"),
             (["/usr/local/libexec/canvas_api_guard.py", "patch", "courses/1", "-d", "{}", "--yes"], "prompt"),
@@ -772,8 +804,8 @@ class TestCodexRules(unittest.TestCase):
         for argv, want in rows:
             self.assertEqual(self.decision(argv), want, " ".join(argv))
 
-    def test_every_guard_write_verb_has_a_prompt_rule(self):
-        """If the guard grows a verb, the rules file must grow with it."""
+    def test_every_guard_verb_appears_in_the_rules(self):
+        """If the guard grows a verb, the execution policy must classify it."""
         with open(self.RULES) as handle:
             rules = handle.read()
         for verb in sorted(guard.VERBS):
@@ -848,6 +880,11 @@ class TestInstallerPlan(unittest.TestCase):
         with open(self.BOOTSTRAP) as handle:
             script = handle.read()
         self.assertIn("host/GUI execution permission", script)
+
+    def test_github_bootstrap_ends_with_a_read_only_canvas_smoke_test(self):
+        with open(self.BOOTSTRAP) as handle:
+            script = handle.read()
+        self.assertIn("In Canvas, what are my current classes?", script)
 
 
 if __name__ == "__main__":

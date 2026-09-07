@@ -39,11 +39,11 @@
 # READ TOP TO BOTTOM: constants, token, logging, host pinning, the one request function,
 # confirmation, evidence, verbs, argparse, main.
 
-import argparse, datetime, getpass, json, os, pwd, re, stat, subprocess, sys
+import argparse, datetime, getpass, json, os, pty, pwd, re, stat, subprocess, sys
 import urllib.error, urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
-USER_AGENT = "canvas-api-guard/1.1.0"
+USER_AGENT = "canvas-api-guard/1.1.1"
 KEYCHAIN_SERVICE = "canvas-api-guard"
 SECURITY_BIN = "/usr/bin/security"
 SECRET_TOOL_PATHS = ("/usr/bin/secret-tool", "/usr/local/bin/secret-tool")
@@ -122,22 +122,38 @@ def read_token():
         raise GuardError("the credential store returned an empty token; run --set-token again")
     return token
 
+def _macos_keychain_output(fd):
+    """Relay Keychain output while replacing its misleading generic-password labels."""
+    output = os.read(fd, 1024)
+    return output.replace(
+        b"retype password for new item:", b"Retype Canvas API token (hidden):").replace(
+        b"password data for new item:", b"Canvas API token (hidden):")
+
+def _macos_store_token(command):
+    """Let security(1) read directly from the TTY; rewrite display labels only."""
+    if not sys.stdin.isatty():
+        raise GuardError("macOS token entry requires a visible terminal")
+    status = pty.spawn(command, master_read=_macos_keychain_output)
+    if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
+        raise GuardError("the macOS Keychain refused the token")
+
 def set_token():
-    """Store a token, read with getpass: never from argv, never a file, never an env var."""
+    """Store a token through hidden terminal input, never argv, a file, or an env var."""
     command = credential_command("store")            # refuses an unsupported platform first
-    secret = getpass.getpass("Canvas API token (not echoed): ").strip()
-    if not secret:
-        raise GuardError("empty token; nothing stored")
-    payload = secret + "\n"
     if sys.platform == "darwin":
-        payload += secret + "\n"      # security asks for the password and then a retype
-    proc = subprocess.run(command, input=payload.encode("utf-8"), stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE)
-    if proc.returncode != 0:
-        raise GuardError("the credential store refused the token: %s"
-                         % proc.stderr.decode("utf-8", "replace").strip())
-    if read_token() != secret:
-        raise GuardError("the token did not read back as stored; nothing usable was stored")
+        _macos_store_token(command)
+        read_token()                                  # prove the new item is accessible and nonempty
+    else:
+        secret = getpass.getpass("Canvas API token (hidden): ").strip()
+        if not secret:
+            raise GuardError("empty token; nothing stored")
+        proc = subprocess.run(command, input=(secret + "\n").encode("utf-8"),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode != 0:
+            raise GuardError("the credential store refused the token: %s"
+                             % proc.stderr.decode("utf-8", "replace").strip())
+        if read_token() != secret:
+            raise GuardError("the token did not read back as stored; nothing usable was stored")
     print("stored for service=%s account=%s" % (KEYCHAIN_SERVICE, account_name()))
 
 # ----------------------------------------------------------------------------------- logging
@@ -407,7 +423,8 @@ def emit(cfg, ev):
     if cfg.out == "json":
         print(json.dumps(ev, indent=2, sort_keys=True, default=str))
         return
-    for key in ("verb", "path", "url", "confirmation", "status", "verification", "note", "next"):
+    for key in ("verb", "path", "url", "confirmation", "status", "verification", "note",
+                "count", "pages", "next"):
         if ev.get(key) is not None:
             print("%-14s %s" % (key + ":", ev[key]))
     if ev.get("target"):
@@ -442,6 +459,29 @@ def do_get(cfg, path, body):
     elif resp:
         ev["object"] = summarise(resp["data"])
     emit(cfg, ev)
+
+def do_count(cfg, path, body):
+    """GET every same-host page and return one count, avoiding agent-side shell parsing."""
+    if cfg.dry_run:
+        send_request(cfg, "GET", path)
+        return
+    first_path, current = normalise_path(path), path
+    seen, total, pages, status = set(), 0, 0, None
+    while current:
+        normalised = normalise_path(current)
+        if normalised in seen:
+            raise GuardError("pagination loop detected at %s" % normalised)
+        seen.add(normalised)
+        resp = send_request(cfg, "GET", current)
+        status = resp["status"]
+        if not isinstance(resp["data"], list):
+            raise GuardError("count requires a Canvas list response at %s" % normalised)
+        total += len(resp["data"])
+        pages += 1
+        current = next_link(resp["headers"], cfg.host)
+    emit(cfg, {"verb": "COUNT", "path": first_path, "url": canvas_url(cfg.host, path),
+               "status": status, "note": "all Canvas pages counted",
+               "count": total, "pages": pages})
 
 def do_update(cfg, method, path, body):
     """PUT/PATCH: read, show the change, confirm, write, read back, print before and after."""
@@ -553,7 +593,7 @@ def do_delete(cfg, path, body):
         uncertain(cfg, evidence, "the delete returned, but read-back failed with %s" % err)
     uncertain(cfg, evidence, "read-back after delete still returned the object")
 
-VERBS = {"get": do_get, "post": do_post, "delete": do_delete,
+VERBS = {"get": do_get, "count": do_count, "post": do_post, "delete": do_delete,
          "put": lambda c, p, b: do_update(c, "PUT", p, b),
          "patch": lambda c, p, b: do_update(c, "PATCH", p, b)}
 

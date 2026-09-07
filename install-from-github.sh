@@ -111,6 +111,9 @@ printf 'Paste the token and press Return; it will not appear on screen.\n\n'
 
 printf '\nInstalled version:\n'
 /usr/local/libexec/canvas_api_guard.py --version
+
+printf '\nReturn to Codex and use this read-only Canvas smoke test:\n'
+printf '  In Canvas, what are my current classes?\n'
 EOF
 
 chmod 0700 "$LAUNCHER"

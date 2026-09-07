@@ -90,8 +90,12 @@ Then the user—not Codex—enters the token in a visible terminal with hidden i
 /usr/local/libexec/canvas_api_guard.py --set-token
 ```
 
-The token is written to Keychain/Secret Service through stdin, read back for verification,
-and never accepted through argv, a file, or an environment variable.
+On macOS, the token goes directly from the user's terminal to `/usr/bin/security`; the guard uses
+a standard-library pseudoterminal only to rename Keychain's two generic-password labels to
+`Canvas API token (hidden):` and `Retype Canvas API token (hidden):`. The guard does not capture
+the token while it is being entered. On Linux, it writes the token to Secret Service through stdin.
+The stored item is read back for verification and the token is never accepted through argv, a file,
+or an environment variable.
 
 ### One-command macOS installation from GitHub
 
@@ -121,6 +125,11 @@ waits for Return before closing. It makes no Canvas API request. If Terminal can
 the bootstrap reports failure rather than claiming a prompt is visible and tells a Codex user
 that host/GUI execution permission is required.
 
+The final Terminal message directs the user back to Codex with: `In Canvas, what are my current
+classes?` That separate, read-only request is the live smoke test: it proves the stored token,
+pinned host, audit path, execution rule, and skill work together without making installation
+itself contact Canvas.
+
 ### Copy/paste installation from a reviewed checkout (macOS and Linux)
 
 This alternative runs entirely in the terminal where it is pasted. Both the administrator
@@ -130,7 +139,7 @@ newer revision; never substitute `main` or another mutable branch name.
 ```sh
 (
   set -eu
-  guard_commit="f98eb447e4b6bacd6cc5a41d5870ed7ff291a534"
+  guard_commit="FULL_COMMIT_SHA"
   guard_checkout="$(mktemp -d)/canvas-api-guard"
   git clone --quiet https://github.com/chiptoe-svg/canvas-api-guard.git "$guard_checkout"
   git -C "$guard_checkout" checkout --quiet --detach "$guard_commit"
@@ -158,8 +167,13 @@ command-line overrides in the installed interface.
 
 ```sh
 # Read: logged, no write approval
-/usr/local/libexec/canvas_api_guard.py get courses/123
+/usr/local/libexec/canvas_api_guard.py get \
+  "courses?enrollment_type=teacher&enrollment_state=active&state[]=available&include[]=term&per_page=100" -o json
 /usr/local/libexec/canvas_api_guard.py get "courses/123/students?per_page=100" -o json
+
+# Count every page of a collection without agent-side jq or repeated tool calls
+/usr/local/libexec/canvas_api_guard.py count \
+  "courses/123/enrollments?type[]=StudentEnrollment&state[]=active&per_page=100"
 
 # Preview: exact request, no token read and no network call
 /usr/local/libexec/canvas_api_guard.py put \
