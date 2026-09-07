@@ -94,8 +94,8 @@ $guard post courses/123/assignments -d '{"assignment": {"name": "Lab 4"}}'
 $guard delete courses/123/assignments/9
 ```
 
-Without a TTY and without `--yes`, a write is refused **before the keychain is touched,
-before the pre-read, and before any network call** — so the refusal costs nothing and
+Without a TTY and without `--yes`, a write is refused **before the credential store is
+touched, before the pre-read, and before any network call** — so the refusal costs nothing and
 leaks nothing. That is the case an agent hits, and it is the point of the tool: an
 unattended write either carries `--yes` and is logged as `yes-flag`, or it does not happen
 at all and is logged as `refused-no-tty`.
@@ -138,7 +138,7 @@ reach the keychain.
 ## The log
 
 `~/.canvas-api-guard/audit.jsonl`, mode 0600, one JSON object per line, `--log-path` to
-move it. Three kinds of line:
+move it. Four kinds of line:
 
 - `event: request` — written and fsynced **before** the call: timestamp, verb, path, url,
   `kind` (read or write), `confirmation`, `dry_run`, and for writes the request body.
@@ -191,8 +191,9 @@ $ grep -n "read_token()" canvas_api_guard.py
 
 Four hits: the banner comment, the definition, the one use in `send_request()` (the line
 that builds the `Authorization` header), and the read-back inside `set_token()` that checks
-the store worked. `credential_command()` is the only place that names a credential tool. Under
-`--dry-run`, and on a refused write, execution never reaches the use.
+the store worked. `credential_command()` is the only function that builds a credential-store
+command; the two tool names live in the constants `SECURITY_BIN` and `SECRET_TOOL` beside it.
+Under `--dry-run`, and on a refused write, execution never reaches the use.
 
 **3. Every URL is built by the host-pinning function.**
 
@@ -203,8 +204,14 @@ $ grep -n "https://" canvas_api_guard.py
 One hit inside `canvas_url()`; `next_link()` parses a URL Canvas sent and refuses one
 whose host differs.
 
-**4. The log is written before the request.** In `send_request()`, `log_event(...)` with
-`"event": "request"` precedes the `urlopen(` line.
+**4. The log is written before the request.** In `send_request()`, the `"event": "request"`
+log line precedes the one network call:
+
+```
+$ grep -n '"event": "request"\|urlopen(' canvas_api_guard.py
+```
+
+Two hits, in that order: the request log line first, the `urlopen(` call after it.
 
 **5. The confirmation refusal, cold: no token, no Canvas account, no network.**
 
