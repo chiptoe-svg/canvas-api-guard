@@ -119,8 +119,27 @@ class TestConfirmation(GuardTestCase):
                  "-d", '{"submission": {"posted_grade": 95}}'])
         self.assertEqual(code, 2)
         self.assertNotIn("confirmation:  yes-flag", output)
-        verbs = [line.get("verb") for line in self.log_lines() if line["event"] == "request"]
-        self.assertEqual(verbs, ["GET"])        # the read happened; the write did not
+        self.assertIn("stdin is not a terminal", self.last_stderr)
+        self.assertIn("pass --yes", self.last_stderr)
+        requests = [line for line in self.log_lines() if line["event"] == "request"]
+        self.assertEqual(requests, [])          # not even the pre-read was sent
+
+    def test_the_refusal_precedes_the_keychain_and_every_network_call(self):
+        """The property this tool exists for, demonstrable with no token and no account."""
+        def no_keychain():
+            raise AssertionError("the keychain was touched before the refusal")
+
+        def no_network(*args, **kwargs):
+            raise AssertionError("a request was made before the refusal")
+
+        with mock.patch.object(guard, "read_token_from_keychain", no_keychain), \
+                mock.patch("urllib.request.urlopen", side_effect=no_network):
+            for verb, extra in (("post", ["-d", "{}"]), ("put", ["-d", "{}"]),
+                                ("patch", ["-d", "{}"]), ("delete", [])):
+                code, _ = self.run_main([verb, "courses/1/assignments/2"] + extra)
+                self.assertEqual(code, 2, verb)
+        events = [(line["event"], line["confirmation"]) for line in self.log_lines()]
+        self.assertEqual(events, [("refusal", "refused-no-tty")] * 4)
 
     def test_the_yes_flag_is_recorded_as_the_confirmation_mode(self):
         with mock.patch("urllib.request.urlopen") as urlopen:

@@ -2,26 +2,25 @@
 # canvas_api_guard - an audited passthrough to the Canvas REST API.
 #
 # WHAT IT IS. A single-file, stdlib-only wrapper around the Canvas REST API. It gives the user
-# (or an agent acting for them) exactly the access their existing Canvas token already grants,
-# and adds three things: a required confirmation before any write, with a record of WHICH KIND
-# of confirmation was given (a human at a TTY, or an explicit --yes); before/after evidence read
-# back from Canvas after the write; and an append-only JSON-lines log written BEFORE the request
-# is sent. It adds NO capability - all of this, the token could already do.
+# (or an agent acting for them) exactly the access their Canvas token already grants - it adds
+# NO capability - plus three things: a required confirmation before any write, with a record of
+# WHICH KIND it was (a human at a TTY, or an explicit --yes); before/after evidence read back
+# from Canvas; and an append-only JSON-lines log written BEFORE the request is sent.
 #
 # THREAT MODEL - WHAT IT DOES NOT PROTECT AGAINST.
 #   * It does not restrict what the token can reach. Scope is set in Canvas, not here.
 #   * It does not stop anyone using curl, a browser or the Canvas UI instead. It is a chosen
 #     path, not a chokepoint.
-#   * It does not contain a determined user, or an agent that can run sudo. Such an actor can
-#     edit this script, delete the log, or bypass the tool entirely; install.sh prints optional
-#     chflags commands that raise that cost without eliminating it. Nor is the log protected
-#     against root.
+#   * It does not contain a determined user, or an agent that can run sudo: such an actor can
+#     edit this script, delete the log, or bypass the tool entirely. install.sh prints optional
+#     chflags commands that raise that cost without eliminating it, and the log is not
+#     protected against root.
 #   * It does not verify that the confirming human understood the change - only that a
 #     confirmation of a recorded kind occurred.
 #
 # WHAT IT DOES GIVE. A complete, append-only, local record of everything done through it,
-# written before the fact, and a required confirmation whose mode is recorded on the same line
-# as the change it authorised.
+# written before the fact, and a required confirmation whose mode is recorded beside the change
+# it authorised - or refused, if no confirmation was possible.
 #
 # READ TOP TO BOTTOM: constants, token, logging, host pinning, the one request function,
 # confirmation, evidence, verbs, argparse, main.
@@ -46,15 +45,14 @@ class GuardError(Exception):
 # ------------------------------------------------------------------------------------- token
 # The token is in exactly two places in this file: read_token_from_keychain() reads it, and one
 # line in send_request() puts it into the Authorization header. It is never printed, logged,
-# echoed, stored in a file, or taken from argv or the environment - and under --dry-run it
-# is never even read.
+# echoed, stored in a file, or taken from argv or the environment - and under --dry-run, or on
+# a refused write, it is never even read.
 def read_token_from_keychain():
     if not os.path.exists(SECURITY_BIN):
         raise GuardError("macOS keychain not available at %s; refusing to run. There is no "
                          "file or environment fallback for the token." % SECURITY_BIN)
-    proc = subprocess.run([SECURITY_BIN, "find-generic-password", "-s", KEYCHAIN_SERVICE,
-                           "-a", getpass.getuser(), "-w"],
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.run([SECURITY_BIN, "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a",
+                           getpass.getuser(), "-w"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if proc.returncode != 0:
         raise GuardError("no Canvas token in the keychain for service '%s'. Run: "
                          "canvas_api_guard.py --set-token" % KEYCHAIN_SERVICE)
@@ -80,9 +78,9 @@ def set_token():
 
 # ----------------------------------------------------------------------------------- logging
 # One JSON object per line, file mode 0600. The "request" line is written and fsynced BEFORE
-# the network call; the "response" line after it. A request line with no matching response
-# line means the call was attempted and did not complete. Response bodies and the token are
-# never logged.
+# the network call, the "response" line after it, and a "refusal" line stands alone. A request
+# line with no matching response line means the call was attempted and did not complete.
+# Response bodies and the token are never logged.
 def log_event(log_path, fields):
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     record = {"timestamp": stamp, "pid": os.getpid()}
@@ -153,8 +151,7 @@ def send_request(cfg, method, path, body=None):
         shown = dict(headers, Authorization=REDACTED)
         print("DRY RUN - nothing is sent and no token is read")
         print("  method   %s\n  url      %s" % (method, url))
-        for key in sorted(shown):
-            print("  header   %s: %s" % (key, shown[key]))
+        print("\n".join("  header   %s: %s" % (k, shown[k]) for k in sorted(shown)))
         print("  body     %s" % (json.dumps(body) if body is not None else "(none)"))
         return None
     headers["Authorization"] = "Bearer " + read_token_from_keychain()     # the only use
@@ -164,9 +161,8 @@ def send_request(cfg, method, path, body=None):
         status, head, text = raw.status, dict(raw.headers), raw.read()
         raw.close()
     except Exception as err:                       # HTTPError, DNS, TLS, timeout, ...
-        log_event(cfg.log_path, {"event": "response", "verb": method, "path": npath,
-                                 "ok": False, "status": getattr(err, "code", None),
-                                 "error": type(err).__name__})
+        log_event(cfg.log_path, {"event": "response", "verb": method, "path": npath, "ok": False,
+                                 "status": getattr(err, "code", None), "error": type(err).__name__})
         raise GuardError("%s %s failed: %s: %s" % (method, url, type(err).__name__, err))
     log_event(cfg.log_path, {"event": "response", "verb": method, "path": npath,
                              "status": status, "ok": True, "bytes": len(text)})
@@ -185,6 +181,18 @@ def get_or_none(cfg, path):
 
 # ------------------------------------------------------------------------------ confirmation
 # Reads need no confirmation. Writes need one, and the KIND of it is recorded in the log.
+# A write that cannot be confirmed is refused by refuse_unconfirmed_write() before anything
+# else happens; with a TTY the pre-read runs first so the prompt can show the change.
+def refuse_unconfirmed_write(cfg, verb, path):
+    """Refuse an unconfirmable write BEFORE the keychain is touched, before the pre-read and
+    before any network call - so the refusal can be demonstrated with no token at all."""
+    if verb.upper() not in WRITE_METHODS or cfg.dry_run or cfg.yes or sys.stdin.isatty():
+        return
+    log_event(cfg.log_path, {"event": "refusal", "verb": verb.upper(), "kind": "write",
+                             "path": normalise_path(path), "confirmation": "refused-no-tty"})
+    raise GuardError("refusing to write without confirmation: stdin is not a terminal; pass "
+                     "--yes to confirm non-interactively, which will be recorded in the log")
+
 def confirm(cfg, lines):
     if cfg.dry_run:
         return "dry-run"
@@ -193,9 +201,8 @@ def confirm(cfg, lines):
     if cfg.yes:
         print("confirmation: --yes was passed explicitly")
         return "yes-flag"
-    if not sys.stdin.isatty():
-        raise GuardError("stdin is not a TTY and --yes was not passed; refusing this write. An "
-                         "agent or script must pass --yes, recorded as confirmation=yes-flag.")
+    if not sys.stdin.isatty():          # unreachable from the CLI: main() refuses earlier
+        raise GuardError("refusing to write without confirmation: stdin is not a terminal")
     if input("Type 'yes' to proceed: ").strip().lower() != "yes":
         raise GuardError("not confirmed; nothing was sent")
     return "human-tty"
@@ -230,8 +237,7 @@ def emit(cfg, ev):
     """Render the evidence, and record a short form of it (before/after) in the log."""
     log_event(cfg.log_path, {"event": "evidence", "verb": ev.get("verb"), "note": ev.get("note"),
                              "path": ev.get("path"), "status": ev.get("status"),
-                             "confirmation": ev.get("confirmation"),
-                             "changes": ev.get("changes")})
+                             "confirmation": ev.get("confirmation"), "changes": ev.get("changes")})
     if cfg.out == "json":
         print(json.dumps(ev, indent=2, sort_keys=True, default=str))
         return
@@ -281,8 +287,7 @@ def do_update(cfg, method, path, body):
                "url": canvas_url(cfg.host, path), "confirmation": cfg.confirmation,
                "status": resp["status"] if resp else None,
                "changes": compare_fields(body, before_obj, after_obj),
-               "note": None if after_obj else
-               "no read-back was possible (dry run, or the read-back GET failed)"})
+               "note": None if after_obj else "no read-back (dry run, or the GET failed)"})
 
 def do_post(cfg, path, body):
     """POST: nothing exists before, so show the body, confirm, write, read the new object."""
@@ -327,9 +332,8 @@ def do_delete(cfg, path, body):
         "  " + json.dumps(before_obj, sort_keys=True, default=str)])
     resp = send_request(cfg, "DELETE", path, body)
     after = get_or_none(cfg, path)
-    note = ("dry run: nothing was deleted" if cfg.dry_run else
-            "read-back after delete: gone" if after is None else
-            "read-back after delete: STILL PRESENT (Canvas may soft-delete)")
+    note = ("dry run: nothing was deleted" if cfg.dry_run else "read-back after delete: gone"
+            if after is None else "read-back after delete: STILL PRESENT (soft-deleted?)")
     emit(cfg, {"verb": "DELETE", "path": normalise_path(path), "object": before_obj,
                "url": canvas_url(cfg.host, path), "confirmation": cfg.confirmation,
                "status": resp["status"] if resp else None, "note": note})
@@ -339,11 +343,11 @@ VERBS = {"get": do_get, "post": do_post, "delete": do_delete,
          "patch": lambda c, p, b: do_update(c, "PATCH", p, b)}
 
 # ---------------------------------------------------------------------------------- argparse
-class Config(object):
+def make_config(args):
     """What send_request needs. confirmation is set by confirm() before any write."""
-    def __init__(self, host, log_path, dry_run, yes, out):
-        self.host, self.log_path, self.out = host or "", log_path, out
-        self.dry_run, self.yes, self.confirmation = dry_run, yes, None
+    return argparse.Namespace(host=read_host(args.host, args.log_path) or "", out=args.output,
+                              log_path=args.log_path, dry_run=args.dry_run, yes=args.yes,
+                              confirmation=None)
 
 def read_host(explicit, log_path):
     """--host wins; otherwise the host recorded beside the log. The host is not a secret."""
@@ -357,8 +361,7 @@ def build_parser():
     parser = argparse.ArgumentParser(prog="canvas_api_guard.py", description=(
         "Audited passthrough to the Canvas REST API: confirmation, evidence and an "
         "append-only log. It adds no capability the Canvas token did not already have."))
-    parser.add_argument("--set-token", action="store_true",
-                        help="store a Canvas token in the macOS keychain and exit")
+    parser.add_argument("--set-token", action="store_true", help="store a token, then exit")
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("path", help="/api/v1/courses/123, api/v1/courses/123 or courses/123")
     common.add_argument("-d", "--data", help="JSON object to send as the request body")
@@ -383,9 +386,9 @@ def main(argv=None):
             parser.print_help()
             return 2
         body = json.loads(args.data) if args.data else None
-        cfg = Config(read_host(args.host, args.log_path), args.log_path, args.dry_run,
-                     args.yes, args.output)
+        cfg = make_config(args)
         canvas_url(cfg.host, args.path)              # fail before anything else happens
+        refuse_unconfirmed_write(cfg, args.verb, args.path)
         VERBS[args.verb](cfg, args.path, body)
         return 0
     except (GuardError, ValueError) as err:      # ValueError: an unparseable -d body

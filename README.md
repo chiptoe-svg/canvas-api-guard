@@ -57,6 +57,10 @@ The host is not a secret and lives in a plain file beside the log; `--host` over
 Paths may be written `/api/v1/courses/123`, `api/v1/courses/123` or `courses/123`.
 Anything containing a scheme, a host, or `..` is refused.
 
+**Flags follow the verb**, not the program name: `canvas_api_guard.py put <path> --host
+... --dry-run`, never `canvas_api_guard.py --dry-run put <path>`. (`--set-token` is the
+one exception; it takes no verb.)
+
 ```sh
 guard=/usr/local/libexec/canvas_api_guard.py
 
@@ -82,9 +86,14 @@ $guard post courses/123/assignments -d '{"assignment": {"name": "Lab 4"}}'
 $guard delete courses/123/assignments/9
 ```
 
-Without a TTY and without `--yes`, a write is refused before anything is sent. That is the
-case an agent hits, and it is the point of the tool: an unattended write leaves a log line
-that says a machine authorised it.
+Without a TTY and without `--yes`, a write is refused **before the keychain is touched,
+before the pre-read, and before any network call** — so the refusal costs nothing and
+leaks nothing. That is the case an agent hits, and it is the point of the tool: an
+unattended write either carries `--yes` and is logged as `yes-flag`, or it does not happen
+at all and is logged as `refused-no-tty`.
+
+With a terminal the ordering is different on purpose: the pre-read runs first, so the
+prompt can show you what is about to change before you answer.
 
 ## The log
 
@@ -95,6 +104,8 @@ move it. Three kinds of line:
   `kind` (read or write), `confirmation`, `dry_run`, and for writes the request body.
 - `event: response` — after the call: status, ok, bytes. Never the response body.
 - `event: evidence` — the before/after summary of a write, with the confirmation mode.
+- `event: refusal` — a write that could not be confirmed, `confirmation: refused-no-tty`.
+  It stands alone: no request was made.
 
 The token never appears on any line. A `request` line with no matching `response` line
 means the call was attempted and did not complete.
@@ -116,14 +127,15 @@ for line in open(sys.argv[1]):
 
 `canvas_api_guard.py` is under 400 lines and reads top to bottom: threat model, constants,
 token, logging, host pinning, the one request function, confirmation, evidence, the verbs,
-argparse, main. Four properties, four greps.
+argparse, main. Four properties you can grep for, and one you can run cold with no
+token and no Canvas account.
 
 **1. Exactly one place makes a network call.**
 
 ```
 $ grep -n "urlopen" canvas_api_guard.py
-137:# There is exactly one call to urlopen in this file. Everything else routes through here.
-163:        raw = urllib.request.urlopen(request, timeout=TIMEOUT)            # the only call
+135:# There is exactly one call to urlopen in this file. Everything else routes through here.
+160:        raw = urllib.request.urlopen(request, timeout=TIMEOUT)            # the only call
 ```
 
 **2. The token is in exactly two places.** One function reads it from the keychain; one
@@ -131,42 +143,70 @@ line puts it into a header. Nothing else touches it.
 
 ```
 $ grep -n "read_token_from_keychain" canvas_api_guard.py
-47:# The token is in exactly two places in this file: read_token_from_keychain() reads it, and one
-51:def read_token_from_keychain():
-160:    headers["Authorization"] = "Bearer " + read_token_from_keychain()     # the only use
+46:# The token is in exactly two places in this file: read_token_from_keychain() reads it, and one
+50:def read_token_from_keychain():
+157:    headers["Authorization"] = "Bearer " + read_token_from_keychain()     # the only use
 ```
 
-Note line 160: under `--dry-run` the function returns before reaching it, so a dry run
-cannot leak a token it never read.
+Note line 157: under `--dry-run`, and on a refused write, execution never reaches it — so
+neither can leak a token that was never read.
 
 **3. Every URL is built by the host-pinning function, and it is called by the one request
 function before anything else.**
 
 ```
 $ grep -n "canvas_url\|urlopen" canvas_api_guard.py | head -5
-101:# Every URL this tool builds comes from canvas_url(). A path carrying a scheme, a netloc or a
-123:def canvas_url(host, path):
-137:# There is exactly one call to urlopen in this file. Everything else routes through here.
-141:    url, npath = canvas_url(cfg.host, path), normalise_path(path)
-163:        raw = urllib.request.urlopen(request, timeout=TIMEOUT)            # the only call
+ 99:# Every URL this tool builds comes from canvas_url(). A path carrying a scheme, a netloc or a
+121:def canvas_url(host, path):
+135:# There is exactly one call to urlopen in this file. Everything else routes through here.
+139:    url, npath = canvas_url(cfg.host, path), normalise_path(path)
+160:        raw = urllib.request.urlopen(request, timeout=TIMEOUT)            # the only call
 ```
 
-**4. The log is written before the request, not after.** Line 143 is the `request` line;
-the call is on line 163.
+**4. The log is written before the request, not after.** Line 141 is the `request` line;
+the call is on line 160.
 
 ```
 $ grep -n "log_event\|urlopen(" canvas_api_guard.py | sed -n '1,4p'
-86:def log_event(log_path, fields):
-143:    log_event(cfg.log_path, {
-163:        raw = urllib.request.urlopen(request, timeout=TIMEOUT)            # the only call
-167:        log_event(cfg.log_path, {"event": "response", "verb": method, "path": npath,
+ 84:def log_event(log_path, fields):
+141:    log_event(cfg.log_path, {
+160:        raw = urllib.request.urlopen(request, timeout=TIMEOUT)            # the only call
+164:        log_event(cfg.log_path, {"event": "response", "verb": method, "path": npath, "ok": False,
 ```
+
+**5. See the confirmation refusal for yourself — no token, no Canvas account, no network.**
+Clone the repo and run this cold:
+
+```
+$ echo "" | ./canvas_api_guard.py delete courses/1/assignments/2 \
+      --host example.instructure.com --log-path /tmp/demo.jsonl
+canvas-api-guard: refusing to write without confirmation: stdin is not a terminal; pass --yes to confirm non-interactively, which will be recorded in the log
+$ echo $?
+2
+$ cat /tmp/demo.jsonl
+{"confirmation": "refused-no-tty", "event": "refusal", "kind": "write", "path": "/api/v1/courses/1/assignments/2", "pid": 75350, "timestamp": "2026-09-07T13:18:05Z", "verb": "DELETE"}
+```
+
+`echo "" |` makes stdin a pipe rather than a terminal, which is exactly what an agent or a
+CI job looks like. The refusal is `refuse_unconfirmed_write()`, called from `main()` before
+the verb runs:
+
+```
+$ grep -n "refuse_unconfirmed_write" canvas_api_guard.py
+184:# A write that cannot be confirmed is refused by refuse_unconfirmed_write() before anything
+186:def refuse_unconfirmed_write(cfg, verb, path):
+391:        refuse_unconfirmed_write(cfg, args.verb, args.path)
+```
+
+`test_the_refusal_precedes_the_keychain_and_every_network_call` proves the ordering: it
+replaces both the keychain reader and `urlopen` with functions that raise, and every write
+verb still refuses cleanly.
 
 The test suite proves the same four properties by running them, including a test whose
 fake `urlopen` reads the log from inside the call to show the line is already on disk:
 
 ```sh
-python3 -m unittest -v      # 22 tests; no test reaches the network
+python3 -m unittest -v      # 23 tests; no test reaches the network
 ```
 
 Requires Python 3.9+ (the version macOS ships). No pip, no venv, no dependencies.
