@@ -35,6 +35,7 @@ class FakeResponse(object):
 
 class GuardTestCase(unittest.TestCase):
     def setUp(self):
+        guard._SOURCE = None
         handle, self.log_path = tempfile.mkstemp(prefix="cag-test-", suffix=".jsonl")
         os.close(handle)
         self.addCleanup(os.unlink, self.log_path)
@@ -415,6 +416,40 @@ class TestLinuxTokenNeverExposed(GuardTestCase):
         self.assertNotIn(TOKEN, self.log_text())
         self.assertNotIn(TOKEN, output)
         self.assertEqual(urlopen.call_args[0][0].get_header("Authorization"), "Bearer " + TOKEN)
+
+
+class TestSourceField(GuardTestCase):
+    def test_every_line_says_how_the_guard_was_invoked(self):
+        with mock.patch.dict(guard.os.environ, {"CODEX_SANDBOX": "seatbelt"}), \
+                mock.patch.object(guard, "parent_process_name", return_value="codex"):
+            for name in guard.AGENT_MARKERS:            # isolate from this process's own env
+                if name != "CODEX_SANDBOX":
+                    guard.os.environ.pop(name, None)
+            code, _ = self.run_main(["get", "courses/1", "--dry-run"])
+        self.assertEqual(code, 0)
+        lines = self.log_lines()
+        self.assertTrue(lines)
+        for line in lines:
+            self.assertEqual(line["source"],
+                             {"tty": False, "parent": "codex", "agent_env": ["CODEX_SANDBOX"]})
+        self.assertNotIn("seatbelt", self.log_text())            # names only, never values
+
+    def test_a_terminal_invocation_is_marked_tty(self):
+        with mock.patch.dict(guard.os.environ, {}, clear=False), \
+                mock.patch.object(guard, "parent_process_name", return_value="zsh"):
+            for name in guard.AGENT_MARKERS:
+                guard.os.environ.pop(name, None)
+            code, _ = self.run_main(["get", "courses/1", "--dry-run"], stdin_is_tty=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.log_lines()[0]["source"],
+                         {"tty": True, "parent": "zsh", "agent_env": []})
+
+    def test_a_failed_parent_lookup_is_null_and_does_not_break_the_call(self):
+        with mock.patch.object(guard.os, "getppid", side_effect=OSError("no ppid")):
+            self.assertIsNone(guard.parent_process_name())
+            code, _ = self.run_main(["get", "courses/1", "--dry-run"])
+        self.assertEqual(code, 0)
+        self.assertIsNone(self.log_lines()[0]["source"]["parent"])
 
 
 if __name__ == "__main__":

@@ -39,6 +39,9 @@ CONFIG_NAME = "config.json"          # sits beside the log; holds the host, neve
 WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 TIMEOUT = 30
 REDACTED = "Bearer <redacted>"
+AGENT_MARKERS = ("AI_AGENT", "CLAUDE_CODE_SESSION_ID", "CODEX_SANDBOX",
+                 "CODEX_SANDBOX_NETWORK_DISABLED")   # names recorded if present; never values
+_SOURCE = None
 
 class GuardError(Exception):
     """Any refusal or failure the user should see as one clear line."""
@@ -103,10 +106,35 @@ def set_token():
 # One JSON object per line, file mode 0600. The "request" line is written and fsynced BEFORE
 # the network call, the "response" line after it, and a "refusal" line stands alone. A request
 # line with no matching response line means the call was attempted and did not complete.
-# Response bodies and the token are never logged.
+# Response bodies and the token are never logged. Every line also carries a "source" object
+# saying how the guard was invoked, for correlating a line with an agent's transcript or a
+# person's terminal session.
+def parent_process_name():
+    """The parent process's command name, or None. Never raises: it is a hint, not a gate."""
+    try:
+        ppid = os.getppid()
+        if sys.platform.startswith("linux"):
+            with open("/proc/%d/comm" % ppid) as handle:
+                return handle.read().strip() or None
+        proc = subprocess.run(["ps", "-o", "comm=", "-p", str(ppid)], stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL)
+        return os.path.basename(proc.stdout.decode("utf-8", "replace").strip()) or None
+    except Exception:
+        return None
+
+def invocation_source():
+    """How the guard was invoked, for correlating a log line with an agent's own transcript
+    or a person's terminal session. It is NOT an identity: an environment can be forged and
+    a parent can be a wrapper shell. The confirmation field says who confirmed a write."""
+    global _SOURCE
+    if _SOURCE is None:
+        _SOURCE = {"tty": bool(sys.stdin.isatty()), "parent": parent_process_name(),
+                   "agent_env": sorted(name for name in AGENT_MARKERS if name in os.environ)}
+    return _SOURCE
+
 def log_event(log_path, fields):
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    record = {"timestamp": stamp, "pid": os.getpid()}
+    record = {"timestamp": stamp, "pid": os.getpid(), "source": invocation_source()}
     record.update(fields)
     directory = os.path.dirname(log_path)
     if directory and not os.path.isdir(directory):
