@@ -44,7 +44,7 @@ by the instructor; do not pass `--host`.
 
 ## Reads
 
-Reads need no approval. A list prints `N items returned` and, when there are
+Reads need no approval. A list prints how many items it returned and, when there are
 more, a `next:` line with the path of the next page. Follow it by passing that
 path back to `get`. Do not assume a list is complete until there is no `next:`.
 

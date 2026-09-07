@@ -376,7 +376,9 @@ def do_get(cfg, path, body):
     ev = {"verb": "GET", "path": normalise_path(path), "url": canvas_url(cfg.host, path),
           "status": resp["status"] if resp else None}
     if resp and isinstance(resp["data"], list):
-        ev["note"], ev["items"] = "%d items returned" % len(resp["data"]), resp["data"]
+        count = len(resp["data"])
+        ev["note"] = "%d item%s returned" % (count, "" if count == 1 else "s")
+        ev["items"] = resp["data"]
         try:
             ev["next"] = next_link(resp["headers"], cfg.host)
         except GuardError as err:

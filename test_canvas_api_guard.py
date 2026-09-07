@@ -285,11 +285,20 @@ class TestLogBeforeRequest(GuardTestCase):
         self.assertIn(("request", "GET"), events)
         self.assertEqual(events[0][0], "request")
 
-    def test_the_log_file_is_not_world_readable(self):
+    def test_the_log_file_and_its_directory_are_created_private(self):
+        """The log the guard SHIPS with is one it created itself. Asserting the mode of a
+        mkstemp file would only prove what mkstemp does, so this points --log-path at a
+        directory that does not exist yet and checks both modes log_event chose."""
+        parent = tempfile.mkdtemp(prefix="cag-test-logdir-")
+        self.addCleanup(shutil.rmtree, parent, True)
+        directory = os.path.join(parent, "sub")
+        log_path = os.path.join(directory, "audit.jsonl")
         with mock.patch("urllib.request.urlopen") as urlopen:
             urlopen.return_value = FakeResponse(payload={"id": 1})
-            self.run_main(["get", "courses/1"])
-        self.assertEqual(os.stat(self.log_path).st_mode & 0o077, 0)
+            code, _ = self.run_argv(["get", "courses/1", "--host", HOST, "--log-path", log_path])
+        self.assertEqual(code, 0)
+        self.assertEqual(os.stat(log_path).st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(directory).st_mode & 0o777, 0o700)
 
 
 class TestTokenIsNeverExposed(GuardTestCase):
@@ -375,6 +384,18 @@ class TestEvidence(GuardTestCase):
         self.assertIn("Lab 4", output)
         self.assertEqual(urlopen.call_args[0][0].full_url,
                          "https://" + HOST + "/api/v1/courses/1/assignments/42")
+
+    def test_a_single_item_list_is_not_reported_as_1_items(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload=[{"id": 1}])
+            code, output = self.run_main(["get", "courses"])
+        self.assertEqual(code, 0)
+        self.assertIn("1 item returned", output)
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload=[{"id": 1}, {"id": 2}])
+            code, output = self.run_main(["get", "courses"])
+        self.assertEqual(code, 0)
+        self.assertIn("2 items returned", output)
 
     def test_delete_reports_that_the_object_is_gone(self):
         responses = [FakeResponse(payload={"id": 2, "name": "Lab 4"}),  # before

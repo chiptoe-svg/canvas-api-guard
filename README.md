@@ -272,7 +272,7 @@ reads the log from inside the call, and a matrix test that evaluates the shipped
 file with Codex's own checker (skipped when Codex is absent):
 
 ```sh
-python3 -m unittest -v      # 51 tests; no test reaches the network or a real credential store
+python3 -m unittest -v      # 52 tests; no test reaches the network or a real credential store
 ```
 
 Requires Python 3.9+. No pip, no venv, no dependencies.
