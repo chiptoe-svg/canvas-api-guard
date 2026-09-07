@@ -120,6 +120,13 @@ log before request, cold refusal).
   exists, else prints the copy command.
 - Hardening hints become per-platform: `chflags schg` / `chflags sappnd` on
   macOS, `chattr +i` / `chattr +a` on Linux. Neither is run.
+- Copies `codex/skills/canvas-api-guard/` to `~/.codex/skills/canvas-api-guard/`
+  for the invoking user (Codex treats every folder there as a skill; the
+  user-level `~/.agents/skills` is the documented alternative and works the
+  same way). A skill is loaded by Codex whenever the task matches its
+  description, from any working directory, which is what a faculty member
+  needs: they will not be inside a git repository. A project `AGENTS.md`
+  would only apply inside one directory tree, so it is not used.
 - Prints the recommended Codex config stanza and where it goes.
 
 ### `codex/canvas-api-guard.rules` (new)
@@ -150,9 +157,12 @@ approvals_reviewer = "user"              # a person answers, never the reviewer 
 The README says to merge these into `~/.codex/config.toml` and why the third
 line is the one that matters most.
 
-### `codex/AGENTS.md` (new)
+### `codex/skills/canvas-api-guard/SKILL.md` (new)
 
-Instructions for Codex, under 80 lines:
+A Codex skill, instruction-only, no bundled scripts. Frontmatter `name:
+canvas-api-guard` and a `description` that front-loads the trigger words
+(Canvas, course, assignment, grade, submission, roster) so Codex picks it
+whenever a faculty member asks about their Canvas course. Body under 80 lines:
 
 - What the guard is and the one way to call it (installed path, verb, path
   forms, `-d` body, `-o json`).
@@ -169,7 +179,7 @@ Instructions for Codex, under 80 lines:
 
 ### `README.md` (changed)
 
-- A "Using it from Codex" section: install, the three files, the config lines,
+- A "Using it from Codex" section: install, the rules file, the skill, the config lines,
   what the faculty member will see on a write, and what the log shows.
 - The reviewer section keeps its five properties and adds three Codex claims
   with the command that demonstrates each (below).
@@ -289,9 +299,13 @@ Pending.
   and evidences them.
 - OAuth. The faculty member creates a manual access token in Canvas and stores
   it with `--set-token`.
-- Claude Code or other agents. The rules file and config are Codex-specific;
-  the guard itself is agent-agnostic and nothing here prevents a later hook
-  for another host.
+- Claude Code or other agents. The rules file, skill location and config are
+  Codex-specific; the guard itself is agent-agnostic and nothing here prevents
+  a later skill or hook for another host.
+- The `canvas-cli` skill already present in this machine's `~/.codex/skills`
+  (from the Go tool) would compete with the new skill here. Faculty machines
+  will not have it; on this machine it is removed or renamed before the live
+  check so Codex cannot pick the wrong tool.
 
 ## Later (recorded so the next pass does not re-derive them)
 
