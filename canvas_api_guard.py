@@ -284,6 +284,19 @@ def compare_fields(body, before, after):
 def summarise(obj, limit=10):
     return dict((k, obj[k]) for k in sorted(obj)[:limit]) if isinstance(obj, dict) else None
 
+def next_link(headers, host):
+    """Canvas paginates lists with a Link header. Return the rel="next" URL's path and query,
+    pinned to the host, or None. Nothing is followed automatically."""
+    link = headers.get("Link") or headers.get("link") or ""
+    for part in link.split(","):
+        if 'rel="next"' not in part:
+            continue
+        parsed = urllib.parse.urlsplit(part.split(";")[0].strip().strip("<>"))
+        if parsed.netloc != host:
+            raise GuardError("next-page link points off the pinned host: %r" % parsed.netloc)
+        return parsed.path + (("?" + parsed.query) if parsed.query else "")
+    return None
+
 def emit(cfg, ev):
     """Render the evidence, and record a short form of it (before/after) in the log."""
     log_event(cfg.log_path, {"event": "evidence", "verb": ev.get("verb"), "note": ev.get("note"),
@@ -292,7 +305,7 @@ def emit(cfg, ev):
     if cfg.out == "json":
         print(json.dumps(ev, indent=2, sort_keys=True, default=str))
         return
-    for key in ("verb", "path", "url", "confirmation", "status", "note"):
+    for key in ("verb", "path", "url", "confirmation", "status", "note", "next"):
         if ev.get(key) is not None:
             print("%-14s %s" % (key + ":", ev[key]))
     for row in ev.get("changes") or []:
@@ -316,6 +329,10 @@ def do_get(cfg, path, body):
           "status": resp["status"] if resp else None}
     if resp and isinstance(resp["data"], list):
         ev["note"], ev["items"] = "%d items returned" % len(resp["data"]), resp["data"]
+        try:
+            ev["next"] = next_link(resp["headers"], cfg.host)
+        except GuardError as err:
+            ev["next"], ev["note"] = None, ev["note"] + "; " + str(err)
     elif resp:
         ev["object"] = summarise(resp["data"])
     emit(cfg, ev)

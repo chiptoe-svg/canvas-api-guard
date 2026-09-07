@@ -452,5 +452,47 @@ class TestSourceField(GuardTestCase):
         self.assertIsNone(self.log_lines()[0]["source"]["parent"])
 
 
+class TestNextPage(GuardTestCase):
+    LINK = ('<https://%s/api/v1/courses?page=1&per_page=10>; rel="current",'
+            '<https://%s/api/v1/courses?page=2&per_page=10>; rel="next",'
+            '<https://%s/api/v1/courses?page=5&per_page=10>; rel="last"') % (HOST, HOST, HOST)
+
+    def test_a_list_with_a_next_link_prints_its_path_and_query(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(headers={"Link": self.LINK}, payload=[{"id": 1}])
+            code, output = self.run_main(["get", "courses?per_page=10"])
+        self.assertEqual(code, 0)
+        self.assertIn("next:          /api/v1/courses?page=2&per_page=10", output)
+
+    def test_json_output_carries_next(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(headers={"Link": self.LINK}, payload=[{"id": 1}])
+            code, output = self.run_main(["get", "courses", "-o", "json"])
+        self.assertEqual(json.loads(output)["next"], "/api/v1/courses?page=2&per_page=10")
+
+    def test_a_list_without_a_next_link_says_nothing_about_pages(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload=[{"id": 1}])
+            code, output = self.run_main(["get", "courses"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("next:", output)
+
+    def test_a_next_link_on_another_host_is_reported_not_printed_as_a_path(self):
+        evil = '<https://evil.example.com/api/v1/courses?page=2>; rel="next"'
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(headers={"Link": evil}, payload=[{"id": 1}])
+            code, output = self.run_main(["get", "courses"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("next:", output)
+        self.assertIn("evil.example.com", output)            # named in the note
+        self.assertIn("off the pinned host", output)
+
+    def test_next_link_helper(self):
+        self.assertEqual(guard.next_link({"Link": self.LINK}, HOST),
+                         "/api/v1/courses?page=2&per_page=10")
+        self.assertIsNone(guard.next_link({}, HOST))
+        self.assertIsNone(guard.next_link({"link": '<https://%s/x>; rel="last"' % HOST}, HOST))
+
+
 if __name__ == "__main__":
     unittest.main()
