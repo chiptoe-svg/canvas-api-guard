@@ -1,8 +1,8 @@
 # canvas-api-guard: recommended Codex settings. Merge these three lines into
 # ~/.codex/config.toml (keep everything else you already have there).
 
-# Commands run in a sandbox with NO network. Only a command a rule allows, or a
-# person approves, leaves it. That is what makes the guard the only path to Canvas.
+# Commands run in a sandbox with NO network. The shipped rule allows only the absolute,
+# root-owned guard path to leave it for Canvas reads; writes always prompt a person.
 sandbox_mode       = "workspace-write"
 
 # Approvals are interactive: Codex stops and asks.

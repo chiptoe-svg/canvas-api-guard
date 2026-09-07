@@ -11,6 +11,7 @@ import os
 import shutil
 import tempfile
 import unittest
+import urllib.error
 import urllib.request
 from unittest import mock
 
@@ -38,35 +39,40 @@ class FakeResponse(object):
 class GuardTestCase(unittest.TestCase):
     def setUp(self):
         guard._SOURCE = None
-        handle, self.log_path = tempfile.mkstemp(prefix="cag-test-", suffix=".jsonl")
-        os.close(handle)
-        self.addCleanup(os.unlink, self.log_path)
-        # the config directory the guard pins the host to: never the real ~/.canvas-api-guard
-        self.config_dir = self.temp_config_dir(HOST)
-        self.pin_config_dir(self.config_dir)
+        self.state_dir = tempfile.mkdtemp(prefix="cag-test-state-")
+        os.chmod(self.state_dir, 0o700)
+        self.addCleanup(shutil.rmtree, self.state_dir, True)
+        self.log_path = os.path.join(self.state_dir, "audit.jsonl")
+        with open(self.log_path, "w"):
+            pass
+        os.chmod(self.log_path, 0o600)
+        self.log_patch = mock.patch.object(guard, "DEFAULT_LOG", self.log_path)
+        self.log_patch.start()
+        self.addCleanup(self.log_patch.stop)
+        self.config_path = self.temp_config(HOST)
+        self.pin_config(self.config_path)
         # a token that must never appear in the log or on stdout
         self.token_patcher = mock.patch.object(guard, "read_token", lambda: TOKEN)
         self.token_patcher.start()
         self.addCleanup(self.token_patcher.stop)
 
-    def temp_config_dir(self, host=None):
-        """A throwaway ~/.canvas-api-guard, holding config.json only when a host is given."""
-        directory = tempfile.mkdtemp(prefix="cag-test-config-")
-        self.addCleanup(shutil.rmtree, directory, True)
+    def temp_config(self, host=None, profile="level-1"):
+        """A private throwaway system config; never the real installed config."""
+        path = os.path.join(self.state_dir, "config-%d.json" % len(os.listdir(self.state_dir)))
         if host is not None:
-            with open(os.path.join(directory, guard.CONFIG_NAME), "w") as handle:
-                json.dump({"host": host}, handle)
-        return directory
+            with open(path, "w") as handle:
+                json.dump({"host": host, "profile": profile}, handle)
+            os.chmod(path, 0o600)
+        return path
 
-    def pin_config_dir(self, directory):
-        patcher = mock.patch.object(guard, "DEFAULT_DIR", directory)
+    def pin_config(self, path):
+        patcher = mock.patch.object(guard, "CONFIG_PATH", path)
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def run_main(self, argv, stdin_is_tty=False):
-        """Run main() with the log redirected, stdin non-TTY by default, stdout captured."""
-        argv = list(argv) + ["--host", HOST, "--log-path", self.log_path]
-        return self.run_argv(argv, stdin_is_tty)
+        """Run main() with private fixed config/log paths and captured output."""
+        return self.run_argv(list(argv), stdin_is_tty)
 
     def run_argv(self, argv, stdin_is_tty=False):
         """Run main() on exactly this argv, with the same patches run_main uses."""
@@ -118,10 +124,8 @@ class TestHostPinning(GuardTestCase):
         self.assertEqual(self.log_lines(), [])
 
 
-class TestHostIsPinnedToTheConfig(GuardTestCase):
-    """The invariant: the token is only ever sent to the host recorded in the config file.
-    The rules file cannot constrain flags, so an allowed read carries whatever --host the
-    agent wrote; the guard, not the rules, is what pins the host."""
+class TestFixedProductionConfig(GuardTestCase):
+    """The host and audit destination are fixed outside the agent-controlled arguments."""
 
     def no_keychain(self):
         def explode():
@@ -133,50 +137,53 @@ class TestHostIsPinnedToTheConfig(GuardTestCase):
             raise AssertionError("a request was made before the refusal")
         return mock.patch("urllib.request.urlopen", side_effect=explode)
 
-    def test_a_host_that_differs_from_the_config_is_refused_before_the_credential_store(self):
-        with self.no_keychain(), self.no_network():
-            code, _ = self.run_argv(["get", "courses", "--host", "other.example.com",
-                                     "--log-path", self.log_path])
-        self.assertEqual(code, 2)
-        self.assertIn("does not match the configured host", self.last_stderr)
-        lines = self.log_lines()
-        self.assertEqual(len(lines), 1)
-        self.assertEqual(lines[0]["event"], "refusal")
-        self.assertEqual(lines[0]["kind"], "host")
-
     def test_no_configured_host_refuses_a_real_request(self):
-        self.pin_config_dir(self.temp_config_dir())          # no config.json in it
+        self.pin_config(self.temp_config())                  # path does not exist
         with self.no_keychain(), self.no_network():
-            code, _ = self.run_argv(["get", "courses", "--host", HOST,
-                                     "--log-path", self.log_path])
+            code, _ = self.run_argv(["get", "courses"])
         self.assertEqual(code, 2)
-        self.assertIn("no Canvas host configured", self.last_stderr)
+        self.assertIn("no Canvas configuration", self.last_stderr)
         self.assertEqual([line for line in self.log_lines() if line["event"] == "request"], [])
 
-    def test_dry_run_accepts_any_host_because_no_token_is_read(self):
-        self.pin_config_dir(self.temp_config_dir())
-        with self.no_keychain(), self.no_network():
-            code, output = self.run_argv(["get", "courses", "--host", "other.example.com",
-                                          "--dry-run", "--log-path", self.log_path])
-        self.assertEqual(code, 0)
-        self.assertIn("https://other.example.com/api/v1/courses", output)
-
-    def test_log_path_does_not_move_the_config(self):
-        elsewhere = self.temp_config_dir("evil.example.com")
-        log_path = os.path.join(elsewhere, "audit.jsonl")
+    def test_the_fixed_host_and_log_are_used(self):
         with mock.patch("urllib.request.urlopen") as urlopen:
             urlopen.return_value = FakeResponse(payload={"id": 1})
-            code, _ = self.run_argv(["get", "courses/1", "--log-path", log_path])
+            code, _ = self.run_argv(["get", "courses/1"])
         self.assertEqual(code, 0)
         self.assertTrue(urlopen.call_args[0][0].full_url.startswith("https://" + HOST + "/"),
                         urlopen.call_args[0][0].full_url)
+        self.assertTrue(self.log_lines())
 
-    def test_the_matching_host_is_accepted(self):
-        with mock.patch("urllib.request.urlopen") as urlopen:
-            urlopen.return_value = FakeResponse(payload={"id": 1})
-            code, _ = self.run_argv(["get", "courses", "--host", HOST,
-                                     "--log-path", self.log_path])
-        self.assertEqual(code, 0)
+    def test_a_group_writable_config_is_refused(self):
+        os.chmod(self.config_path, 0o620)
+        with self.no_keychain(), self.no_network():
+            code, _ = self.run_argv(["get", "courses"])
+        self.assertEqual(code, 2)
+        self.assertIn("not writable by group or others", self.last_stderr)
+
+    def test_a_symlinked_config_is_refused(self):
+        link = os.path.join(self.state_dir, "config-link.json")
+        os.symlink(self.config_path, link)
+        self.pin_config(link)
+        with self.no_keychain(), self.no_network():
+            code, _ = self.run_argv(["get", "courses"])
+        self.assertEqual(code, 2)
+        self.assertIn("regular file, not a link", self.last_stderr)
+
+    def test_a_group_writable_config_directory_is_refused(self):
+        os.chmod(self.state_dir, 0o770)
+        with self.no_keychain(), self.no_network():
+            code, _ = self.run_argv(["get", "courses"])
+        self.assertEqual(code, 2)
+        self.assertIn("configuration directory", self.last_stderr)
+        self.assertIn("not writable by group or others", self.last_stderr)
+
+    def test_an_unknown_profile_is_refused(self):
+        self.pin_config(self.temp_config(HOST, profile="level-2"))
+        with self.no_keychain(), self.no_network():
+            code, _ = self.run_argv(["get", "courses"])
+        self.assertEqual(code, 2)
+        self.assertIn("implements level-1 only", self.last_stderr)
 
 
 class TestPathNormalisation(GuardTestCase):
@@ -286,19 +293,40 @@ class TestLogBeforeRequest(GuardTestCase):
         self.assertEqual(events[0][0], "request")
 
     def test_the_log_file_and_its_directory_are_created_private(self):
-        """The log the guard SHIPS with is one it created itself. Asserting the mode of a
-        mkstemp file would only prove what mkstemp does, so this points --log-path at a
-        directory that does not exist yet and checks both modes log_event chose."""
+        """The fixed audit path is created with private directory and file modes."""
         parent = tempfile.mkdtemp(prefix="cag-test-logdir-")
         self.addCleanup(shutil.rmtree, parent, True)
         directory = os.path.join(parent, "sub")
         log_path = os.path.join(directory, "audit.jsonl")
-        with mock.patch("urllib.request.urlopen") as urlopen:
+        with mock.patch.object(guard, "DEFAULT_LOG", log_path), \
+                mock.patch("urllib.request.urlopen") as urlopen:
             urlopen.return_value = FakeResponse(payload={"id": 1})
-            code, _ = self.run_argv(["get", "courses/1", "--host", HOST, "--log-path", log_path])
+            code, _ = self.run_argv(["get", "courses/1"])
         self.assertEqual(code, 0)
         self.assertEqual(os.stat(log_path).st_mode & 0o777, 0o600)
         self.assertEqual(os.stat(directory).st_mode & 0o777, 0o700)
+
+    def test_an_insecure_existing_log_is_refused(self):
+        os.chmod(self.log_path, 0o644)
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "courses/1"])
+        self.assertEqual(code, 2)
+        self.assertIn("mode 0600", self.last_stderr)
+        urlopen.assert_not_called()
+
+    def test_a_symlinked_audit_directory_is_refused(self):
+        parent = tempfile.mkdtemp(prefix="cag-test-loglink-")
+        self.addCleanup(shutil.rmtree, parent, True)
+        real_dir = os.path.join(parent, "real")
+        link_dir = os.path.join(parent, "link")
+        os.mkdir(real_dir, 0o700)
+        os.symlink(real_dir, link_dir)
+        with mock.patch.object(guard, "DEFAULT_LOG", os.path.join(link_dir, "audit.jsonl")), \
+                mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_argv(["get", "courses/1"])
+        self.assertEqual(code, 2)
+        self.assertIn("real directory", self.last_stderr)
+        urlopen.assert_not_called()
 
 
 class TestTokenIsNeverExposed(GuardTestCase):
@@ -352,9 +380,13 @@ class TestDryRunSendsNothing(GuardTestCase):
 
 class TestEvidence(GuardTestCase):
     def test_put_reports_before_and_after_and_whether_they_match(self):
-        responses = [FakeResponse(payload={"id": 3, "posted_grade": 60}),   # before
-                     FakeResponse(payload={"id": 3, "posted_grade": 95}),   # the write
-                     FakeResponse(payload={"id": 3, "posted_grade": 95})]   # read-back
+        student = {"id": 3, "name": "Student Example"}
+        responses = [FakeResponse(payload={"id": 3, "user_id": 3, "user": student,
+                                           "posted_grade": 60}),             # before
+                     FakeResponse(payload={"id": 3, "user_id": 3,
+                                           "posted_grade": 95}),             # the write
+                     FakeResponse(payload={"id": 3, "user_id": 3, "user": student,
+                                           "posted_grade": 95})]             # read-back
         with mock.patch("urllib.request.urlopen", side_effect=responses):
             code, output = self.run_main(
                 ["put", "courses/1/assignments/2/submissions/3", "--yes",
@@ -363,15 +395,20 @@ class TestEvidence(GuardTestCase):
         self.assertIn("posted_grade", output)
         self.assertIn("60 -> 95", output)
         self.assertIn("match: True", output)
+        self.assertIn("Student Example", output)
+        evidence = [line for line in self.log_lines() if line["event"] == "evidence"][-1]
+        self.assertEqual(evidence["target"], {"student_name": "Student Example", "user_id": 3})
+        self.assertEqual(evidence["verification"], "passed")
 
-    def test_post_without_an_id_or_location_says_so_instead_of_inventing_evidence(self):
+    def test_post_without_an_id_or_location_is_uncertain_and_nonzero(self):
         with mock.patch("urllib.request.urlopen") as urlopen:
             urlopen.return_value = FakeResponse(status=201, headers={}, payload={"ok": True})
             code, output = self.run_main(
                 ["post", "courses/1/assignments", "--yes",
                  "-d", '{"assignment": {"name": "Lab 4"}}'])
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 2)
         self.assertIn("neither an id nor a usable Location header", output)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
 
     def test_post_reads_back_the_created_object_by_id(self):
         responses = [FakeResponse(status=201, payload={"id": 42, "name": "Lab 4"}),
@@ -384,6 +421,17 @@ class TestEvidence(GuardTestCase):
         self.assertIn("Lab 4", output)
         self.assertEqual(urlopen.call_args[0][0].full_url,
                          "https://" + HOST + "/api/v1/courses/1/assignments/42")
+
+    def test_post_readback_mismatch_is_uncertain_and_nonzero(self):
+        responses = [FakeResponse(status=201, payload={"id": 42, "name": "Lab 4"}),
+                     FakeResponse(payload={"id": 42, "name": "Different name"})]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, output = self.run_main(
+                ["post", "courses/1/assignments", "--yes",
+                 "-d", '{"assignment": {"name": "Lab 4"}}'])
+        self.assertEqual(code, 2)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+        self.assertIn("created object did not match requested field", output)
 
     def test_a_single_item_list_is_not_reported_as_1_items(self):
         with mock.patch("urllib.request.urlopen") as urlopen:
@@ -400,11 +448,44 @@ class TestEvidence(GuardTestCase):
     def test_delete_reports_that_the_object_is_gone(self):
         responses = [FakeResponse(payload={"id": 2, "name": "Lab 4"}),  # before
                      FakeResponse(status=200, payload={"id": 2}),       # the delete
-                     OSError("404")]                                    # read-back fails
+                     urllib.error.HTTPError("https://" + HOST, 404, "Not Found", {}, None)]
         with mock.patch("urllib.request.urlopen", side_effect=responses):
             code, output = self.run_main(["delete", "courses/1/assignments/2", "--yes"])
         self.assertEqual(code, 0)
-        self.assertIn("read-back after delete: gone", output)
+        self.assertIn("read-back after delete: 404 gone", output)
+
+    def test_update_readback_failure_is_uncertain_and_nonzero(self):
+        responses = [FakeResponse(payload={"id": 3, "posted_grade": 60}),
+                     FakeResponse(payload={"id": 3, "posted_grade": 95}),
+                     OSError("network unavailable")]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, output = self.run_main(
+                ["put", "courses/1/assignments/2/submissions/3", "--yes",
+                 "-d", '{"submission": {"posted_grade": 95}}'])
+        self.assertEqual(code, 2)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+        self.assertIn("read-back failed", output)
+
+    def test_update_mismatch_is_uncertain_and_nonzero(self):
+        responses = [FakeResponse(payload={"id": 3, "posted_grade": 60}),
+                     FakeResponse(payload={"id": 3, "posted_grade": 95}),
+                     FakeResponse(payload={"id": 3, "posted_grade": 60})]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, output = self.run_main(
+                ["put", "courses/1/assignments/2/submissions/3", "--yes",
+                 "-d", '{"submission": {"posted_grade": 95}}'])
+        self.assertEqual(code, 2)
+        self.assertIn("did not match", output)
+
+    def test_delete_transport_failure_is_not_reported_as_gone(self):
+        responses = [FakeResponse(payload={"id": 2, "name": "Lab 4"}),
+                     FakeResponse(status=200, payload={"id": 2}),
+                     OSError("network unavailable")]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, output = self.run_main(["delete", "courses/1/assignments/2", "--yes"])
+        self.assertEqual(code, 2)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+        self.assertNotIn("404 gone", output)
 
 
 class TestRedirectsAreRefused(unittest.TestCase):
@@ -463,7 +544,8 @@ class TestCredentialStore(unittest.TestCase):
 
     def test_linux_reads_from_the_secret_service(self):
         with mock.patch.object(guard.sys, "platform", "linux"), \
-                mock.patch.object(guard.shutil, "which", return_value="/usr/bin/secret-tool"):
+                mock.patch.object(guard, "trusted_linux_secret_tool",
+                                  return_value="/usr/bin/secret-tool"):
             self.assertEqual(guard.read_token(), TOKEN)
         argv, _ = self.calls[0]
         self.assertEqual(argv[:2], ["/usr/bin/secret-tool", "lookup"])
@@ -471,7 +553,8 @@ class TestCredentialStore(unittest.TestCase):
 
     def test_linux_without_secret_tool_refuses_and_names_the_package(self):
         with mock.patch.object(guard.sys, "platform", "linux"), \
-                mock.patch.object(guard.shutil, "which", return_value=None):
+                mock.patch.object(guard, "trusted_linux_secret_tool",
+                                  side_effect=guard.GuardError("secret-tool libsecret missing")):
             with self.assertRaises(guard.GuardError) as caught:
                 guard.read_token()
         self.assertIn("secret-tool", str(caught.exception))
@@ -512,7 +595,8 @@ class TestCredentialStore(unittest.TestCase):
 
     def test_set_token_on_linux_sends_the_secret_once(self):
         with mock.patch.object(guard.sys, "platform", "linux"), \
-                mock.patch.object(guard.shutil, "which", return_value="/usr/bin/secret-tool"), \
+                mock.patch.object(guard, "trusted_linux_secret_tool",
+                                  return_value="/usr/bin/secret-tool"), \
                 mock.patch.object(guard.getpass, "getpass", return_value=TOKEN), \
                 mock.patch("sys.stdout", io.StringIO()):
             guard.set_token()
@@ -539,7 +623,8 @@ class TestLinuxTokenNeverExposed(GuardTestCase):
         self.addCleanup(self.token_patcher.start)
         fake_proc = mock.Mock(returncode=0, stdout=(TOKEN + "\n").encode("utf-8"), stderr=b"")
         with mock.patch.object(guard.sys, "platform", "linux"), \
-                mock.patch.object(guard.shutil, "which", return_value="/usr/bin/secret-tool"), \
+                mock.patch.object(guard, "trusted_linux_secret_tool",
+                                  return_value="/usr/bin/secret-tool"), \
                 mock.patch.object(guard.subprocess, "run", return_value=fake_proc), \
                 mock.patch("urllib.request.urlopen") as urlopen:
             urlopen.return_value = FakeResponse(payload={"id": 1})
@@ -656,23 +741,27 @@ class TestCodexRules(unittest.TestCase):
         proc = subprocess.run([self.codex, "execpolicy", "check", "--rules", self.RULES, "--"]
                               + argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         text = (proc.stdout + proc.stderr).decode("utf-8", "replace").strip()
-        try:
-            return json.loads(text.splitlines()[-1]).get("decision", "none")
-        except (ValueError, IndexError):
-            self.fail("execpolicy check did not return JSON for %r:\n%s" % (argv, text))
+        for line in text.splitlines():
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict) and "decision" in parsed:
+                return parsed.get("decision") or "none"
+            if isinstance(parsed, dict) and parsed.get("matchedRules") == []:
+                return "none"
+        self.fail("execpolicy check did not return JSON for %r:\n%s" % (argv, text))
 
     def test_the_matrix(self):
         rows = [
-            (["canvas_api_guard.py", "get", "courses/1"], "allow"),
             (["/usr/local/libexec/canvas_api_guard.py", "get", "courses"], "allow"),
-            (["canvas_api_guard.py", "put", "courses/1/assignments/2", "-d", "{}", "--yes"], "prompt"),
-            (["canvas_api_guard.py", "post", "courses/1/assignments", "-d", "{}", "--yes"], "prompt"),
-            (["canvas_api_guard.py", "patch", "courses/1", "-d", "{}", "--yes"], "prompt"),
-            (["canvas_api_guard.py", "delete", "courses/1/assignments/2", "--yes"], "prompt"),
+            (["/usr/local/libexec/canvas_api_guard.py", "put", "courses/1/assignments/2", "-d", "{}", "--yes"], "prompt"),
+            (["/usr/local/libexec/canvas_api_guard.py", "post", "courses/1/assignments", "-d", "{}", "--yes"], "prompt"),
+            (["/usr/local/libexec/canvas_api_guard.py", "patch", "courses/1", "-d", "{}", "--yes"], "prompt"),
             (["/usr/local/libexec/canvas_api_guard.py", "delete", "courses/1", "--yes"], "prompt"),
-            (["./canvas_api_guard.py", "put", "courses/1", "--yes"], "prompt"),
-            (["python3", "canvas_api_guard.py", "put", "courses/1", "--yes"], "prompt"),
-            (["python", "/usr/local/libexec/canvas_api_guard.py", "delete", "courses/1"], "prompt"),
+            (["canvas_api_guard.py", "get", "courses/1"], "none"),
+            (["./canvas_api_guard.py", "put", "courses/1", "--yes"], "none"),
+            (["python3", "/usr/local/libexec/canvas_api_guard.py", "put", "courses/1", "--yes"], "none"),
             (["security", "find-generic-password", "-s", "canvas-api-guard", "-w"], "forbidden"),
             (["secret-tool", "lookup", "service", "canvas-api-guard"], "forbidden"),
             (["/usr/bin/security", "find-generic-password", "-s", "canvas-api-guard", "-w"],
@@ -689,6 +778,39 @@ class TestCodexRules(unittest.TestCase):
             rules = handle.read()
         for verb in sorted(guard.VERBS):
             self.assertIn('"%s"' % verb, rules, "verb %r is not in the rules file" % verb)
+
+
+class TestInstallerPlan(unittest.TestCase):
+    """The review step must be useful and must not require root or touch external state."""
+
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+    INSTALLER = os.path.join(ROOT, "install.sh")
+
+    def run_installer(self, *args):
+        import subprocess
+        return subprocess.run([self.INSTALLER] + list(args), cwd=self.ROOT,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True)
+
+    def test_help_is_successful(self):
+        proc = self.run_installer("--help")
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("--plan", proc.stdout)
+
+    def test_plan_lists_every_reviewed_hash_and_destination(self):
+        proc = self.run_installer("--plan", "--host", HOST)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        for label in ("guard sha:", "rules sha:", "skill sha:", "Canvas host:",
+                      "executable:", "config:", "audit log:", "Codex rules:",
+                      "Codex skill:"):
+            self.assertIn(label, proc.stdout)
+        self.assertIn("no changes made", proc.stdout)
+        self.assertIn("does not read or store a token", proc.stdout)
+
+    def test_invalid_host_is_refused(self):
+        proc = self.run_installer("--plan", "--host", "https://evil.example/x")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("invalid Canvas host", proc.stderr)
 
 
 if __name__ == "__main__":

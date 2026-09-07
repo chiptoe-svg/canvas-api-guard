@@ -1,5 +1,9 @@
 # Codex-Native Review Implementation Plan
 
+> Historical implementation record, superseded by [`../../IT-REVIEW.md`](../../IT-REVIEW.md)
+> and the current README. Its checklists and command examples are retained as provenance only;
+> do not use them to install or operate the current release.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `canvas_api_guard.py` the only path from Codex to Canvas, with the token out of Codex's reach in normal use, every call logged with its source, and every write approved by a person inside Codex's own prompt.

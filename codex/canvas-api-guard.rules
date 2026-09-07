@@ -1,6 +1,6 @@
 # canvas-api-guard rules for Codex. Install at ~/.codex/rules/canvas-api-guard.rules
 # (install.sh does this). Check a command with:
-#   codex execpolicy check --rules codex/canvas-api-guard.rules -- canvas_api_guard.py put courses/1 --yes
+#   codex execpolicy check --rules codex/canvas-api-guard.rules -- /usr/local/libexec/canvas_api_guard.py put courses/1 --yes
 #
 # allow     runs the command OUTSIDE the sandbox without a prompt (the guard needs the
 #           network and the credential store, both blocked inside the sandbox).
@@ -8,34 +8,28 @@
 # forbidden refuses the command.
 # When several rules match, the most restrictive wins.
 
-GUARD = ["canvas_api_guard.py", "/usr/local/libexec/canvas_api_guard.py", "./canvas_api_guard.py"]
+GUARD = "/usr/local/libexec/canvas_api_guard.py"
 WRITES = ["post", "put", "patch", "delete"]
 
 prefix_rule(
     pattern = [GUARD, "get"],
     decision = "allow",
     justification = "Canvas read through the guard: logged, no approval needed",
-    match = ["canvas_api_guard.py get courses",
+    match = ["/usr/local/libexec/canvas_api_guard.py get courses",
              "/usr/local/libexec/canvas_api_guard.py get courses/1/students?per_page=100 -o json"],
-    not_match = ["canvas_api_guard.py put courses/1"],
+    not_match = ["/usr/local/libexec/canvas_api_guard.py put courses/1",
+                 "./canvas_api_guard.py get courses"],
 )
 
 prefix_rule(
     pattern = [GUARD, WRITES],
     decision = "prompt",
     justification = "Canvas WRITE: review the path and the body before it is sent",
-    match = ["canvas_api_guard.py put courses/1/assignments/2 -d {} --yes",
-             "/usr/local/libexec/canvas_api_guard.py delete courses/1/assignments/2 --yes",
-             "./canvas_api_guard.py post courses/1/assignments -d {} --yes"],
-    not_match = ["canvas_api_guard.py get courses/1"],
-)
-
-prefix_rule(
-    pattern = [["python3", "python"], GUARD, WRITES],
-    decision = "prompt",
-    justification = "Canvas WRITE via the interpreter: review the path and the body before it is sent",
-    match = ["python3 canvas_api_guard.py patch courses/1/assignments/2 -d {} --yes"],
-    not_match = ["python3 canvas_api_guard.py get courses/1"],
+    match = ["/usr/local/libexec/canvas_api_guard.py put courses/1/assignments/2 -d {} --yes",
+             "/usr/local/libexec/canvas_api_guard.py delete courses/1/assignments/2 --yes"],
+    not_match = ["/usr/local/libexec/canvas_api_guard.py get courses/1",
+                 "python3 /usr/local/libexec/canvas_api_guard.py put courses/1 --yes",
+                 "./canvas_api_guard.py post courses/1/assignments -d {} --yes"],
 )
 
 # A full path is a different literal token to the matcher, so every path a credential tool

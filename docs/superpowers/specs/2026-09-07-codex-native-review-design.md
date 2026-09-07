@@ -1,5 +1,9 @@
 # Codex-native review: the guard as the only Canvas path from Codex
 
+> Historical design record, superseded by [`../../IT-REVIEW.md`](../../IT-REVIEW.md) and the
+> current README. Commands and assumptions below describe an earlier iteration and are not
+> installation or operating instructions.
+
 Date: 2026-09-07
 Status: approved in discussion, awaiting review of this document
 
