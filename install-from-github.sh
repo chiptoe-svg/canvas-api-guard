@@ -23,6 +23,9 @@ usage: install-from-github.sh --ref FULL_COMMIT_SHA --host school.instructure.co
 Downloads exactly FULL_COMMIT_SHA, creates a private self-deleting .command launcher, and
 opens it in macOS Terminal. Terminal prompts for the Mac administrator password and then the
 Canvas API token. Neither secret is passed to this bootstrap or stored in the launcher.
+
+When Codex runs this bootstrap, the command must be granted host/GUI execution permission;
+macOS applications cannot be launched from the normal Codex filesystem sandbox.
 EOF
 }
 
@@ -114,7 +117,7 @@ chmod 0700 "$LAUNCHER"
 trap - EXIT HUP INT TERM
 "$OPEN_BIN" -a "$TERMINAL_APP" "$LAUNCHER" || {
     rm -f "$LAUNCHER"
-    die "macOS could not open the Terminal launcher; checkout retained at $CHECKOUT"
+    die "macOS could not open the Terminal launcher. If Codex ran this command, it must be rerun with host/GUI execution permission; checkout retained at $CHECKOUT"
 }
 
 printf 'Opened a visible macOS Terminal installation window.\n'

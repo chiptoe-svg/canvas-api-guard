@@ -104,6 +104,12 @@ The bootstrap addresses Terminal by its fixed macOS system path,
 `/System/Applications/Utilities/Terminal.app`; it does not depend on application-name lookup or
 the machine's `.command` file association.
 
+Opening a macOS application is outside Codex's normal filesystem sandbox. When Codex starts this
+bootstrap, it must run the exact pinned command with host/GUI execution permission. This is the
+normal scoped command approval needed to open Terminal, not a second installation-phase approval.
+Running the command without that permission can make Launch Services report the misleading
+`kLSNoExecutableErr` even though Terminal is installed.
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/FULL_COMMIT_SHA/install-from-github.sh \
   | sh -s -- --ref FULL_COMMIT_SHA --host school.instructure.com
@@ -112,7 +118,8 @@ curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/FULL_C
 The Terminal workflow compiles and tests the downloaded source, prints the installation plan,
 installs the root-owned files with `sudo`, stores the token, reports the installed version, and
 waits for Return before closing. It makes no Canvas API request. If Terminal cannot be opened,
-the bootstrap reports failure rather than claiming a prompt is visible.
+the bootstrap reports failure rather than claiming a prompt is visible and tells a Codex user
+that host/GUI execution permission is required.
 
 ### Copy/paste installation from a reviewed checkout (macOS and Linux)
 

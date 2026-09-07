@@ -844,6 +844,11 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertIn('"$OPEN_BIN" -a "$TERMINAL_APP" "$LAUNCHER"', script)
         self.assertNotIn('-a Terminal', script)
 
+    def test_github_bootstrap_explains_codex_gui_permission(self):
+        with open(self.BOOTSTRAP) as handle:
+            script = handle.read()
+        self.assertIn("host/GUI execution permission", script)
+
 
 if __name__ == "__main__":
     unittest.main()

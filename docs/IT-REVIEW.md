@@ -150,6 +150,12 @@ successful installation, the guard itself requests the Canvas token with hidden 
 it in Keychain. The launcher deletes only itself; the reviewed checkout remains available for
 inspection. No Canvas API request is made.
 
+Codex's ordinary filesystem sandbox cannot launch macOS applications. Therefore, Codex must run
+the exact immutable bootstrap command with scoped host/GUI execution permission. Without that
+permission, Launch Services may return `kLSNoExecutableErr` even when Terminal and its executable
+are present. This permission is only the platform approval for the bootstrap command; the
+Terminal workflow does not add a second approval gate after displaying the installation plan.
+
 The raw bootstrap URL should use the same immutable commit supplied to `--ref`. A mutable branch
 URL such as `main` is not the reviewed installation contract.
 
