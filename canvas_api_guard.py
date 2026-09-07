@@ -25,7 +25,7 @@
 # READ TOP TO BOTTOM: constants, token, logging, host pinning, the one request function,
 # confirmation, evidence, verbs, argparse, main.
 
-import argparse, datetime, getpass, json, os, shutil, subprocess, sys
+import argparse, datetime, getpass, json, os, re, shutil, subprocess, sys
 import urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
@@ -286,16 +286,16 @@ def summarise(obj, limit=10):
 
 def next_link(headers, host):
     """Canvas paginates lists with a Link header. Return the rel="next" URL's path and query,
-    pinned to the host, or None. Nothing is followed automatically."""
+    pinned to the host, or None. Raises GuardError if that link leaves the pinned host.
+    Nothing is followed automatically."""
     link = headers.get("Link") or headers.get("link") or ""
-    for part in link.split(","):
-        if 'rel="next"' not in part:
-            continue
-        parsed = urllib.parse.urlsplit(part.split(";")[0].strip().strip("<>"))
-        if parsed.netloc != host:
-            raise GuardError("next-page link points off the pinned host: %r" % parsed.netloc)
-        return parsed.path + (("?" + parsed.query) if parsed.query else "")
-    return None
+    match = re.search(r'<([^>]+)>\s*;\s*rel="?next"?', link)
+    if not match:
+        return None
+    parsed = urllib.parse.urlsplit(match.group(1))
+    if parsed.netloc != host:
+        raise GuardError("next-page link points off the pinned host: %r" % parsed.netloc)
+    return parsed.path + (("?" + parsed.query) if parsed.query else "")
 
 def emit(cfg, ev):
     """Render the evidence, and record a short form of it (before/after) in the log."""

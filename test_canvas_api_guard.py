@@ -493,6 +493,12 @@ class TestNextPage(GuardTestCase):
         self.assertIsNone(guard.next_link({}, HOST))
         self.assertIsNone(guard.next_link({"link": '<https://%s/x>; rel="last"' % HOST}, HOST))
 
+    def test_a_comma_or_semicolon_inside_the_url_does_not_break_parsing(self):
+        link = ('<https://%s/api/v1/courses?ids=1,2;x=y&page=1>; rel="current",'
+                '<https://%s/api/v1/courses?ids=1,2;x=y&page=2>; rel="next"') % (HOST, HOST)
+        self.assertEqual(guard.next_link({"Link": link}, HOST),
+                         "/api/v1/courses?ids=1,2;x=y&page=2")
+
 
 if __name__ == "__main__":
     unittest.main()
