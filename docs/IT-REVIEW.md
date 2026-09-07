@@ -151,6 +151,18 @@ the reviewed checkout remains available for inspection. No Canvas API request is
 The raw bootstrap URL should use the same immutable commit supplied to `--ref`. A mutable branch
 URL such as `main` is not the reviewed installation contract.
 
+### Cross-platform reviewed-checkout alternative
+
+The README also supplies a terminal copy/paste workflow for macOS and Linux. It clones a full
+immutable commit, checks out detached HEAD, verifies the resulting SHA, runs the offline tests
+and installation plan, then invokes the same root installer through the terminal's `sudo`.
+After installation, the guard requests the token through hidden input in that same terminal.
+
+This alternative does not use Launch Services or a generated launcher. On Linux it requires a
+working user Secret Service session and the trusted `secret-tool` path enforced by the guard.
+The checkout remains in the system temporary directory for review rather than being deleted
+automatically.
+
 ## Level 1 versus future Level 2
 
 Level 1 intentionally permits every supported method and path allowed by the Canvas token.

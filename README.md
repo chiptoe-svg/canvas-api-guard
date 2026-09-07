@@ -110,6 +110,35 @@ installs the root-owned files with `sudo`, stores the token, reports the install
 waits for Return before closing. It makes no Canvas API request. If Terminal cannot be opened,
 the bootstrap reports failure rather than claiming a prompt is visible.
 
+### Copy/paste installation from a reviewed checkout (macOS and Linux)
+
+This alternative runs entirely in the terminal where it is pasted. Both the administrator
+password and token use that terminal's hidden input. Replace the commit only after reviewing a
+newer revision; never substitute `main` or another mutable branch name.
+
+```sh
+(
+  set -eu
+  guard_commit="f98eb447e4b6bacd6cc5a41d5870ed7ff291a534"
+  guard_checkout="$(mktemp -d)/canvas-api-guard"
+  git clone --quiet https://github.com/chiptoe-svg/canvas-api-guard.git "$guard_checkout"
+  git -C "$guard_checkout" checkout --quiet --detach "$guard_commit"
+  test "$(git -C "$guard_checkout" rev-parse HEAD)" = "$guard_commit"
+  cd "$guard_checkout"
+  python3 -m unittest
+  ./install.sh --plan --host clemson.instructure.com
+  sudo ./install.sh --host clemson.instructure.com
+  echo
+  echo "Installation complete. Now enter your Canvas API token:"
+  /usr/local/libexec/canvas_api_guard.py --set-token
+)
+```
+
+The method supports macOS and Linux. Linux requires `sudo` plus an available desktop Secret
+Service and a trusted, root-owned `secret-tool` at `/usr/bin/secret-tool` or
+`/usr/local/bin/secret-tool`. A headless Linux host without an unlocked user keyring will refuse
+token storage. The temporary reviewed checkout is intentionally retained for inspection.
+
 ## Usage
 
 Paths may be `/api/v1/courses/123`, `api/v1/courses/123`, or `courses/123`. A path containing
