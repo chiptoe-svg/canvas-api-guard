@@ -205,7 +205,9 @@ $ grep -n "https://" canvas_api_guard.py
 ```
 
 One hit inside `canvas_url()`; `next_link()` parses a URL Canvas sent and refuses one
-whose host differs.
+whose host differs. Redirects are refused (`RefuseRedirects`), so the followed URL is always
+the built one: `urlopen` would otherwise forward the `Authorization` header to the new
+location, another host or an `http://` downgrade included.
 
 **4. The log is written before the request.** In `send_request()`, the `"event": "request"`
 log line precedes the one network call:
@@ -266,7 +268,7 @@ reads the log from inside the call, and a matrix test that evaluates the shipped
 file with Codex's own checker (skipped when Codex is absent):
 
 ```sh
-python3 -m unittest -v      # 48 tests; no test reaches the network or a real credential store
+python3 -m unittest -v      # 51 tests; no test reaches the network or a real credential store
 ```
 
 Requires Python 3.9+. No pip, no venv, no dependencies.

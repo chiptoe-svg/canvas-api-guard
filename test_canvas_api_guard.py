@@ -11,6 +11,7 @@ import os
 import shutil
 import tempfile
 import unittest
+import urllib.request
 from unittest import mock
 
 import canvas_api_guard as guard
@@ -383,6 +384,33 @@ class TestEvidence(GuardTestCase):
             code, output = self.run_main(["delete", "courses/1/assignments/2", "--yes"])
         self.assertEqual(code, 0)
         self.assertIn("read-back after delete: gone", output)
+
+
+class TestRedirectsAreRefused(unittest.TestCase):
+    """urllib forwards the Authorization header across a redirect, to another host or an
+    http:// downgrade included. Every redirect is refused instead, so the URL that carries
+    the token is always the one canvas_url() built."""
+
+    def redirect_to(self, newurl, code=302):
+        request = urllib.request.Request("https://%s/api/v1/courses" % HOST)
+        return guard.RefuseRedirects().redirect_request(request, None, code, "Found", {}, newurl)
+
+    def test_a_redirect_to_another_host_is_refused_and_names_the_url(self):
+        with self.assertRaises(guard.GuardError) as caught:
+            self.redirect_to("http://attacker.example.com/x")
+        self.assertIn("attacker.example.com", str(caught.exception))
+        self.assertIn("redirect", str(caught.exception))
+
+    def test_a_redirect_on_the_pinned_host_is_refused_too(self):
+        with self.assertRaises(guard.GuardError) as caught:
+            self.redirect_to("https://%s/api/v1/courses?page=2" % HOST, code=301)
+        self.assertIn(HOST, str(caught.exception))
+
+    def test_the_refusing_opener_is_the_installed_one(self):
+        opener = urllib.request._opener
+        self.assertIsNotNone(opener)
+        self.assertTrue(any(isinstance(handler, guard.RefuseRedirects)
+                            for handler in opener.handlers))
 
 
 class FakeProc(object):

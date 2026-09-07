@@ -220,7 +220,18 @@ def refuse_unconfigured_host(cfg, explicit, configured, path):
     raise GuardError(message)
 
 # -------------------------------------------------------------------- the one request function
-# There is exactly one call to urlopen in this file. Everything else routes through here.
+# There is exactly one call to urlopen in this file. Everything else routes through here, and
+# the URL it opens is the one canvas_url() built: urllib would otherwise follow a redirect and
+# forward the Authorization header to the new location, another host or an http:// downgrade
+# included, so every redirect is refused instead.
+class RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Installed as the opener below: no redirect is ever followed."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise GuardError("refusing to follow a redirect (%s) to %r: the token is sent only to "
+                         "the pinned URL" % (code, newurl))
+
+urllib.request.install_opener(urllib.request.build_opener(RefuseRedirects))
+
 def send_request(cfg, method, path, body=None):
     """The ONLY function that performs network I/O. It logs before it does."""
     method = method.upper()
