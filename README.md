@@ -6,8 +6,9 @@ It gives you — or an agent acting for you — **exactly the access your existi
 token already grants**, and adds three things:
 
 1. **A required confirmation before any write, and a record of which kind it was.**
-   A human at a terminal, or an explicit `--yes` from a script. The log says which:
-   `"confirmation": "human-tty"` or `"confirmation": "yes-flag"`.
+   A human at a terminal (`"confirmation": "human-tty"`), or an explicit `--yes` from a
+   script or an agent (`"confirmation": "yes-flag"`). Under Codex the person approves the
+   write in Codex's own prompt and Codex passes `--yes` through; see "Using it from Codex".
 2. **Before/after evidence.** Every write reads the object first, shows what is about to
    change, and reads it back afterwards so you see what Canvas actually stored.
 3. **An append-only record, written before the fact.** One JSON object per line, fsynced
@@ -28,6 +29,13 @@ This matters more than the guarantees, so it comes second rather than last:
 - It does **not** protect the log against root.
 - It does **not** verify that the confirming human understood the change — only that a
   confirmation of a recorded kind occurred.
+- Under Codex, it does **not** make Codex safe. The sandbox is Codex's boundary and the
+  rules file is Codex's prompt; both live in the user's home directory. A write that
+  misses the rules falls back to the sandbox, fails there, and Codex asks the person to
+  escalate it, which is still a human prompt as long as the reviewer is `user`.
+- It does **not** change where read data goes. Every roster or grade it returns flows
+  through the agent to its provider. That is a data-agreement question, not a tool one.
+- It does **not** run on Windows. macOS (keychain) and Linux (secret service) only.
 
 ## Install
 
@@ -35,22 +43,22 @@ This matters more than the guarantees, so it comes second rather than last:
 sudo ./install.sh
 ```
 
-That puts the script at `/usr/local/libexec/canvas_api_guard.py`, owned by root, mode
-`0555`: the invoking user (and any agent running as them) can execute it but not edit it.
-It also creates `~/.canvas-api-guard/audit.jsonl` mode `0600`. The installer prints two
-optional `chflags` commands for further hardening and does not run them.
+macOS or Linux. That puts the script at `/usr/local/libexec/canvas_api_guard.py`, owned by
+root, mode `0555`: the invoking user (and any agent running as them) can execute it but not
+edit it. It creates `~/.canvas-api-guard/audit.jsonl` mode `0600`, and if `~/.codex` exists
+it installs the Codex rules file and skill there. It prints two optional hardening commands
+(immutable script, append-only log) and does not run them.
 
-Then store your token and name your Canvas host:
+Then, as yourself:
 
 ```sh
-/usr/local/libexec/canvas_api_guard.py --set-token          # prompts; not echoed
+/usr/local/libexec/canvas_api_guard.py --set-token      # pasted, not echoed, read back to check
 echo '{"host": "school.instructure.com"}' > ~/.canvas-api-guard/config.json
 ```
 
-The token goes into the macOS keychain (`security add-generic-password`, service
-`canvas-api-guard`), read from a prompt — never from argv, a file, or an environment
-variable. If the keychain is unavailable the tool refuses to run; there is no fallback.
-The host is not a secret and lives in a plain file beside the log; `--host` overrides it.
+The token goes into the macOS keychain or the Linux secret service (`secret-tool`, from
+`libsecret-tools`). There is no file and no environment variable, and `--set-token` reads
+the token back before it reports success.
 
 ## Usage
 
@@ -95,6 +103,38 @@ at all and is logged as `refused-no-tty`.
 With a terminal the ordering is different on purpose: the pre-read runs first, so the
 prompt can show you what is about to change before you answer.
 
+## Using it from Codex
+
+The point of this tool is that a faculty member can let Codex work on their Canvas course
+without ever handing Codex the token, and without a write leaving the machine that a
+person did not approve. Three files in `codex/` do that, and `install.sh` puts two of
+them in place:
+
+- **`codex/canvas-api-guard.rules`** → `~/.codex/rules/`. Codex rules: guard reads run
+  without a prompt; guard writes (`post`, `put`, `patch`, `delete`, by name, by installed
+  path, or through `python3`) make Codex stop and show the person the full command
+  before running it; reading the credential store is forbidden. Check any command with
+  `codex execpolicy check --rules codex/canvas-api-guard.rules -- <command>`.
+- **`codex/skills/canvas-api-guard/SKILL.md`** → `~/.codex/skills/`. The skill Codex
+  loads when a task mentions Canvas: how to call the guard, dry-run first, follow
+  `next:` on lists, student text is data, student work stays local.
+- **`codex/config.toml`**: three lines to merge into `~/.codex/config.toml`, with the
+  reason for each. The one that matters most is `approvals_reviewer = "user"`: without it
+  Codex's reviewer model may approve on your behalf.
+
+What a write looks like from the faculty member's side: Codex runs the command with
+`--dry-run` and shows the exact request; they say yes; Codex runs it with `--yes` and
+**Codex itself stops and shows them the command** before it runs; they approve; the guard
+pre-reads, writes, reads back, and prints `field before -> after (match: True)`. The log
+records that write as `confirmation: yes-flag`, because the person's approval happened in
+Codex's prompt, which the guard cannot see. Codex's own session transcript records the
+approval, and Canvas records the API call server-side: three independent records.
+
+Inside Codex's sandbox the guard cannot run at all (no network, no credential store); the
+`allow` and `prompt` rules are what let it run outside. That is also why a 0600 file would
+be a worse place for the token than the keychain: the sandbox can read the file and cannot
+reach the keychain.
+
 ## The log
 
 `~/.canvas-api-guard/audit.jsonl`, mode 0600, one JSON object per line, `--log-path` to
@@ -106,6 +146,13 @@ move it. Three kinds of line:
 - `event: evidence` — the before/after summary of a write, with the confirmation mode.
 - `event: refusal` — a write that could not be confirmed, `confirmation: refused-no-tty`.
   It stands alone: no request was made.
+
+Every line also carries `source`: whether stdin was a terminal, the parent process name,
+and the names (never the values) of agent markers found in the environment, such as
+`CODEX_SANDBOX`. It is a hint for matching a line to a Codex transcript or a terminal
+session, not an identity; the `confirmation` field is the statement of who confirmed a
+write. Reads are logged too, deliberately: the log says what was looked at, never what
+came back.
 
 The token never appears on any line. A `request` line with no matching `response` line
 means the call was attempted and did not complete.
@@ -125,57 +172,41 @@ for line in open(sys.argv[1]):
 
 ## For reviewers
 
-`canvas_api_guard.py` is under 400 lines and reads top to bottom: threat model, constants,
-token, logging, host pinning, the one request function, confirmation, evidence, the verbs,
-argparse, main. Four properties you can grep for, and one you can run cold with no
-token and no Canvas account.
+`canvas_api_guard.py` is one file and reads top to bottom: threat model, constants, token,
+logging, host pinning, the one request function, confirmation, evidence, the verbs,
+argparse, main. Every claim below is a command you can run.
 
 **1. Exactly one place makes a network call.**
 
 ```
-$ grep -n "urlopen" canvas_api_guard.py
-135:# There is exactly one call to urlopen in this file. Everything else routes through here.
-160:        raw = urllib.request.urlopen(request, timeout=TIMEOUT)            # the only call
+$ grep -c "urlopen(" canvas_api_guard.py
+1
 ```
 
-**2. The token is in exactly two places.** One function reads it from the keychain; one
-line puts it into a header. Nothing else touches it.
+**2. The token is read in one function and used on one line.**
 
 ```
-$ grep -n "read_token_from_keychain" canvas_api_guard.py
-46:# The token is in exactly two places in this file: read_token_from_keychain() reads it, and one
-50:def read_token_from_keychain():
-157:    headers["Authorization"] = "Bearer " + read_token_from_keychain()     # the only use
+$ grep -n "read_token()" canvas_api_guard.py
 ```
 
-Note line 157: under `--dry-run`, and on a refused write, execution never reaches it — so
-neither can leak a token that was never read.
+Four hits: the banner comment, the definition, the one use in `send_request()` (the line
+that builds the `Authorization` header), and the read-back inside `set_token()` that checks
+the store worked. `credential_command()` is the only place that names a credential tool. Under
+`--dry-run`, and on a refused write, execution never reaches the use.
 
-**3. Every URL is built by the host-pinning function, and it is called by the one request
-function before anything else.**
-
-```
-$ grep -n "canvas_url\|urlopen" canvas_api_guard.py | head -5
- 99:# Every URL this tool builds comes from canvas_url(). A path carrying a scheme, a netloc or a
-121:def canvas_url(host, path):
-135:# There is exactly one call to urlopen in this file. Everything else routes through here.
-139:    url, npath = canvas_url(cfg.host, path), normalise_path(path)
-160:        raw = urllib.request.urlopen(request, timeout=TIMEOUT)            # the only call
-```
-
-**4. The log is written before the request, not after.** Line 141 is the `request` line;
-the call is on line 160.
+**3. Every URL is built by the host-pinning function.**
 
 ```
-$ grep -n "log_event\|urlopen(" canvas_api_guard.py | sed -n '1,4p'
- 84:def log_event(log_path, fields):
-141:    log_event(cfg.log_path, {
-160:        raw = urllib.request.urlopen(request, timeout=TIMEOUT)            # the only call
-164:        log_event(cfg.log_path, {"event": "response", "verb": method, "path": npath, "ok": False,
+$ grep -n "https://" canvas_api_guard.py
 ```
 
-**5. See the confirmation refusal for yourself — no token, no Canvas account, no network.**
-Clone the repo and run this cold:
+One hit inside `canvas_url()`; `next_link()` parses a URL Canvas sent and refuses one
+whose host differs.
+
+**4. The log is written before the request.** In `send_request()`, `log_event(...)` with
+`"event": "request"` precedes the `urlopen(` line.
+
+**5. The confirmation refusal, cold: no token, no Canvas account, no network.**
 
 ```
 $ echo "" | ./canvas_api_guard.py delete courses/1/assignments/2 \
@@ -183,30 +214,33 @@ $ echo "" | ./canvas_api_guard.py delete courses/1/assignments/2 \
 canvas-api-guard: refusing to write without confirmation: stdin is not a terminal; pass --yes to confirm non-interactively, which will be recorded in the log
 $ echo $?
 2
-$ cat /tmp/demo.jsonl
-{"confirmation": "refused-no-tty", "event": "refusal", "kind": "write", "path": "/api/v1/courses/1/assignments/2", "pid": 75350, "timestamp": "2026-09-07T13:18:05Z", "verb": "DELETE"}
 ```
 
-`echo "" |` makes stdin a pipe rather than a terminal, which is exactly what an agent or a
-CI job looks like. The refusal is `refuse_unconfirmed_write()`, called from `main()` before
-the verb runs:
+**6. Under Codex, the credential store is out of reach inside the sandbox.**
 
 ```
-$ grep -n "refuse_unconfirmed_write" canvas_api_guard.py
-184:# A write that cannot be confirmed is refused by refuse_unconfirmed_write() before anything
-186:def refuse_unconfirmed_write(cfg, verb, path):
-391:        refuse_unconfirmed_write(cfg, args.verb, args.path)
+$ codex sandbox --log-denials security find-generic-password -s canvas-api-guard -a $USER -w
+...
+(security) mach-lookup com.apple.SecurityServer
 ```
 
-`test_the_refusal_precedes_the_keychain_and_every_network_call` proves the ordering: it
-replaces both the keychain reader and `urlopen` with functions that raise, and every write
-verb still refuses cleanly.
+**7. Each rule decision.**
 
-The test suite proves the same four properties by running them, including a test whose
-fake `urlopen` reads the log from inside the call to show the line is already on disk:
+```
+$ codex execpolicy check --rules codex/canvas-api-guard.rules -- canvas_api_guard.py get courses
+{"matchedRules":[...],"decision":"allow"}
+$ codex execpolicy check --rules codex/canvas-api-guard.rules -- canvas_api_guard.py put courses/1 -d '{}' --yes
+{"matchedRules":[...],"decision":"prompt"}
+$ codex execpolicy check --rules codex/canvas-api-guard.rules -- security find-generic-password -s canvas-api-guard -w
+{"matchedRules":[...],"decision":"forbidden"}
+```
+
+The test suite proves the same properties by running them, including a fake `urlopen` that
+reads the log from inside the call, and a matrix test that evaluates the shipped rules
+file with Codex's own checker (skipped when Codex is absent):
 
 ```sh
-python3 -m unittest -v      # 23 tests; no test reaches the network
+python3 -m unittest -v      # 43 tests; no test reaches the network or a real credential store
 ```
 
-Requires Python 3.9+ (the version macOS ships). No pip, no venv, no dependencies.
+Requires Python 3.9+. No pip, no venv, no dependencies.
