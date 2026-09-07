@@ -48,7 +48,8 @@ chmod 0600 "$LOG"
 echo "log ready at $LOG ($USER_NAME, 0600)"
 
 if [ -d "$CODEX_HOME" ]; then
-    install -d -o "$USER_NAME" -m 0755 "$CODEX_HOME/rules" "$CODEX_HOME/skills/canvas-api-guard"
+    install -d -o "$USER_NAME" -m 0755 "$CODEX_HOME/rules" "$CODEX_HOME/skills"
+    install -d -o "$USER_NAME" -m 0755 "$CODEX_HOME/skills/canvas-api-guard"
     install -o "$USER_NAME" -m 0644 "$SRC_DIR/codex/canvas-api-guard.rules" "$CODEX_HOME/rules/canvas-api-guard.rules"
     install -o "$USER_NAME" -m 0644 "$SRC_DIR/codex/skills/canvas-api-guard/SKILL.md" "$CODEX_HOME/skills/canvas-api-guard/SKILL.md"
     echo "Codex rules installed at $CODEX_HOME/rules/canvas-api-guard.rules"
