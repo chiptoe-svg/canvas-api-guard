@@ -500,5 +500,61 @@ class TestNextPage(GuardTestCase):
                          "/api/v1/courses?ids=1,2;x=y&page=2")
 
 
+def find_codex():
+    """The Codex CLI: on PATH, or bundled in the ChatGPT app. None if absent."""
+    import shutil
+    for candidate in (shutil.which("codex"), "/Applications/ChatGPT.app/Contents/Resources/codex"):
+        if candidate and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+class TestCodexRules(unittest.TestCase):
+    """The shipped rules file, evaluated by Codex itself. Skipped when Codex is absent."""
+    RULES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "codex",
+                         "canvas-api-guard.rules")
+
+    def setUp(self):
+        self.codex = find_codex()
+        if not self.codex:
+            self.skipTest("codex binary not found; the rules matrix was not checked")
+
+    def decision(self, argv):
+        import subprocess
+        proc = subprocess.run([self.codex, "execpolicy", "check", "--rules", self.RULES, "--"]
+                              + argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        text = (proc.stdout + proc.stderr).decode("utf-8", "replace").strip()
+        try:
+            return json.loads(text.splitlines()[-1]).get("decision", "none")
+        except (ValueError, IndexError):
+            self.fail("execpolicy check did not return JSON for %r:\n%s" % (argv, text))
+
+    def test_the_matrix(self):
+        rows = [
+            (["canvas_api_guard.py", "get", "courses/1"], "allow"),
+            (["/usr/local/libexec/canvas_api_guard.py", "get", "courses"], "allow"),
+            (["canvas_api_guard.py", "put", "courses/1/assignments/2", "-d", "{}", "--yes"], "prompt"),
+            (["canvas_api_guard.py", "post", "courses/1/assignments", "-d", "{}", "--yes"], "prompt"),
+            (["canvas_api_guard.py", "patch", "courses/1", "-d", "{}", "--yes"], "prompt"),
+            (["canvas_api_guard.py", "delete", "courses/1/assignments/2", "--yes"], "prompt"),
+            (["/usr/local/libexec/canvas_api_guard.py", "delete", "courses/1", "--yes"], "prompt"),
+            (["./canvas_api_guard.py", "put", "courses/1", "--yes"], "prompt"),
+            (["python3", "canvas_api_guard.py", "put", "courses/1", "--yes"], "prompt"),
+            (["python", "/usr/local/libexec/canvas_api_guard.py", "delete", "courses/1"], "prompt"),
+            (["security", "find-generic-password", "-s", "canvas-api-guard", "-w"], "forbidden"),
+            (["secret-tool", "lookup", "service", "canvas-api-guard"], "forbidden"),
+            (["security", "list-keychains"], "none"),
+        ]
+        for argv, want in rows:
+            self.assertEqual(self.decision(argv), want, " ".join(argv))
+
+    def test_every_guard_write_verb_has_a_prompt_rule(self):
+        """If the guard grows a verb, the rules file must grow with it."""
+        with open(self.RULES) as handle:
+            rules = handle.read()
+        for verb in sorted(guard.VERBS):
+            self.assertIn('"%s"' % verb, rules, "verb %r is not in the rules file" % verb)
+
+
 if __name__ == "__main__":
     unittest.main()
