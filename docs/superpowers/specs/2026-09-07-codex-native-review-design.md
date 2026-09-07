@@ -318,7 +318,35 @@ With the owner's permission given on 2026-09-07:
 
 ### Verification results
 
-Pending.
+**2026-09-07, non-interactive probe (`codex exec --json`, Codex CLI 0.150.0-alpha.8
+bundled in the ChatGPT app), reviewer set to `user`, draft rules installed.**
+
+- Codex wrapped every command as `/bin/zsh -lc '<script>'`.
+- Command 1, the `get`, ran with **no approval** and reached the guard (it failed on the
+  missing token, as expected, and its request line landed in the log). The session ran
+  under the `untrusted` approval policy (see below), under which only rule-allowed or
+  known-safe commands run unprompted, so this shows the **allow rule matched through the
+  shell wrapper**: the offline checker's "no rule matched" for wrapped commands does not
+  reflect the runtime, which splits the wrapper as the docs describe.
+- Command 2, the `put --dry-run`, **required approval before running** and, since
+  `codex exec` cannot prompt, was rejected and never ran. Consistent with the prompt rule
+  matching through the wrapper; not yet distinguished from the `untrusted` policy asking on
+  its own. The interactive session (Task 10) settles that.
+- Command 3, `env | grep ...`, also required approval: a pipeline mixing a rule-allowed
+  command with unmatched ones is asked about as a whole. Which `CODEX_*` names a
+  rule-allowed command sees outside the sandbox therefore remains open; after the source
+  field lands, the guard's own log answers it (Task 10).
+- Surprise: `codex exec` reported that its default `approval_policy = never` "is
+  disallowed by requirements; falling back to required value UnlessTrusted". The full message
+  names the source: "set by enterprise-managed requirements (Default requirements)", with
+  the allowed set `[UnlessTrusted, OnRequest]`. That is the ChatGPT Work workspace this
+  account belongs to pushing a Codex policy to the client; no local requirements file
+  exists. It does not change the design (the recommended `on-request` is in the allowed
+  set), and it is good news for IT: the same mechanism can pin `approval_policy` and
+  `approvals_reviewer = "user"` for every faculty member centrally, rather than relying on
+  each one's config file. Worth raising with whoever administers the workspace.
+
+**Interactive session:** pending the owner (Task 10).
 
 ## Out of scope
 
