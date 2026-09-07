@@ -38,11 +38,17 @@ prefix_rule(
     not_match = ["python3 canvas_api_guard.py get courses/1"],
 )
 
+# A full path is a different literal token to the matcher, so every path a credential tool
+# is reachable by is listed here: "security ..." forbidden but "/usr/bin/security ..." allowed
+# would be no rule at all.
 prefix_rule(
-    pattern = [["security", "secret-tool"], ["find-generic-password", "lookup"]],
+    pattern = [["security", "/usr/bin/security", "secret-tool", "/usr/bin/secret-tool",
+                "/usr/local/bin/secret-tool"], ["find-generic-password", "lookup"]],
     decision = "forbidden",
     justification = "The agent never needs the raw Canvas token",
     match = ["security find-generic-password -s canvas-api-guard -w",
-             "secret-tool lookup service canvas-api-guard"],
+             "secret-tool lookup service canvas-api-guard",
+             "/usr/bin/security find-generic-password -s canvas-api-guard -w",
+             "/usr/bin/secret-tool lookup service canvas-api-guard"],
     not_match = ["security list-keychains"],
 )

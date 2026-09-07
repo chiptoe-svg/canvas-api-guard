@@ -654,6 +654,9 @@ class TestCodexRules(unittest.TestCase):
             (["python", "/usr/local/libexec/canvas_api_guard.py", "delete", "courses/1"], "prompt"),
             (["security", "find-generic-password", "-s", "canvas-api-guard", "-w"], "forbidden"),
             (["secret-tool", "lookup", "service", "canvas-api-guard"], "forbidden"),
+            (["/usr/bin/security", "find-generic-password", "-s", "canvas-api-guard", "-w"],
+             "forbidden"),
+            (["/usr/bin/secret-tool", "lookup", "service", "canvas-api-guard"], "forbidden"),
             (["security", "list-keychains"], "none"),
         ]
         for argv, want in rows:

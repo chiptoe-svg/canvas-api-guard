@@ -70,29 +70,33 @@ Anything containing a scheme, a host, or `..` is refused.
 ... --dry-run`, never `canvas_api_guard.py --dry-run put <path>`. (`--set-token` is the
 one exception; it takes no verb.)
 
-```sh
-guard=/usr/local/libexec/canvas_api_guard.py
+Write the command out in full every time. Codex's approval rules match the literal
+command, so a variable, an alias, a wrapper script or a relative path after a `cd`
+matches no rule and lands in the sandbox instead of in front of a person.
 
+```sh
 # read - no confirmation
-$guard get courses/123
-$guard get "courses/123/students?per_page=100" -o json
+/usr/local/libexec/canvas_api_guard.py get courses/123
+/usr/local/libexec/canvas_api_guard.py get "courses/123/students?per_page=100" -o json
 
 # see exactly what would be sent, without sending it or reading the token
-$guard put courses/123/assignments/9/submissions/7 \
+/usr/local/libexec/canvas_api_guard.py put courses/123/assignments/9/submissions/7 \
       -d '{"submission": {"posted_grade": 95}}' --dry-run
 
 # write from a terminal - prompts, and records confirmation: human-tty
-$guard put courses/123/assignments/9/submissions/7 \
+/usr/local/libexec/canvas_api_guard.py put courses/123/assignments/9/submissions/7 \
       -d '{"submission": {"posted_grade": 95}}'
 
 # write from a script or an agent - must pass --yes, recorded as confirmation: yes-flag
-$guard patch courses/123/assignments/9 -d '{"assignment": {"points_possible": 20}}' --yes
+/usr/local/libexec/canvas_api_guard.py patch courses/123/assignments/9 \
+      -d '{"assignment": {"points_possible": 20}}' --yes
 
 # create - the new object is read back by its id (or Location) and printed
-$guard post courses/123/assignments -d '{"assignment": {"name": "Lab 4"}}'
+/usr/local/libexec/canvas_api_guard.py post courses/123/assignments \
+      -d '{"assignment": {"name": "Lab 4"}}'
 
 # destroy - the object is shown before you confirm, and read back afterwards
-$guard delete courses/123/assignments/9
+/usr/local/libexec/canvas_api_guard.py delete courses/123/assignments/9
 ```
 
 Without a TTY and without `--yes`, a write is refused **before the credential store is

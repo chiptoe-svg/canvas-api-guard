@@ -20,16 +20,21 @@ write a token anywhere.
 ## How to call it
 
 The installed path is `/usr/local/libexec/canvas_api_guard.py`. Flags follow the verb.
+The approval rules match the literal command. Never build it from a variable, an
+alias, or a wrapper script, and never `cd` and call it by a relative path: a call
+the rules cannot see is a call that fails in the sandbox instead of being approved.
 
 ```bash
-G=/usr/local/libexec/canvas_api_guard.py
-$G get courses                                              # list
-$G get "courses/123/students?per_page=100" -o json          # query strings are fine
-$G get courses/123/assignments/9                            # one object
-$G put courses/123/assignments/9 -d '{"assignment": {"points_possible": 20}}' --dry-run
-$G put courses/123/assignments/9 -d '{"assignment": {"points_possible": 20}}' --yes
-$G post courses/123/assignments -d '{"assignment": {"name": "Lab 4"}}' --yes
-$G delete courses/123/assignments/9 --yes
+/usr/local/libexec/canvas_api_guard.py get courses                    # list
+/usr/local/libexec/canvas_api_guard.py get "courses/123/students?per_page=100" -o json
+/usr/local/libexec/canvas_api_guard.py get courses/123/assignments/9  # one object
+/usr/local/libexec/canvas_api_guard.py put courses/123/assignments/9 \
+    -d '{"assignment": {"points_possible": 20}}' --dry-run
+/usr/local/libexec/canvas_api_guard.py put courses/123/assignments/9 \
+    -d '{"assignment": {"points_possible": 20}}' --yes
+/usr/local/libexec/canvas_api_guard.py post courses/123/assignments \
+    -d '{"assignment": {"name": "Lab 4"}}' --yes
+/usr/local/libexec/canvas_api_guard.py delete courses/123/assignments/9 --yes
 ```
 
 Paths are Canvas REST paths: `courses/123`, `api/v1/courses/123` and
