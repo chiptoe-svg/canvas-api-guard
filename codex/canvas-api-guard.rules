@@ -7,11 +7,19 @@
 # prompt    stops Codex and shows the person the full command line before running it.
 # forbidden refuses the command.
 # When several rules match, the most restrictive wins.
+#
+# Every subcommand of both programs appears in exactly one list below. The offline test suite
+# reads these lists and both argparse parsers, so a new command nobody classified fails it.
 
 GUARD = "/usr/local/libexec/canvas_api_guard.py"
 OPERATIONS = "/usr/local/libexec/canvas_api_operations.py"
-READS = ["get", "download-submission-file"]
+READS = ["get"]
 WRITES = ["post", "put", "patch", "delete"]
+DOWNLOADS = ["download-submission-file"]
+OPERATION_READS = ["student-attention", "attendance-summary"]
+OPERATION_PROMPTS = ["prepare-submission-review", "download-assignment-submissions",
+                     "create-rubric", "attach-rubric", "grade-with-rubric",
+                     "bulk-grade-with-rubric"]
 
 prefix_rule(
     pattern = [GUARD, READS],
@@ -19,7 +27,7 @@ prefix_rule(
     justification = "Canvas read through the guard: logged, no approval needed",
     match = ["/usr/local/libexec/canvas_api_guard.py get courses",
              "/usr/local/libexec/canvas_api_guard.py get courses/1/students?per_page=100 -o json",
-             "/usr/local/libexec/canvas_api_guard.py download-submission-file --course-id 1 --file-id 10 --submission-id 20 --suffix .pdf"],
+             "/usr/local/libexec/canvas_api_guard.py get courses/1/enrollments --all-pages --fields id"],
     not_match = ["/usr/local/libexec/canvas_api_guard.py put courses/1",
                  "./canvas_api_guard.py get courses"],
 )
@@ -35,36 +43,40 @@ prefix_rule(
                  "./canvas_api_guard.py post courses/1/assignments -d {} --yes"],
 )
 
-# Specialized Functions have no credential or HTTP code; they invoke API Only above for every
-# underlying Canvas request. Their analysis operations are read-only.
+# A download copies a student's submitted file onto the disk and hands it to the model. That
+# is a read of student work, not a routine list: the person sees the command first.
 prefix_rule(
-    pattern = [OPERATIONS, ["current-courses", "roster-count", "find-student", "needs-grading",
-                            "course-health", "assignment-performance", "student-attention",
-                            "student-trajectory", "attendance-summary", "prepare-submission-review",
-                            "download-assignment-submissions"]],
+    pattern = [GUARD, DOWNLOADS],
+    decision = "prompt",
+    justification = "Canvas submission file: a local copy of student work is about to be made",
+    match = ["/usr/local/libexec/canvas_api_guard.py download-submission-file --course-id 1 --file-id 10 --submission-id 20 --suffix .pdf"],
+    not_match = ["/usr/local/libexec/canvas_api_guard.py get files/10",
+                 "./canvas_api_guard.py download-submission-file --course-id 1"],
+)
+
+# Specialized Functions have no credential or HTTP code; they invoke API Only above for every
+# underlying Canvas request. These two only read and summarise.
+prefix_rule(
+    pattern = [OPERATIONS, OPERATION_READS],
     decision = "allow",
     justification = "Canvas read-only analysis through installed Specialized Functions",
-    match = ["/usr/local/libexec/canvas_api_operations.py current-courses",
-             "/usr/local/libexec/canvas_api_operations.py course-health --course-id 1",
-             "/usr/local/libexec/canvas_api_operations.py student-attention --course-id 1",
-             "/usr/local/libexec/canvas_api_operations.py prepare-submission-review --course-id 1 --assignment-id 2 --student-id 3",
-             "/usr/local/libexec/canvas_api_operations.py download-assignment-submissions --course-id 1 --assignment-id 2"],
-    not_match = ["./level2/canvas_api_operations.py course-health --course-id 1",
+    match = ["/usr/local/libexec/canvas_api_operations.py student-attention --course-id 1",
+             "/usr/local/libexec/canvas_api_operations.py attendance-summary --course-id 1"],
+    not_match = ["./level2/canvas_api_operations.py student-attention --course-id 1",
                  "/usr/local/libexec/canvas_api_operations.py create-rubric --course-id 1"],
 )
 
-# These are schema-limited instructor workflows. Codex shows the command to the instructor,
-# including a dry-run; the operation itself makes API Only print a precise plan and read-back
-# evidence for every underlying write.
+# The rest either write to Canvas or copy student work to disk. Codex shows the command to the
+# instructor, including a dry-run; the operation itself makes API Only print a precise plan and
+# read-back evidence for every underlying write.
 prefix_rule(
-    pattern = [OPERATIONS, ["create-rubric", "attach-rubric", "grade-with-rubric",
-                            "bulk-grade-with-rubric", "create-assignment", "update-assignment",
-                            "create-or-update-page", "create-announcement", "set-assignment-dates",
-                            "excuse-submission", "excuse-attendance"]],
+    pattern = [OPERATIONS, OPERATION_PROMPTS],
     decision = "prompt",
-    justification = "Canvas specialized WRITE: review the matching dry-run and JSON definition before it is sent",
+    justification = "Canvas specialized write or bulk copy of student work: review the matching dry-run and JSON definition before it is sent",
     match = ["/usr/local/libexec/canvas_api_operations.py create-rubric --course-id 1 --definition rubric.json --yes",
-             "/usr/local/libexec/canvas_api_operations.py bulk-grade-with-rubric --course-id 1 --assignment-id 2 --definition grades.json --yes"],
+             "/usr/local/libexec/canvas_api_operations.py bulk-grade-with-rubric --course-id 1 --assignment-id 2 --definition grades.json --yes",
+             "/usr/local/libexec/canvas_api_operations.py prepare-submission-review --course-id 1 --assignment-id 2 --student-id 3",
+             "/usr/local/libexec/canvas_api_operations.py download-assignment-submissions --course-id 1 --assignment-id 2"],
     not_match = ["./level2/canvas_api_operations.py create-rubric --course-id 1 --definition rubric.json --yes"],
 )
 

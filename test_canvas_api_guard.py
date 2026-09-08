@@ -5,6 +5,8 @@ Every test that touches the request path replaces urllib.request.urlopen, so the
 never reaches the network. Two tests prove that directly.
 """
 
+import argparse
+import importlib.util
 import io
 import json
 import os
@@ -20,6 +22,27 @@ import canvas_api_guard as guard
 
 TOKEN = "SECRET-TOKEN-DO-NOT-LEAK-9d41"
 HOST = "canvas.example.edu"
+
+OPERATIONS_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "level2",
+                                 "canvas_api_operations.py")
+
+
+def load_operations():
+    """Load the Level 2 program from the source tree, the way its own tests do."""
+    spec = importlib.util.spec_from_file_location("canvas_api_operations", OPERATIONS_SOURCE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def subcommand_names(parser):
+    """Every subcommand an argparse parser accepts. The rules matrix is driven from this, so a
+    command nobody classified cannot slip through."""
+    names = []
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            names.extend(action.choices)
+    return sorted(set(names))
 
 
 class FakeResponse(object):
@@ -1293,10 +1316,22 @@ class TestCodexRules(unittest.TestCase):
     def test_the_matrix(self):
         rows = [
             (["/usr/local/libexec/canvas_api_guard.py", "get", "courses"], "allow"),
+            (["/usr/local/libexec/canvas_api_guard.py", "get", "courses/1/enrollments",
+              "--all-pages", "--fields", "id"], "allow"),
             (["/usr/local/libexec/canvas_api_guard.py", "put", "courses/1/assignments/2", "-d", "{}", "--yes"], "prompt"),
             (["/usr/local/libexec/canvas_api_guard.py", "post", "courses/1/assignments", "-d", "{}", "--yes"], "prompt"),
             (["/usr/local/libexec/canvas_api_guard.py", "patch", "courses/1", "-d", "{}", "--yes"], "prompt"),
             (["/usr/local/libexec/canvas_api_guard.py", "delete", "courses/1", "--yes"], "prompt"),
+            (["/usr/local/libexec/canvas_api_guard.py", "download-submission-file",
+              "--course-id", "1", "--file-id", "10", "--submission-id", "20"], "prompt"),
+            (["/usr/local/libexec/canvas_api_operations.py", "student-attention",
+              "--course-id", "1"], "allow"),
+            (["/usr/local/libexec/canvas_api_operations.py", "attendance-summary",
+              "--course-id", "1"], "allow"),
+            (["/usr/local/libexec/canvas_api_operations.py", "download-assignment-submissions",
+              "--course-id", "1", "--assignment-id", "2"], "prompt"),
+            (["/usr/local/libexec/canvas_api_operations.py", "create-rubric", "--course-id", "1",
+              "--definition", "rubric.json", "--yes"], "prompt"),
             (["canvas_api_guard.py", "get", "courses/1"], "none"),
             (["./canvas_api_guard.py", "put", "courses/1", "--yes"], "none"),
             (["python3", "/usr/local/libexec/canvas_api_guard.py", "put", "courses/1", "--yes"], "none"),
@@ -1310,12 +1345,30 @@ class TestCodexRules(unittest.TestCase):
         for argv, want in rows:
             self.assertEqual(self.decision(argv), want, " ".join(argv))
 
-    def test_every_guard_verb_appears_in_the_rules(self):
-        """If the guard grows a verb, the execution policy must classify it."""
+
+class TestRulesCoverage(unittest.TestCase):
+    """Runs with or without Codex: every command both programs accept must be classified."""
+
+    RULES = TestCodexRules.RULES
+
+    def rule_lists(self):
+        """The name lists the rules file declares, read the way Codex reads them."""
         with open(self.RULES) as handle:
-            rules = handle.read()
-        for verb in sorted(guard.VERBS):
-            self.assertIn('"%s"' % verb, rules, "verb %r is not in the rules file" % verb)
+            text = handle.read()
+        return dict((name, re.findall(r'"([^"]+)"', body)) for name, body
+                    in re.findall(r"^([A-Z_]+) = \[(.*?)\]", text, re.S | re.M))
+
+    def test_every_guard_subcommand_is_classified_exactly_once(self):
+        lists = self.rule_lists()
+        classified = lists["READS"] + lists["WRITES"] + lists["DOWNLOADS"]
+        self.assertEqual(sorted(classified), subcommand_names(guard.build_parser()))
+        self.assertEqual(len(classified), len(set(classified)))
+
+    def test_every_level_2_operation_is_classified_exactly_once(self):
+        lists = self.rule_lists()
+        classified = lists["OPERATION_READS"] + lists["OPERATION_PROMPTS"]
+        self.assertEqual(sorted(classified), subcommand_names(load_operations().parser()))
+        self.assertEqual(len(classified), len(set(classified)))
 
 
 class TestGuardHeader(unittest.TestCase):
