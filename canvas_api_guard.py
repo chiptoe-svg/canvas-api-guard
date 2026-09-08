@@ -808,11 +808,12 @@ def do_download_submission_file(cfg, course_id, file_id, submission_id, suffix):
         fd, output = tempfile.mkstemp(prefix="canvas-submission-", suffix=suffix, dir=directory)
         digest, total, raw = hashlib.sha256(), 0, None
         redirect_trace = []
+        # Which fetch this is; every audit line of this attempt repeats it and adds its outcome.
+        line = {"kind": "read", "course_id": course_id, "file_id": file_id,
+                "submission_id": submission_id, "attempt": attempt, "download_route": route}
         try:
             file_url = resolve_url()
-            log_event(cfg.log_path, {"event": "download", "kind": "read", "course_id": course_id,
-                                     "file_id": file_id, "submission_id": submission_id, "attempt": attempt,
-                                     "download_route": route, "confirmation": None})
+            log_event(cfg.log_path, dict(line, event="download", confirmation=None))
             request = urllib.request.Request(file_url, method="GET")
             raw = open_attachment_request(request, cfg.host, redirect_trace)
             final_hop = safe_response_hop(raw)
@@ -837,10 +838,9 @@ def do_download_submission_file(cfg, course_id, file_id, submission_id, suffix):
             transient = failure["http_status"] in (500, 502, 503, 504)
             # One retry of the file URL, then Canvas's submission-authorized public URL.
             next_route = attempts[index + 1][0] if transient and index + 1 < len(attempts) else None
-            log_event(cfg.log_path, {"event": "download-response", "kind": "read", "course_id": course_id,
-                                     "file_id": file_id, "submission_id": submission_id, "attempt": attempt, "ok": False,
-                                     "download_route": route, "redirect_hops": redirect_trace,
-                                     "will_retry": next_route is not None, "next_route": next_route, **failure})
+            log_event(cfg.log_path, dict(line, event="download-response", ok=False,
+                                         redirect_hops=redirect_trace, next_route=next_route,
+                                         will_retry=next_route is not None, **failure))
             if next_route:
                 continue
             # Network exceptions can embed an expiring signed URL. Preserve only the exception class.
@@ -852,10 +852,9 @@ def do_download_submission_file(cfg, course_id, file_id, submission_id, suffix):
         finally:
             if raw is not None:
                 raw.close()
-        log_event(cfg.log_path, {"event": "download-response", "kind": "read", "course_id": course_id,
-                                 "file_id": file_id, "submission_id": submission_id, "attempt": attempt, "ok": True,
-                                 "download_route": route, "redirect_hops": redirect_trace, "final_hop": final_hop,
-                                 "bytes": total, "sha256": digest.hexdigest()})
+        log_event(cfg.log_path, dict(line, event="download-response", ok=True, bytes=total,
+                                     redirect_hops=redirect_trace, final_hop=final_hop,
+                                     sha256=digest.hexdigest()))
         emit(cfg, {"verb": "DOWNLOAD", "path": "/api/v1/files/%s" % file_id,
                    "note": "submitted attachment saved for local review", "object": {"path": output,
                    "bytes": total, "sha256": digest.hexdigest(), "course_id": int(course_id), "file_id": int(file_id),
