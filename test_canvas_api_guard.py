@@ -1296,15 +1296,12 @@ def rule_lists(rules_path):
                 in re.findall(r"^([A-Z_]+) = \[(.*?)\]", text, re.S | re.M))
 
 
-# The subcommands that must always prompt, regardless of which list the rules file currently
-# puts them in. Pinned here - not just derived from whatever the file says - so a rules-file
-# edit that reclassifies one of them as a read is caught both offline (TestRulesCoverage) and
-# by the real Codex matrix (TestCodexRules).
-GUARD_WRITES = ["post", "put", "patch", "delete"]
-GUARD_DOWNLOADS = ["download-submission-file"]
-LEVEL2_MUST_PROMPT = ["prepare-submission-review", "download-assignment-submissions",
-                      "create-rubric", "attach-rubric", "grade-with-rubric",
-                      "bulk-grade-with-rubric"]
+# The only two commands that may run without a prompt: the guard's read verb and the Level 2
+# read operation. Pinning the allow side - rather than listing every name that must prompt -
+# means a new subcommand or operation defaults to prompt with no list here to update, and a
+# rules-file edit that promotes anything else to a read is caught both offline
+# (TestRulesCoverage) and by the real Codex matrix (TestCodexRules).
+ALLOWED_WITHOUT_PROMPT = ["get", "student-attention"]
 
 
 class TestCodexRules(unittest.TestCase):
@@ -1343,7 +1340,6 @@ class TestCodexRules(unittest.TestCase):
                          "OPERATION_READS": "allow", "OPERATION_PROMPTS": "prompt"}
 
     def test_the_matrix(self):
-        must_prompt = GUARD_WRITES + GUARD_DOWNLOADS + LEVEL2_MUST_PROMPT
         program_for_list = {"READS": self.GUARD, "WRITES": self.GUARD, "DOWNLOADS": self.GUARD,
                             "OPERATION_READS": self.OPERATIONS,
                             "OPERATION_PROMPTS": self.OPERATIONS}
@@ -1351,9 +1347,9 @@ class TestCodexRules(unittest.TestCase):
         rows = []
         for list_name, base_decision in self.DECISION_FOR_LIST.items():
             for name in lists[list_name]:
-                # Pinned names must prompt even if the file above has reclassified them - that
-                # mismatch is exactly what should fail this test.
-                want = "prompt" if name in must_prompt else base_decision
+                # Anything but the two pinned read commands must prompt, however the file
+                # above has classified it - that mismatch is what should fail this test.
+                want = base_decision if name in ALLOWED_WITHOUT_PROMPT else "prompt"
                 rows.append(([program_for_list[list_name], name], want))
         rows += [
             (["./canvas_api_guard.py", "put", "courses/1", "--yes"], "none"),
@@ -1388,18 +1384,20 @@ class TestRulesCoverage(unittest.TestCase):
         self.assertEqual(sorted(classified), subcommand_names(load_operations().parser()))
         self.assertEqual(len(classified), len(set(classified)))
 
-    def test_the_write_and_download_operations_are_pinned_to_prompt(self):
+    def test_only_the_two_read_commands_are_allowed_without_a_prompt(self):
         """Classifying every subcommand exactly once (the tests above) still accepts a write
-        landing in the wrong list, as long as it lands in some list. Pin which list carries
-        each safety-critical name, so a promotion to allow fails offline too."""
+        landing in the wrong list, as long as it lands in some list. Pin the allow side: these
+        are the only two names the rules may allow, and every other subcommand and operation
+        must appear in a prompt list, so a promotion to allow fails offline too."""
         lists = rule_lists(self.RULES)
-        self.assertIn("get", lists["READS"])
-        for name in GUARD_WRITES:
-            self.assertIn(name, lists["WRITES"])
-        for name in GUARD_DOWNLOADS:
-            self.assertIn(name, lists["DOWNLOADS"])
-        for name in LEVEL2_MUST_PROMPT:
-            self.assertIn(name, lists["OPERATION_PROMPTS"])
+        self.assertEqual(lists["READS"], ALLOWED_WITHOUT_PROMPT[:1])
+        self.assertEqual(lists["OPERATION_READS"], ALLOWED_WITHOUT_PROMPT[1:])
+        for name in subcommand_names(guard.build_parser()):
+            if name not in lists["READS"]:
+                self.assertIn(name, lists["WRITES"] + lists["DOWNLOADS"], name)
+        for name in subcommand_names(load_operations().parser()):
+            if name not in lists["OPERATION_READS"]:
+                self.assertIn(name, lists["OPERATION_PROMPTS"], name)
 
 
 class TestSkillDocuments(unittest.TestCase):
