@@ -20,7 +20,7 @@ prefix_rule(
     match = ["/usr/local/libexec/canvas_api_guard.py get courses",
              "/usr/local/libexec/canvas_api_guard.py get courses/1/students?per_page=100 -o json",
              "/usr/local/libexec/canvas_api_guard.py count courses/1/enrollments?per_page=100",
-             "/usr/local/libexec/canvas_api_guard.py download-submission-file --file-id 10 --submission-id 20 --suffix .pdf"],
+             "/usr/local/libexec/canvas_api_guard.py download-submission-file --course-id 1 --file-id 10 --submission-id 20 --suffix .pdf"],
     not_match = ["/usr/local/libexec/canvas_api_guard.py put courses/1",
                  "./canvas_api_guard.py get courses"],
 )

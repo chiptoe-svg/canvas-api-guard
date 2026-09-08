@@ -143,7 +143,7 @@ class TestLevel2Operations(unittest.TestCase):
         with mock.patch.object(operations, "guard_get", side_effect=[{"object": assignment}, {"object": submission}]), \
                 mock.patch.object(operations, "guard_download_attachment", return_value=evidence) as download:
             result = operations.prepare_submission_review(args)
-        download.assert_called_once_with(7, "99", ".pdf")
+        download.assert_called_once_with("12", 7, "99", ".pdf")
         self.assertEqual(result["student"]["name"], "Jordan Lee")
         self.assertIn("no grade has been written", result["next_step"])
 
@@ -162,8 +162,8 @@ class TestLevel2Operations(unittest.TestCase):
         with mock.patch.object(operations, "guard_get", side_effect=[{"object": {}}, {"object": submission}]), \
                 mock.patch.object(operations, "guard_download_attachment", return_value={"path": "/private/file"}) as download:
             result = operations.prepare_submission_review(args)
-        self.assertEqual(download.call_args_list[0][0], (1, "99", ".jpg"))
-        self.assertEqual(download.call_args_list[1][0], (2, "99", ".docx"))
+        self.assertEqual(download.call_args_list[0][0], ("12", 1, "99", ".jpg"))
+        self.assertEqual(download.call_args_list[1][0], ("12", 2, "99", ".docx"))
         self.assertEqual(len(result["attachments"]), 2)
 
     def test_submission_review_keeps_earlier_attempt_files_once(self):
@@ -177,7 +177,7 @@ class TestLevel2Operations(unittest.TestCase):
         with mock.patch.object(operations, "guard_get", side_effect=[{"object": {"id": 22}}, {"object": submission}]), \
                 mock.patch.object(operations, "guard_download_attachment", return_value={"path": "/private/file"}) as download:
             result = operations.prepare_submission_review(args)
-        self.assertEqual([call[0] for call in download.call_args_list], [(1, "99", ".pdf"), (2, "99", ".png")])
+        self.assertEqual([call[0] for call in download.call_args_list], [("12", 1, "99", ".pdf"), ("12", 2, "99", ".png")])
         self.assertEqual([row["attempt"] for row in result["attachments"]], [1, 2])
 
     def test_batch_download_collects_all_students_and_attempts_without_submission_text(self):
@@ -194,7 +194,7 @@ class TestLevel2Operations(unittest.TestCase):
                 mock.patch.object(operations, "guard_download_attachment", return_value={"path": "/private/file"}) as download:
             result = operations.download_assignment_submissions(args)
         self.assertIn("include[]=submission_history", listed.call_args[0][0])
-        self.assertEqual([call[0] for call in download.call_args_list], [(1, "90", ".docx"), (2, "90", ".jpg")])
+        self.assertEqual([call[0] for call in download.call_args_list], [("12", 1, "90", ".docx"), ("12", 2, "90", ".jpg")])
         self.assertEqual(result["downloaded_file_count"], 2)
         self.assertEqual(result["no_attachment_submission_count"], 1)
         self.assertNotIn("do not return this", str(result))

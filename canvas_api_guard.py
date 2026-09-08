@@ -43,7 +43,7 @@ import argparse, datetime, getpass, hashlib, json, os, pty, pwd, re, stat, subpr
 import urllib.error, urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
-USER_AGENT = "canvas-api-guard/1.6.0"
+USER_AGENT = "canvas-api-guard/1.7.0"
 KEYCHAIN_SERVICE = "canvas-api-guard"
 SECURITY_BIN = "/usr/bin/security"
 SECRET_TOOL_PATHS = ("/usr/bin/secret-tool", "/usr/local/bin/secret-tool")
@@ -600,42 +600,34 @@ def safe_download_suffix(value):
     return value.lower()
 
 
-def submission_file_url(cfg, file_id):
-    """Resolve a fresh Canvas File URL through the pinned authenticated request path."""
-    metadata = send_request(cfg, "GET", "files/%s" % file_id)
-    file_url = (metadata.get("data") or {}).get("url")
-    parsed = urllib.parse.urlsplit(file_url or "")
-    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
-        raise GuardError("Canvas did not return a usable HTTPS submission download URL")
-    return file_url
+def course_file_download_url(cfg, course_id, file_id):
+    """Return Canvas's documented course-file download route, never a signed CDN URL."""
+    course_id = numeric_id(course_id, "course ID")
+    file_id = numeric_id(file_id, "file ID")
+    canvas_url(cfg.host, "courses")       # validate the configured host before constructing a URL
+    return "https://%s/courses/%s/files/%s/download" % (cfg.host, course_id, file_id)
 
 
-def do_download_submission_file(cfg, file_id, submission_id, suffix):
+def do_download_submission_file(cfg, course_id, file_id, submission_id, suffix):
     """Download one Canvas-authorized submission attachment, never forwarding the token."""
+    course_id = numeric_id(course_id, "course ID")
     file_id, submission_id = numeric_id(file_id, "file ID"), numeric_id(submission_id, "submission ID")
     suffix = safe_download_suffix(suffix)
-    # Canvas CLI's proven download shape is GET /files/{id}, then a separate
-    # unauthenticated GET of that File object's URL.  Do not use public_url:
-    # it can produce a different, CDN-specific route.  The metadata lookup is
-    # authenticated and pinned; the download URL is treated as a signed bearer
-    # capability and receives no Canvas credential at all.
+    # Use Canvas's documented course-file download endpoint rather than the generic File.url
+    # field. This first hop is pinned and authenticated. The redirect handler preserves that
+    # header only for the configured Canvas host and removes it before any CDN/storage hop.
     directory = secure_review_dir()
     for attempt in (1, 2):
         fd, output = tempfile.mkstemp(prefix="canvas-submission-", suffix=suffix, dir=directory)
         digest, total = hashlib.sha256(), 0
         redirect_trace = []
         try:
-            # A 5xx from a signed storage URL can be transient. Resolve fresh metadata once,
-            # then retry immediately; never retry other failures or any write.
-            file_url = submission_file_url(cfg, file_id)
-            log_event(cfg.log_path, {"event": "download", "kind": "read", "file_id": file_id,
-                                     "submission_id": submission_id, "attempt": attempt,
+            # A 5xx from Canvas or its storage service can be transient. Retry this read once;
+            # never retry other failures or any write.
+            file_url = course_file_download_url(cfg, course_id, file_id)
+            log_event(cfg.log_path, {"event": "download", "kind": "read", "course_id": course_id,
+                                     "file_id": file_id, "submission_id": submission_id, "attempt": attempt,
                                      "confirmation": None})
-            # File.url is Canvas's authenticated download route. The token is added only after
-            # confirming this first hop is precisely the configured Canvas host; the redirect
-            # handler removes it before any CDN/storage request.
-            if urllib.parse.urlsplit(file_url).netloc != cfg.host:
-                raise GuardError("Canvas File URL did not stay on the pinned host")
             request = urllib.request.Request(file_url, headers={"User-Agent": USER_AGENT,
                                          "Authorization": "Bearer " + read_token()}, method="GET")
             raw = open_pinned_attachment_request(request, cfg.host, redirect_trace)
@@ -659,8 +651,8 @@ def do_download_submission_file(cfg, file_id, submission_id, suffix):
             except OSError: pass
             failure = safe_download_failure(err)
             retryable = failure["http_status"] in (500, 502, 503, 504) and attempt == 1
-            log_event(cfg.log_path, {"event": "download-response", "kind": "read", "file_id": file_id,
-                                     "submission_id": submission_id, "attempt": attempt, "ok": False,
+            log_event(cfg.log_path, {"event": "download-response", "kind": "read", "course_id": course_id,
+                                     "file_id": file_id, "submission_id": submission_id, "attempt": attempt, "ok": False,
                                      "redirect_trace": redirect_trace, "will_retry": retryable, **failure})
             if retryable:
                 continue
@@ -670,12 +662,12 @@ def do_download_submission_file(cfg, file_id, submission_id, suffix):
                                                      ",".join(redirect_trace) or "none")
             raise GuardError("submission attachment download failed (%s%s%s)" %
                              (failure["error"], status, stage))
-        log_event(cfg.log_path, {"event": "download-response", "kind": "read", "file_id": file_id,
-                                 "submission_id": submission_id, "attempt": attempt, "ok": True,
+        log_event(cfg.log_path, {"event": "download-response", "kind": "read", "course_id": course_id,
+                                 "file_id": file_id, "submission_id": submission_id, "attempt": attempt, "ok": True,
                                  "redirect_trace": redirect_trace, "bytes": total, "sha256": digest.hexdigest()})
-        emit(cfg, {"verb": "DOWNLOAD", "path": "/api/v1/files/%s" % file_id,
+        emit(cfg, {"verb": "DOWNLOAD", "path": "/courses/%s/files/%s/download" % (course_id, file_id),
                    "note": "submitted attachment saved for local review", "object": {"path": output,
-                   "bytes": total, "sha256": digest.hexdigest(), "file_id": int(file_id),
+                   "bytes": total, "sha256": digest.hexdigest(), "course_id": int(course_id), "file_id": int(file_id),
                    "submission_id": int(submission_id)}})
         return
 
@@ -910,6 +902,7 @@ def build_parser():
     for name in sorted(VERBS):
         subs.add_parser(name, parents=[common], help="%s a Canvas path" % name)
     download = subs.add_parser("download-submission-file", help="download one submitted attachment for local review")
+    download.add_argument("--course-id", required=True)
     download.add_argument("--file-id", required=True)
     download.add_argument("--submission-id", required=True)
     download.add_argument("--suffix", default=".bin", help="safe local filename extension, for example .pdf")
@@ -930,7 +923,7 @@ def main(argv=None):
             cfg = make_config(argparse.Namespace(output=args.output, dry_run=False, yes=False,
                                                   post_readback=None, post_readback_field="id",
                                                   post_verify_field=None, verify_fields=None))
-            do_download_submission_file(cfg, args.file_id, args.submission_id, args.suffix)
+            do_download_submission_file(cfg, args.course_id, args.file_id, args.submission_id, args.suffix)
             return 0
         body = json.loads(args.data) if args.data else None
         cfg = make_config(args)

@@ -16,7 +16,7 @@ import subprocess
 import sys
 
 GUARD = "/usr/local/libexec/canvas_api_guard.py"
-USER_AGENT = "canvas-api-operations/0.5.0"
+USER_AGENT = "canvas-api-operations/0.6.0"
 MAX_REVIEW_ATTACHMENTS = 500
 
 
@@ -71,9 +71,9 @@ def attachment_suffix(attachment):
     return extension.lower() if re.fullmatch(r"\.[A-Za-z0-9]{1,16}", extension or "") else ".bin"
 
 
-def guard_download_attachment(file_id, submission_id, suffix):
+def guard_download_attachment(course_id, file_id, submission_id, suffix):
     """Ask API Only to retrieve one authorized attachment; this layer never opens a connection."""
-    result = subprocess.run([GUARD, "download-submission-file", "--file-id", str(file_id),
+    result = subprocess.run([GUARD, "download-submission-file", "--course-id", str(course_id), "--file-id", str(file_id),
                              "--submission-id", str(submission_id), "--suffix", suffix, "-o", "json"], text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode:
@@ -445,7 +445,7 @@ def submission_attachments(submission):
     return result
 
 
-def download_submission_attachments(submission, limit):
+def download_submission_attachments(course_id, submission, limit):
     """Download an attachment set through API Only; this program never opens a connection."""
     submission_id = canvas_id(str(submission.get("id", "")), "submission ID")
     attachments = submission_attachments(submission)
@@ -454,7 +454,7 @@ def download_submission_attachments(submission, limit):
     downloaded = []
     for item in attachments:
         attachment = item["attachment"]
-        evidence = guard_download_attachment(attachment["id"], submission_id, attachment_suffix(attachment))
+        evidence = guard_download_attachment(course_id, attachment["id"], submission_id, attachment_suffix(attachment))
         downloaded.append({"file_id": attachment.get("id"), "display_name": attachment.get("display_name"),
                            "content_type": attachment.get("content-type"), "attempt": item["attempt"],
                            "local_review_copy": evidence})
@@ -471,7 +471,7 @@ def prepare_submission_review(args):
     attachments = submission_attachments(submission)
     if not attachments:
         raise OperationError("submission review requires at least one Canvas file attachment")
-    downloaded = download_submission_attachments(submission, 20)
+    downloaded = download_submission_attachments(args.course_id, submission, 20)
     return {"operation": "prepare-submission-review", "course_id": args.course_id,
             "assignment": {"assignment_id": assignment.get("id"), "title": assignment.get("name")},
             "student": {"student_id": submission.get("user_id"), "name": (submission.get("user") or {}).get("name")},
@@ -495,7 +495,7 @@ def download_assignment_submissions(args):
         if not submission_attachments(submission):
             no_attachment += 1
             continue
-        for record in download_submission_attachments(submission, MAX_REVIEW_ATTACHMENTS):
+        for record in download_submission_attachments(args.course_id, submission, MAX_REVIEW_ATTACHMENTS):
             record.update({"student_id": submission.get("user_id"), "submission_id": submission.get("id")})
             files.append(record)
     return {"operation": "download-assignment-submissions", "course_id": args.course_id,
