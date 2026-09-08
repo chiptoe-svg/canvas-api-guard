@@ -9,26 +9,33 @@ set -eu
 usage() {
     destination=${1:-2}
     if [ "$destination" = 1 ]; then
-        echo "usage: $0 [--plan] [--allow-dirty] --host school.instructure.com"
+        echo "usage: $0 [--plan] [--allow-dirty] [--profile level-1|level-2] --host school.instructure.com"
         exit 0
     fi
-    echo "usage: $0 [--plan] [--allow-dirty] --host school.instructure.com" >&2
+    echo "usage: $0 [--plan] [--allow-dirty] [--profile level-1|level-2] --host school.instructure.com" >&2
     exit 2
 }
 
 PLAN=no
 ALLOW_DIRTY=no
 CANVAS_HOST=
+PROFILE=level-1
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --plan) PLAN=yes ;;
         --allow-dirty) ALLOW_DIRTY=yes ;;
+        --profile) shift; [ "$#" -gt 0 ] || usage; PROFILE=$1 ;;
         --host) shift; [ "$#" -gt 0 ] || usage; CANVAS_HOST=$1 ;;
         -h|--help) usage 1 ;;
         *) usage ;;
     esac
     shift
 done
+
+case "$PROFILE" in
+    level-1|level-2) ;;
+    *) echo "invalid profile: $PROFILE (expected level-1 or level-2)" >&2; exit 2 ;;
+esac
 
 case "$CANVAS_HOST" in
     ""|*[!A-Za-z0-9.-]*|.*|*..*|*.)
@@ -41,6 +48,8 @@ SRC_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SCRIPT="$SRC_DIR/canvas_api_guard.py"
 RULES="$SRC_DIR/codex/canvas-api-guard.rules"
 SKILL="$SRC_DIR/codex/skills/canvas-api-guard/SKILL.md"
+LEVEL2_SCRIPT="$SRC_DIR/level2/canvas_api_operations.py"
+LEVEL2_SKILL="$SRC_DIR/level2/SKILL.md"
 DEST_DIR=/usr/local/libexec
 DEST="$DEST_DIR/canvas_api_guard.py"
 CONFIG_DIR=/usr/local/etc/canvas-api-guard
@@ -52,6 +61,14 @@ for required in "$SCRIPT" "$RULES" "$SKILL"; do
         exit 1
     fi
 done
+if [ "$PROFILE" = level-2 ]; then
+    for required in "$LEVEL2_SCRIPT" "$LEVEL2_SKILL"; do
+        if [ ! -f "$required" ]; then
+            echo "cannot find required Level 2 source file: $required" >&2
+            exit 1
+        fi
+    done
+fi
 
 case "$(uname -s)" in
     Darwin)
@@ -75,6 +92,12 @@ esac
 SOURCE_SHA=$(hash_file "$SCRIPT")
 RULES_SHA=$(hash_file "$RULES")
 SKILL_SHA=$(hash_file "$SKILL")
+LEVEL2_SCRIPT_SHA=
+LEVEL2_SKILL_SHA=
+if [ "$PROFILE" = level-2 ]; then
+    LEVEL2_SCRIPT_SHA=$(hash_file "$LEVEL2_SCRIPT")
+    LEVEL2_SKILL_SHA=$(hash_file "$LEVEL2_SKILL")
+fi
 
 USER_NAME=${SUDO_USER:-$(id -un)}
 case "$(uname -s)" in
@@ -91,6 +114,8 @@ LOG="$LOG_DIR/audit.jsonl"
 CODEX_DIR="$USER_DIR/.codex"
 RULE_DEST="$CODEX_DIR/rules/canvas-api-guard.rules"
 SKILL_DEST="$CODEX_DIR/skills/canvas-api-guard/SKILL.md"
+LEVEL2_DEST="$DEST_DIR/canvas_api_operations.py"
+LEVEL2_SKILL_DEST="$CODEX_DIR/skills/canvas-api-operations/SKILL.md"
 
 SOURCE_STATE="release archive or non-git source"
 if command -v git >/dev/null 2>&1 && git -C "$SRC_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -116,10 +141,20 @@ canvas-api-guard installation plan (no changes made)
   skill sha:    $SKILL_SHA
   Canvas host:  $CANVAS_HOST
   executable:   $DEST (root:$ROOT_GROUP, 0555)
-  config:       $CONFIG (root:$ROOT_GROUP, 0644; profile level-1)
+  config:       $CONFIG (root:$ROOT_GROUP, 0644; profile $PROFILE)
   audit log:    $LOG ($USER_NAME, 0600; containing confidential education records)
   Codex rules:  $RULE_DEST ($USER_NAME, 0644)
   Codex skill:  $SKILL_DEST ($USER_NAME, 0644)
+EOP
+    if [ "$PROFILE" = level-2 ]; then
+        cat <<EOP
+  Level 2 executable: $LEVEL2_DEST (root:$ROOT_GROUP, 0555)
+  Level 2 skill:      $LEVEL2_SKILL_DEST ($USER_NAME, 0644)
+  Level 2 guard sha:  $LEVEL2_SCRIPT_SHA
+  Level 2 skill sha:  $LEVEL2_SKILL_SHA
+EOP
+    fi
+    cat <<EOP
 
 The installer performs no Canvas request and does not read or store a token.
 Run the same command through sudo without --plan only after reviewing this plan.
@@ -166,12 +201,16 @@ ensure_user_dir() {
 for destination in "$DEST" "$CONFIG" "$LOG" "$RULE_DEST" "$SKILL_DEST"; do
     refuse_link "$destination"
 done
+if [ "$PROFILE" = level-2 ]; then
+    refuse_link "$LEVEL2_DEST"
+    refuse_link "$LEVEL2_SKILL_DEST"
+fi
 
 install -d -o root -g "$ROOT_GROUP" -m 0755 "$DEST_DIR" "$CONFIG_DIR"
 backup_if_different "$SCRIPT" "$DEST"
 install -o root -g "$ROOT_GROUP" -m 0555 "$SCRIPT" "$DEST"
 CONFIG_TEMP="$CONFIG_DIR/config.json.tmp.$$"
-printf '{"host":"%s","profile":"level-1"}\n' "$CANVAS_HOST" > "$CONFIG_TEMP"
+printf '{"host":"%s","profile":"%s"}\n' "$CANVAS_HOST" "$PROFILE" > "$CONFIG_TEMP"
 chown root:"$ROOT_GROUP" "$CONFIG_TEMP"
 chmod 0644 "$CONFIG_TEMP"
 if [ -f "$CONFIG" ] && ! cmp -s "$CONFIG_TEMP" "$CONFIG"; then
@@ -197,6 +236,13 @@ backup_if_different "$RULES" "$RULE_DEST"
 backup_if_different "$SKILL" "$SKILL_DEST"
 install -o "$USER_NAME" -m 0644 "$RULES" "$RULE_DEST"
 install -o "$USER_NAME" -m 0644 "$SKILL" "$SKILL_DEST"
+if [ "$PROFILE" = level-2 ]; then
+    ensure_user_dir "$CODEX_DIR/skills/canvas-api-operations"
+    backup_if_different "$LEVEL2_SCRIPT" "$LEVEL2_DEST"
+    backup_if_different "$LEVEL2_SKILL" "$LEVEL2_SKILL_DEST"
+    install -o root -g "$ROOT_GROUP" -m 0555 "$LEVEL2_SCRIPT" "$LEVEL2_DEST"
+    install -o "$USER_NAME" -m 0644 "$LEVEL2_SKILL" "$LEVEL2_SKILL_DEST"
+fi
 
 INSTALLED_SHA=$(hash_file "$DEST")
 INSTALLED_RULES_SHA=$(hash_file "$RULE_DEST")
@@ -213,6 +259,16 @@ if [ "$INSTALLED_SKILL_SHA" != "$SKILL_SHA" ]; then
     echo "installed skill hash does not match the reviewed source" >&2
     exit 1
 fi
+if [ "$PROFILE" = level-2 ]; then
+    if [ "$(hash_file "$LEVEL2_DEST")" != "$LEVEL2_SCRIPT_SHA" ]; then
+        echo "installed Level 2 executable hash does not match the reviewed source" >&2
+        exit 1
+    fi
+    if [ "$(hash_file "$LEVEL2_SKILL_DEST")" != "$LEVEL2_SKILL_SHA" ]; then
+        echo "installed Level 2 skill hash does not match the reviewed source" >&2
+        exit 1
+    fi
+fi
 
 cat <<EON
 installed canvas-api-guard
@@ -225,6 +281,14 @@ installed canvas-api-guard
   audit log:    $LOG
   Codex rules:  $RULE_DEST
   Codex skill:  $SKILL_DEST
+EON
+if [ "$PROFILE" = level-2 ]; then
+    cat <<EON
+  Level 2 executable: $LEVEL2_DEST
+  Level 2 skill:      $LEVEL2_SKILL_DEST
+EON
+fi
+cat <<EON
 
 No Canvas request was made and no token was read or stored.
 Next, as $USER_NAME, use a visible terminal to run:

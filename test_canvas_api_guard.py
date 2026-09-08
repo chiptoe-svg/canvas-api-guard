@@ -179,11 +179,18 @@ class TestFixedProductionConfig(GuardTestCase):
         self.assertIn("not writable by group or others", self.last_stderr)
 
     def test_an_unknown_profile_is_refused(self):
-        self.pin_config(self.temp_config(HOST, profile="level-2"))
+        self.pin_config(self.temp_config(HOST, profile="not-a-profile"))
         with self.no_keychain(), self.no_network():
             code, _ = self.run_argv(["get", "courses"])
         self.assertEqual(code, 2)
-        self.assertIn("implements level-1 only", self.last_stderr)
+        self.assertIn("unsupported policy profile", self.last_stderr)
+
+    def test_the_level_2_profile_keeps_level_1_available(self):
+        self.pin_config(self.temp_config(HOST, profile="level-2"))
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            code, _ = self.run_argv(["get", "courses/1"])
+        self.assertEqual(code, 0)
 
 
 class TestPathNormalisation(GuardTestCase):
@@ -291,6 +298,20 @@ class TestLogBeforeRequest(GuardTestCase):
         events = [(line["event"], line.get("verb")) for line in self.log_lines()]
         self.assertIn(("request", "GET"), events)
         self.assertEqual(events[0][0], "request")
+
+    def test_response_timing_is_numeric_and_visible_without_sensitive_data(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            code, output = self.run_main(["get", "courses/1", "-o", "json"])
+        self.assertEqual(code, 0)
+        timing = json.loads(output)["timing_ms"]
+        self.assertEqual(set(timing), {"request_audit", "credential", "network",
+                                       "total_before_response_audit"})
+        self.assertTrue(all(isinstance(value, int) and value >= 0
+                            for value in timing.values()))
+        response = [line for line in self.log_lines() if line["event"] == "response"][-1]
+        self.assertEqual(response["timing_ms"], timing)
+        self.assertNotIn(TOKEN, json.dumps(timing))
 
     def test_the_log_file_and_its_directory_are_created_private(self):
         """The fixed audit path is created with private directory and file modes."""

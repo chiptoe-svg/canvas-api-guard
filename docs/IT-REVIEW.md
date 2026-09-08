@@ -1,4 +1,4 @@
-# IT review: canvas-api-guard Level 1
+# IT review: canvas-api-guard Level 1 and optional Level 2
 
 ## Decision requested
 
@@ -18,7 +18,8 @@ The runtime and installation boundary consists of:
 | `codex/canvas-api-guard.rules` | installed-path reads allowed; installed-path writes prompt; known credential reads forbidden |
 | `codex/config.toml` | recommended Codex sandbox and human-review settings |
 | `codex/skills/canvas-api-guard/SKILL.md` | operating procedure and data-handling instructions |
-| `test_canvas_api_guard.py` | offline security and behavior tests |
+| `test_canvas_api_guard.py` | offline Level 1 security and behavior tests |
+| `level2/` | optional specialized operations, installed only with `--profile level-2` |
 
 The documents under `docs/superpowers/` are historical design/implementation records, not
 runtime components.
@@ -112,6 +113,8 @@ correlation sources.
   regular user-owned `0600` file.
 - A request event is flushed and fsynced before network I/O.
 - Response bodies and credentials are excluded.
+- Response timing records contain only numeric request-audit, credential, network, and
+  total-before-response-audit durations; they do not contain credentials or response bodies.
 - Write evidence includes the Canvas user ID and student name when Canvas returns the user
   object, plus requested/before/after fields and the verification result.
 
@@ -179,7 +182,7 @@ working user Secret Service session and the trusted `secret-tool` path enforced 
 The checkout remains in the system temporary directory for review rather than being deleted
 automatically.
 
-## Level 1 versus future Level 2
+## Level 1 versus optional Level 2
 
 Level 1 intentionally permits every supported method and path allowed by the Canvas token.
 Its security improvement over `.env` plus direct API use is credential isolation, destination
@@ -190,10 +193,16 @@ the same pinned-host validation as `get`, and returns a total without requiring 
 shell pipeline or repeated API tool calls. Codex rules allow these reads while continuing to
 prompt for every write verb.
 
-Future Level 2 will preserve generic reads while checking writes against a static allowlist of
-methods, normalized paths, and accepted body fields. The check should occur before the token,
-pre-read, or network. Level 2 should call the same Level 1 request implementation rather than
-duplicate authentication or HTTP code.
+Level 2 is optional and specialized rather than a replacement for Level 1. Its installed
+program contains no token logic and no HTTP client; it invokes only the installed Level 1 guard,
+so every underlying Canvas request keeps Level 1's host pinning and audit. The first Level 2
+release is read-only analysis: course/assignment patterns, student engagement and submission
+signals, individual trajectories, and clearly labelled non-attendance activity summaries.
+
+Future named Level 2 writes—rubrics, rubric grading, assignments, pages, and announcements—must
+be separately reviewed with their own live-object validation and operation-specific read-back.
+They are not present in the installed program or Codex allow rule until that code and its offline
+tests exist.
 
 ## Residual risks
 

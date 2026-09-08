@@ -19,10 +19,12 @@ This release implements **Level 1: Safer Raw Canvas API**:
 - dry-run, human approval, pre-read, write, and fail-closed read-back verification;
 - no redirects and no automatic retries.
 
-**Level 2: Restricted Writes** is a future policy layer, not a second transport. It will
-leave reads open and apply a small, reviewable allowlist to write methods, paths, and fields
-before Level 1 reads the credential or contacts Canvas. Level 2 is intentionally not
-implemented in this release.
+**Level 2: Specialized Canvas Operations** is an additive layer, not a second transport or a
+more privileged token. It leaves Level 1 available for general API work and adds small,
+reviewable instructor operations that resolve live Canvas objects, validate task-specific data,
+and produce compact evidence. Its first installed slice is read-only course and student
+analytics; rubric, grade, and content writes remain unavailable until their individual
+validation and read-back contracts are implemented.
 
 ## What this improves
 
@@ -71,7 +73,7 @@ An actual installation from a Git checkout refuses tracked modifications. `--all
 exists for reviewed development builds and must be explicit. Existing differing executable,
 config, rule, and skill files are backed up before replacement.
 
-Installation creates:
+The default Level 1 installation creates:
 
 | File | Ownership and purpose |
 |---|---|
@@ -83,6 +85,9 @@ Installation creates:
 
 Merge the reviewed lines in `codex/config.toml` into the user's existing Codex config. Do
 not replace unrelated settings.
+
+The optional Level 2 profile additionally installs the root-owned specialized analysis executable
+and its separate Codex skill, as shown in its installation plan.
 
 Then the user—not Codex—enters the token in a visible terminal with hidden input:
 
@@ -190,6 +195,22 @@ Codex's rules prompt the person for every installed-path write, including dry-ru
 records that the explicit Codex approval is being passed to the guard; it is not permission
 for Codex to approve its own request.
 
+### Optional Level 2 specialized analysis
+
+Level 2 is a separate, additive installation profile. It uses the same Level 1 credential,
+host, and audit boundary; it neither stores nor retrieves a token itself. Install it only from a
+reviewed immutable checkout:
+
+```sh
+./install.sh --plan --profile level-2 --host school.instructure.com
+sudo ./install.sh --profile level-2 --host school.instructure.com
+```
+
+The current operations are read-only: `course-health`, `assignment-performance`,
+`student-attention`, `student-trajectory`, and `attendance-summary`. The last reports Canvas
+activity, not verified attendance. See [level2/README.md](level2/README.md) for the exact
+boundary and planned specialized write operations.
+
 ## Fail-closed write evidence
 
 For `PUT` and `PATCH`, success requires every requested field to match the read-back. For
@@ -229,7 +250,7 @@ the current user and mode `0700`/`0600`; symlinked or non-regular logs are refus
 Events include:
 
 - `request`: method, normalized path, URL, read/write kind, confirmation mode, and write body;
-- `response`: status, success, byte count or error type;
+- `response`: status, success, byte count or error type, and numeric-only timing diagnostics;
 - `evidence`: target identity, before/after changes, and verification result;
 - `refusal`: a write that lacked confirmation.
 
