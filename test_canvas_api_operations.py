@@ -96,7 +96,8 @@ class TestLevel2Operations(unittest.TestCase):
     def test_prepare_submission_review_accepts_one_pdf_and_does_not_grade(self):
         args = Args()
         args.assignment_id = "22"
-        assignment = {"id": 22, "name": "Week 2 Notes"}
+        assignment = {"id": 22, "name": "Week 2 Notes",
+                      "html_url": "https://canvas.example.edu/courses/12/assignments/22"}
         submission = {"id": 99, "user_id": 34, "user": {"name": "Jordan Lee"},
                       "attachments": [{"id": 7, "display_name": "notes.pdf",
                                        "content-type": "application/pdf"}]}
@@ -108,6 +109,15 @@ class TestLevel2Operations(unittest.TestCase):
         self.assertEqual(result["student"]["name"], "Jordan Lee")
         self.assertIn("no grade has been written", result["next_step"])
         self.assertEqual(result["current_grade"]["workflow_state"], None)
+        self.assertEqual(result["speedgrader_url"],
+                         "https://canvas.example.edu/courses/12/gradebook/speed_grader?assignment_id=22&student_id=34")
+
+    def test_speedgrader_url_comes_only_from_canvas_own_assignment_url(self):
+        self.assertIsNone(operations.speedgrader_url({}, "34"))
+        self.assertIsNone(operations.speedgrader_url(
+            {"html_url": "http://evil.example/courses/12/assignments/22"}, "34"))
+        self.assertIsNone(operations.speedgrader_url(
+            {"html_url": "https://canvas.example.edu/courses/12/assignments/22/extra"}, "34"))
 
     def test_prepare_submission_review_reports_an_existing_grade_before_anyone_reviews(self):
         """A regrade must be the instructor's decision: the result carries Canvas's current

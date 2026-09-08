@@ -276,7 +276,8 @@ def grade_one(args, value):
     guard_write("put", path, body, operation_phase(args))
     if operation_phase(args) != "dry-run":
         verify_rubric_assessment(args, student_id, criteria)
-    return {"student_id": student_id, "posted_grade": total}
+    return {"student_id": student_id, "posted_grade": total,
+            "speedgrader_url": speedgrader_url(assignment, student_id)}
 
 
 def grade_with_rubric(args):
@@ -318,6 +319,16 @@ def download_submission_attachments(course_id, submission, limit):
     return downloaded
 
 
+def speedgrader_url(assignment, student_id):
+    """The instructor's SpeedGrader page for this student, built from the assignment's own
+    html_url so the host is Canvas's, never a guess; None when Canvas gave no URL."""
+    match = re.match(r"(https://[^/]+)/courses/(\d+)/assignments/(\d+)$", str(assignment.get("html_url") or ""))
+    if not match:
+        return None
+    return "%s/courses/%s/gradebook/speed_grader?assignment_id=%s&student_id=%s" % (
+        match.group(1), match.group(2), match.group(3), student_id)
+
+
 def current_grade(submission):
     """What Canvas already holds for this submission, so an already-graded one is never
     re-reviewed or regraded by accident."""
@@ -345,7 +356,8 @@ def prepare_submission_review(args):
             "assignment": {"assignment_id": assignment.get("id"), "title": assignment.get("name")},
             "student": {"student_id": submission.get("user_id"), "name": (submission.get("user") or {}).get("name")},
             "submission_id": int(canvas_id(str(submission.get("id", "")), "submission ID")), "attachments": downloaded,
-            "current_grade": grade, "next_step": next_step}
+            "current_grade": grade, "speedgrader_url": speedgrader_url(assignment, args.student_id),
+            "next_step": next_step}
 
 
 def download_assignment_submissions(args):

@@ -39,6 +39,12 @@ Never substitute curl, browser automation, Python HTTP code, or a source-tree co
 - Both report each submission's `current_grade` (state, score, grade, graded_at). A submission
   Canvas already shows as graded is not reviewed or regraded unless the instructor asks for
   that student by name; say what the current grade is and stop.
+- `prepare-submission-review` and every grade result also carry `speedgrader_url`, the
+  instructor's own SpeedGrader page for that student.
+
+Every grade proposal reports, in this order: the student, Canvas's current grade, each
+criterion's points and the total, the `speedgrader_url` as a link, and the local files that
+were reviewed. Then ask for approval of the dry run.
 
 Both copy confidential student records into a user-private review directory, so Codex prompts
 before either runs. Neither infers a score or writes a grade. Review the files against the live
