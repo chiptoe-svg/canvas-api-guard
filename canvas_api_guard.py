@@ -521,19 +521,53 @@ def flatten_leaves(obj, prefix=""):
         out.update(flatten_leaves(obj[key], prefix + key + "."))
     return out
 
+SCORE_TOLERANCE = 0.005        # Canvas rounds a score to two decimals
+
+def number_or_none(value):
+    """The numeric value of a Canvas number or numeric string, or None."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+def readback(leaf, requested, obj):
+    """The response field that can prove this requested write parameter, and its value.
+
+    Canvas does not return the parameter it accepted: submission[excuse] comes back as
+    "excused", and a grade comes back in several fields at once. A numeric posted_grade is
+    proved by the score Canvas entered, a letter or complete/incomplete grade by the grade
+    string. (The same choice canvas-cli makes in commands/submissions_readback.go.)"""
+    if leaf == "excuse":
+        names = ("excused",)
+    elif leaf == "posted_grade":
+        names = (("entered_score", "score") if number_or_none(requested) is not None
+                 else ("entered_grade", "grade"))
+    else:
+        names = (leaf,)
+    for name in names:
+        if isinstance(obj, dict) and name in obj:
+            return name, obj[name]
+    return names[-1], None
+
+def matches(requested, got):
+    """Whether a read-back value proves the requested one: numbers within Canvas's rounding,
+    everything else by case-insensitive string equality."""
+    want, have = number_or_none(requested), number_or_none(got)
+    if want is not None and have is not None:
+        return abs(have - want) <= SCORE_TOLERANCE
+    return str(got).strip().lower() == str(requested).strip().lower()
+
 def compare_fields(body, before, after):
     """Canvas wraps a write body in a resource key ({"submission": {...}}) while the read-back
-    object does not, so each requested leaf is compared by its own field name."""
+    object does not, so each requested leaf is compared with the field that proves it."""
     rows, flat = [], flatten_leaves(body or {})
     for dotted in sorted(flat):
-        leaf = dotted.split(".")[-1]
-        # Canvas accepts submission[excuse] but returns the state as "excused".
-        response_leaf = "excused" if leaf == "excuse" else leaf
-        got_after = after.get(response_leaf) if isinstance(after, dict) else None
-        rows.append({"field": leaf, "requested": flat[dotted], "after": got_after,
-                     "before": before.get(response_leaf) if isinstance(before, dict) else None,
+        leaf, requested = dotted.split(".")[-1], flat[dotted]
+        name, got_after = readback(leaf, requested, after)
+        rows.append({"field": leaf, "read_field": name, "requested": requested,
+                     "before": readback(leaf, requested, before)[1], "after": got_after,
                      "match": None if not isinstance(after, dict)
-                     else str(got_after) == str(flat[dotted])})
+                     else matches(requested, got_after)})
     return rows
 
 

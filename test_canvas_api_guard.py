@@ -212,7 +212,9 @@ class TestPathNormalisation(GuardTestCase):
 class TestConfirmation(GuardTestCase):
     def test_a_write_without_a_tty_and_without_yes_is_refused(self):
         with mock.patch("urllib.request.urlopen") as urlopen:
-            urlopen.return_value = FakeResponse(payload={"id": 7, "posted_grade": 88})
+            urlopen.return_value = FakeResponse(payload={"id": 7, "grade": "88",
+                                                          "entered_grade": "88",
+                                                          "score": 88.0, "entered_score": 88.0})
             code, output = self.run_main(
                 ["put", "courses/1/assignments/2/submissions/3",
                  "-d", '{"submission": {"posted_grade": 95}}'])
@@ -242,7 +244,9 @@ class TestConfirmation(GuardTestCase):
 
     def test_the_yes_flag_is_recorded_as_the_confirmation_mode(self):
         with mock.patch("urllib.request.urlopen") as urlopen:
-            urlopen.return_value = FakeResponse(payload={"id": 3, "posted_grade": 95})
+            urlopen.return_value = FakeResponse(payload={"id": 3, "grade": "95",
+                                                          "entered_grade": "95",
+                                                          "score": 95.0, "entered_score": 95.0})
             code, _ = self.run_main(
                 ["put", "courses/1/assignments/2/submissions/3", "--yes",
                  "-d", '{"submission": {"posted_grade": 95}}'])
@@ -255,7 +259,9 @@ class TestConfirmation(GuardTestCase):
     def test_a_human_at_a_tty_is_recorded_as_human_tty(self):
         with mock.patch("urllib.request.urlopen") as urlopen, \
                 mock.patch.object(guard, "input", create=True, return_value="yes"):
-            urlopen.return_value = FakeResponse(payload={"id": 3, "posted_grade": 95})
+            urlopen.return_value = FakeResponse(payload={"id": 3, "grade": "95",
+                                                          "entered_grade": "95",
+                                                          "score": 95.0, "entered_score": 95.0})
             code, _ = self.run_main(
                 ["put", "courses/1/assignments/2/submissions/3",
                  "-d", '{"submission": {"posted_grade": 95}}'], stdin_is_tty=True)
@@ -353,7 +359,9 @@ class TestLogBeforeRequest(GuardTestCase):
 class TestTokenIsNeverExposed(GuardTestCase):
     def test_the_token_is_absent_from_the_log_and_from_stdout(self):
         with mock.patch("urllib.request.urlopen") as urlopen:
-            urlopen.return_value = FakeResponse(payload={"id": 3, "posted_grade": 95})
+            urlopen.return_value = FakeResponse(payload={"id": 3, "grade": "95",
+                                                          "entered_grade": "95",
+                                                          "score": 95.0, "entered_score": 95.0})
             code, output = self.run_main(
                 ["put", "courses/1/assignments/2/submissions/3", "--yes",
                  "-d", '{"submission": {"posted_grade": 95}}'])
@@ -403,24 +411,46 @@ class TestDryRunSendsNothing(GuardTestCase):
 class TestEvidence(GuardTestCase):
     def test_put_reports_before_and_after_and_whether_they_match(self):
         student = {"id": 3, "name": "Student Example"}
-        responses = [FakeResponse(payload={"id": 3, "user_id": 3, "user": student,
-                                           "posted_grade": 60}),             # before
-                     FakeResponse(payload={"id": 3, "user_id": 3,
-                                           "posted_grade": 95}),             # the write
-                     FakeResponse(payload={"id": 3, "user_id": 3, "user": student,
-                                           "posted_grade": 95})]             # read-back
+        graded = {"id": 3, "user_id": 3, "user": student, "grade": "95",
+                  "entered_grade": "95", "score": 95.0, "entered_score": 95.0,
+                  "excused": False, "workflow_state": "graded"}
+        ungraded = dict(graded, grade="60", entered_grade="60", score=60.0,
+                        entered_score=60.0)
+        responses = [FakeResponse(payload=ungraded),                       # before
+                     FakeResponse(payload=dict(graded, user=None)),        # the write
+                     FakeResponse(payload=graded)]                         # read-back
         with mock.patch("urllib.request.urlopen", side_effect=responses):
             code, output = self.run_main(
                 ["put", "courses/1/assignments/2/submissions/3", "--yes",
                  "-d", '{"submission": {"posted_grade": 95}}'])
         self.assertEqual(code, 0)
         self.assertIn("posted_grade", output)
-        self.assertIn("60 -> 95", output)
+        self.assertIn("60.0 -> 95.0", output)
         self.assertIn("match: True", output)
         self.assertIn("Student Example", output)
         evidence = [line for line in self.log_lines() if line["event"] == "evidence"][-1]
         self.assertEqual(evidence["target"], {"student_name": "Student Example", "user_id": 3})
         self.assertEqual(evidence["verification"], "passed")
+
+    def test_a_numeric_posted_grade_is_proved_by_the_score_canvas_recorded(self):
+        """Canvas rounds a score to two decimals; canvas-cli's verifyGradeReadBack allows it."""
+        rows = guard.compare_fields({"submission": {"posted_grade": 95}},
+                                    {"grade": "60", "score": 60.0, "entered_score": 60.0},
+                                    {"grade": "95", "score": 94.999, "entered_score": 94.999})
+        self.assertEqual(rows, [{"field": "posted_grade", "read_field": "entered_score",
+                                 "requested": 95, "before": 60.0, "after": 94.999,
+                                 "match": True}])
+
+    def test_a_letter_posted_grade_is_proved_by_the_grade_canvas_recorded(self):
+        rows = guard.compare_fields({"submission": {"posted_grade": "A-"}}, {},
+                                    {"entered_grade": "a-", "grade": "a-", "score": 91.0})
+        self.assertEqual(rows[0]["read_field"], "entered_grade")
+        self.assertTrue(rows[0]["match"])
+
+    def test_a_grade_canvas_did_not_record_is_still_a_mismatch(self):
+        rows = guard.compare_fields({"submission": {"posted_grade": 95}}, {},
+                                    {"grade": "60", "score": 60.0})
+        self.assertFalse(rows[0]["match"])
 
     def test_submission_excuse_verifies_canvas_excused_response_field(self):
         responses = [FakeResponse(payload={"id": 3, "user_id": 3, "excused": False}),
@@ -522,8 +552,10 @@ class TestEvidence(GuardTestCase):
         self.assertIn("read-back after delete: 404 gone", output)
 
     def test_update_readback_failure_is_uncertain_and_nonzero(self):
-        responses = [FakeResponse(payload={"id": 3, "posted_grade": 60}),
-                     FakeResponse(payload={"id": 3, "posted_grade": 95}),
+        responses = [FakeResponse(payload={"id": 3, "grade": "60", "score": 60.0,
+                                           "entered_score": 60.0}),
+                     FakeResponse(payload={"id": 3, "grade": "95", "score": 95.0,
+                                           "entered_score": 95.0}),
                      OSError("network unavailable")]
         with mock.patch("urllib.request.urlopen", side_effect=responses):
             code, output = self.run_main(
@@ -534,9 +566,12 @@ class TestEvidence(GuardTestCase):
         self.assertIn("read-back failed", output)
 
     def test_update_mismatch_is_uncertain_and_nonzero(self):
-        responses = [FakeResponse(payload={"id": 3, "posted_grade": 60}),
-                     FakeResponse(payload={"id": 3, "posted_grade": 95}),
-                     FakeResponse(payload={"id": 3, "posted_grade": 60})]
+        responses = [FakeResponse(payload={"id": 3, "grade": "60", "score": 60.0,
+                                           "entered_score": 60.0}),
+                     FakeResponse(payload={"id": 3, "grade": "95", "score": 95.0,
+                                           "entered_score": 95.0}),
+                     FakeResponse(payload={"id": 3, "grade": "60", "score": 60.0,
+                                           "entered_score": 60.0})]
         with mock.patch("urllib.request.urlopen", side_effect=responses):
             code, output = self.run_main(
                 ["put", "courses/1/assignments/2/submissions/3", "--yes",
