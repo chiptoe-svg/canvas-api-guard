@@ -606,6 +606,24 @@ class TestRedirectsAreRefused(unittest.TestCase):
 
 
 class TestAttachmentDownload(GuardTestCase):
+    def test_attachment_opener_disables_proxy_use(self):
+        request = urllib.request.Request("https://%s/files/9/download" % HOST)
+        trace = []
+        captured = {}
+
+        class Opener(object):
+            def open(self, actual_request, timeout):
+                captured.update({"request": actual_request, "timeout": timeout})
+                return io.BytesIO(b"")
+
+        with mock.patch("urllib.request.build_opener", return_value=Opener()) as build:
+            guard.open_pinned_attachment_request(request, HOST, trace)
+        handlers = build.call_args[0]
+        proxy = next(handler for handler in handlers if isinstance(handler, urllib.request.ProxyHandler))
+        self.assertEqual(proxy.proxies, {})
+        self.assertIs(captured["request"], request)
+        self.assertEqual(captured["timeout"], guard.TIMEOUT)
+
     def test_download_uses_file_url_without_a_token(self):
         cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST})()
         file_url = "https://%s/files/9/download?verifier=not-for-output" % HOST

@@ -43,7 +43,7 @@ import argparse, datetime, getpass, hashlib, json, os, pty, pwd, re, stat, subpr
 import urllib.error, urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
-USER_AGENT = "canvas-api-guard/1.9.0"
+USER_AGENT = "canvas-api-guard/1.10.0"
 KEYCHAIN_SERVICE = "canvas-api-guard"
 SECURITY_BIN = "/usr/bin/security"
 SECRET_TOOL_PATHS = ("/usr/bin/secret-tool", "/usr/local/bin/secret-tool")
@@ -324,8 +324,16 @@ def open_request(request, credential_free_redirects=False):
 
 
 def open_pinned_attachment_request(request, host, trace):
-    """Open a Canvas file URL with a token only on the configured Canvas host."""
-    return urllib.request.build_opener(PinnedAttachmentRedirects(host, trace)).open(request, timeout=TIMEOUT)
+    """Open a bearer-free Canvas file URL directly, never through a system proxy.
+
+    canvas-cli's Go transport uses only explicit environment proxy settings. urllib on macOS can
+    additionally inherit system proxy configuration, which would expose the temporary signed URL
+    to that proxy and can change an external storage response. Attachment downloads therefore use
+    no proxy at all; ordinary pinned API calls retain their existing network behavior.
+    """
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                         PinnedAttachmentRedirects(host, trace))
+    return opener.open(request, timeout=TIMEOUT)
 
 
 def safe_download_failure(err):
