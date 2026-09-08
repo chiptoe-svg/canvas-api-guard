@@ -141,7 +141,10 @@ git diff --check
 
 printf '\nThat plan is what the next step will do. Nothing has changed yet.\n'
 printf 'Press Return to continue with the installation, or Ctrl-C to stop now. '
-read reviewed || true
+if ! read reviewed; then
+    printf '\nNo terminal to confirm on; not installing.\n' >&2
+    exit 1
+fi
 
 printf '\nThe next prompt is for your Mac administrator password.\n'
 printf 'Nothing will appear while you type it.\n\n'

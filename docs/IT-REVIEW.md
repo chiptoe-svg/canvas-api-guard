@@ -37,9 +37,11 @@ Instructor request
   -> Codex result in the Clemson-approved ChatGPT Edu account
 
 Submitted-file review (the one flow that leaves the pinned API host)
-  -> pinned https://<installed Canvas host>/api/v1/files/<id> (authenticated) for the file URL
-  -> that URL, then any HTTPS redirect Canvas issues - its own host, or the storage host it
-     names - with no Authorization, no Cookie, no forwarded Host, and no system proxy
+  -> pinned https://<installed Canvas host>/api/v1/files/<id> (authenticated) for the file URL;
+     on a 500/502/503/504, retried once, then falls back once to the pinned, authenticated
+     https://<installed Canvas host>/api/v1/files/<id>/public_url?submission_id=<id>
+  -> that URL, then any HTTPS redirect Canvas issues, with no Authorization, no Cookie,
+     no forwarded Host, and no system proxy
   -> ~/.canvas-api-guard/submission-reviews/ (0700 directory, 0600 files)
 
 Local evidence
@@ -78,23 +80,33 @@ is never printed or logged.
 - Dry-runs and refused non-TTY writes do not read the token.
 - Before any token read, the guard requires its own real path, the fixed configuration file,
   and every ancestor directory to be owned by root and not writable by group or others, naming
-  the first component that fails. A source-tree copy can show `--version`, a dry run and every
-  refusal, but cannot make a live request - which is what the Codex rules already assume. The
-  check stands down only when the configuration path has been redirected by the offline test
-  seam, which the installed guard never does.
+  the first component that fails. This runs only after the configuration is found and read, so
+  on a machine with no installed configuration a source-tree copy is refused earlier, with "no
+  Canvas configuration"; on a machine that does have the configuration installed, that same copy
+  is refused here instead, because its own path is not root-owned. The check stands down only
+  when the configuration path has been redirected by the offline test seam, which the installed
+  guard never does. It reads ownership and mode bits only - a POSIX ACL granting extra write
+  access is invisible to it - and it proves the path of a copy launched as a program, not an
+  already-running process with forged globals; the Codex rules' absolute-path match is the layer
+  that stops those.
 
 ### Keep the token on one destination
 
 - `/usr/local/etc/canvas-api-guard/config.json` is the only host configuration.
-- It must be a regular file owned by root or the current user and not writable by group or
-  others. The installer creates it as root-owned `0644`.
+- At the installed path, the file and every ancestor directory must be owned by root and not
+  writable by group or others; the installer creates it as root-owned `0644`. "Owned by root or
+  the current user" is the offline test seam's rule for a redirected config, never the installed
+  guard's.
 - There is no production `--host` option.
 - The URL builder forces HTTPS and rejects paths containing a scheme, host, traversal,
   whitespace, or backslash.
 - Every redirect on an authenticated API request is refused, including a same-host redirect.
 - A submitted-file download does follow Canvas's HTTPS redirects, and no hop carries the token,
   a cookie, a forwarded Host header, or proxy credentials - the first hop already carries none.
-  Only each hop's status, hostname and scope are recorded.
+  On a 500/502/503/504, the file-URL fetch is retried once, then Canvas's submission-authorized
+  `public_url` endpoint is tried once; nothing else retries. Each attempt's `download`/
+  `download-response` audit pair records its route and, on failure, whether it will retry and
+  the next route, plus each hop's status and hostname - never the signed URL.
 - Pagination links are returned only when their host matches; they are never followed
   automatically.
 
@@ -118,8 +130,10 @@ correlation sources.
   match the created object's read-back.
 - `DELETE`: the read-back must return HTTP 404.
 - Any mismatch, timeout, transport error, 401, 403, 5xx, missing created-object location, or
-  still-present delete target exits nonzero as `WRITE STATUS UNCERTAIN`.
-- No automatic write retry is implemented.
+  still-present delete target is `WRITE STATUS UNCERTAIN` and is never retried automatically.
+  Submission-file downloads retry separately, on their own schedule (see above).
+- Exit codes: `0` completed, and any write verified; `2` refused or failed before anything was
+  sent; `3` a write was sent but could not be verified (`WRITE STATUS UNCERTAIN`).
 
 ### Produce useful, protected audit evidence
 
@@ -130,7 +144,9 @@ correlation sources.
 - A write's request event is flushed and fsynced before network I/O.
 - Response bodies and credentials are excluded.
 - A read is one line, written after the response: verb, path, status, and byte count. A write
-  is three: the request before it is sent, the response after it, and the evidence.
+  is three: the request before it is sent, the response after it, and the evidence - plus the
+  pre-read and read-back each add their own `read` line, so a `put` command produces five audit
+  lines in total.
 - Write evidence includes the Canvas user ID and student name when Canvas returns the user
   object, plus requested/before/after fields and the verification result.
 
@@ -177,8 +193,7 @@ Canvas API request is made.
 Codex's ordinary filesystem sandbox cannot launch macOS applications. Therefore, Codex must run
 the exact immutable bootstrap command with scoped host/GUI execution permission. Without that
 permission, Launch Services may return `kLSNoExecutableErr` even when Terminal and its executable
-are present. This permission is only the platform approval for the bootstrap command; the
-Terminal workflow does not add a second approval gate after displaying the installation plan.
+are present.
 
 After local installation succeeds, Terminal suggests the separate read-only Codex request
 `In Canvas, what are my current classes?`. Keeping that authenticated smoke test outside the
@@ -226,11 +241,6 @@ and read back rather than sent through an opaque asynchronous bulk endpoint. Cod
 for each Specialized Functions write and for each of the two operations that download student
 work. An API Only exit status of 3 - a write that was sent and could not be verified -
 propagates out of these operations unchanged and is never retried.
-
-Operations that were a single documented API call - course listings, roster counts, student
-lookup, needs-grading queues, analytics shortcuts, date changes, excusals, and assignment, page
-and announcement authoring - were removed. API Only performs them directly against the
-documented Canvas endpoints under the same controls.
 
 ## Residual risks
 
@@ -284,9 +294,9 @@ write. A source-tree command such as `./canvas_api_guard.py get courses` should 
 3. Install with the exact Clemson Canvas hostname.
 4. Verify executable/config ownership and audit modes.
 5. Enter a purpose-created instructor token through hidden input.
-6. Run one harmless `GET users/self/profile` and verify the request/response audit pair.
+6. Run one harmless `GET users/self/profile` and verify the resulting `read` audit line.
 7. Run a write dry-run and confirm that Codex prompts while Canvas remains unchanged.
 8. On a test object, approve one write and verify target identity, before/after fields, and
    `verification: passed` in the audit.
-9. Induce or mock a read-back failure and verify nonzero `WRITE STATUS UNCERTAIN` behavior.
+9. Induce or mock a read-back failure and verify exit `3` (`WRITE STATUS UNCERTAIN`) behavior.
 10. Establish local audit retention and incident-review ownership before broader use.

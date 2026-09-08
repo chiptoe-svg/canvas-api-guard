@@ -1617,7 +1617,9 @@ class TestInstallerPlan(unittest.TestCase):
         sudo = script.index('/usr/bin/sudo "$CHECKOUT/install.sh"')
         self.assertLess(plan, pause)
         self.assertLess(pause, sudo)
-        self.assertIn("read reviewed || true", script)
+        self.assertIn("if ! read reviewed; then", script)
+        self.assertIn("No terminal to confirm on; not installing.", script)
+        self.assertLess(script.index("if ! read reviewed; then"), sudo)
 
 
 class TestDocumentClaims(unittest.TestCase):

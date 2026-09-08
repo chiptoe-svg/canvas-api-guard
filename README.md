@@ -4,7 +4,7 @@ A small, audited **API Only** transport for using the Canvas REST API from Codex
 putting a Canvas token in `.env`, a repository, a command, or agent-visible output.
 
 The review surface is deliberately small: one Python 3.9+ standard-library program
-(`canvas_api_guard.py`, about 1,000 lines), one POSIX system installer, one macOS bootstrap,
+(`canvas_api_guard.py`, about 1,100 lines), one POSIX system installer, one macOS bootstrap,
 one Codex rules file, two Codex skills, the optional Specialized Functions program in
 `level2/`, and two stdlib test suites - 144 offline tests, all run by `python3 -m unittest`.
 
@@ -36,10 +36,9 @@ same dry-run, explicit approval, and verified read-back as API Only.
 Compared with a token in `.env` and direct API use, Codex never receives the token, cannot
 select another destination host or audit path, and must put every write through an approved,
 logged, verified operation. The installed executable and host configuration are root-owned, and
-the guard enforces that itself: before it reads the token it requires its own real path, the
-fixed configuration, and every directory above them to be owned by root and not writable by
-group or others, naming the component that fails. A source-tree copy can demonstrate every
-refusal offline; it cannot make a live Canvas request.
+the guard checks its own path and the configuration's ownership before it reads the token,
+refusing and naming the first untrusted component. See
+[docs/IT-REVIEW.md](docs/IT-REVIEW.md) for exactly what that check does and does not cover.
 
 It adds no Canvas permission. Canvas remains the source of authorization: the guard can do
 only what the installed token can do.
@@ -56,6 +55,9 @@ only what the installed token can do.
   authorize only the installed absolute guard path.
 - It does not make local audit records immutable against root.
 - It supports macOS and Linux, not Windows.
+- The provenance check reads ownership and mode bits only, not ACLs, and proves the path of a
+  copy launched as a program; it does not defend a process already running with forged globals,
+  which is why the Codex rules' absolute-path match is the layer that actually stops that.
 
 See [docs/IT-REVIEW.md](docs/IT-REVIEW.md) for the complete trust model, data flow, controls,
 review commands, and residual risks.
@@ -134,10 +136,10 @@ curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/FULL_C
 ```
 
 The Terminal workflow compiles and tests the downloaded source, prints the installation plan,
-installs the root-owned files with `sudo`, stores the token, reports the installed version, and
-waits for Return before closing. It makes no Canvas API request. If Terminal cannot be opened,
-the bootstrap reports failure rather than claiming a prompt is visible and tells a Codex user
-that host/GUI execution permission is required.
+pauses for Return before running it, installs the root-owned files with `sudo`, stores the
+token, reports the installed version, and waits for Return before closing. It makes no Canvas
+API request. If Terminal cannot be opened, the bootstrap reports failure rather than claiming a
+prompt is visible and tells a Codex user that host/GUI execution permission is required.
 
 The final Terminal message directs the user back to Codex with: `In Canvas, what are my current
 classes?` That separate, read-only request is the live smoke test: it proves the stored token,
@@ -241,14 +243,15 @@ one student or for a batch. They accept a reviewed, allowlisted JSON definition 
 
 Submission-file review is read-only, and it is the one data flow that leaves the pinned API
 host. The guard authenticates only the Canvas metadata request that resolves the file. The file
-itself, and every HTTPS redirect Canvas issues to its own host or to the storage host it names,
-is fetched with no Authorization, no Cookie, no forwarded Host, and no system proxy. Only each
-hop's status, hostname and scope are logged - never the signed URL, its query, or a response
+itself, and every HTTPS redirect Canvas issues, is fetched with no Authorization, no Cookie,
+no forwarded Host, and no system proxy - any HTTPS host the redirect names is followed, and
+only each hop's status and hostname are logged, never the signed URL, its query, or a response
 body. A download copies a student's work onto the disk, so the Codex rules prompt for it.
-Specialized Functions can prepare one student's complete attachment set or download an
-assignment's complete attachment set (including earlier submission attempts), subject to the
-documented 20-file-per-submission and 500-file-per-assignment limits. The files stay in a
-user-private local review directory and no grade is inferred or written.
+Specialized Functions can prepare one student's complete attachment set
+(`prepare-submission-review`, capped at 20 files) or download an assignment's complete
+attachment set (`download-assignment-submissions`, including earlier submission attempts,
+capped at 500 files total). The files stay in a user-private local review directory and no
+grade is inferred or written.
 
 Date changes, excusals, assignment/page/announcement authoring and the former analytics
 shortcuts are ordinary API Only calls against the documented Canvas endpoints, with the same
@@ -260,7 +263,10 @@ For `PUT` and `PATCH`, success requires every requested field to match the read-
 `POST`, success requires locating the created object and matching every requested field on
 the read-back. For `DELETE`, success requires a definite HTTP 404 on the read-back.
 
-If Canvas accepted a write but verification fails, the command exits nonzero and prints:
+Exit codes: `0` the command completed, and any write verified; `2` refused or failed before
+anything was sent (bad input, an unconfirmed write, a validation failure); `3` a write was sent
+but its outcome could not be verified. If Canvas accepted a write but verification fails, the
+command exits `3` and prints:
 
 ```text
 WRITE STATUS UNCERTAIN
@@ -298,6 +304,9 @@ Events include:
 - `request`: a write, recorded before it is sent: method, normalized path, URL, confirmation
   mode, and the request body;
 - `response`: that write's status, success, and byte count or error type;
+- `download`/`download-response`: one submission-file fetch attempt, recorded before and after -
+  route, attempt number, and on failure whether it `will_retry` and the `next_route`; the
+  metadata call that resolves each URL logs its own `read` line first;
 - `evidence`: target identity, before/after changes, and verification result;
 - `refusal`: a write that lacked confirmation.
 
