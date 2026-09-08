@@ -609,6 +609,13 @@ def target_identity(*objects):
                                         or user.get("sortable_name"))
     return dict((key, value) for key, value in identity.items() if value is not None)
 
+def write_evidence(cfg, verb, path, resp, **extra):
+    """What every write records before verification: what was sent, where, on whose
+    confirmation, with what status."""
+    return dict({"verb": verb, "path": normalise_path(path), "url": canvas_url(cfg.host, path),
+                 "confirmation": cfg.confirmation,
+                 "status": resp["status"] if resp else None}, **extra)
+
 def uncertain(cfg, evidence, reason):
     """Record the failed verification and return a non-success outcome to the caller."""
     evidence["verification"] = "failed"
@@ -867,9 +874,7 @@ def do_update(cfg, method, path, body):
                                            json.dumps(row["requested"], default=str)))
     cfg.confirmation = confirm(cfg, lines)
     resp = send_request(cfg, method, path, body)
-    evidence = {"verb": method, "path": normalise_path(path), "body": body,
-                "url": canvas_url(cfg.host, path), "confirmation": cfg.confirmation,
-                "status": resp["status"] if resp else None}
+    evidence = write_evidence(cfg, method, path, resp, body=body)
     if cfg.dry_run:
         evidence.update({"changes": compare_fields(body, before_obj, None),
                          "verification": "not-run", "note": "dry run: nothing was sent"})
@@ -940,9 +945,7 @@ def do_post(cfg, path, body):
         "  " + json.dumps(body, sort_keys=True),
         "nothing exists before a POST; the created object is read back afterwards"])
     resp = send_request(cfg, "POST", path, body)
-    evidence = {"verb": "POST", "path": normalise_path(path), "body": body,
-                "url": canvas_url(cfg.host, path), "confirmation": cfg.confirmation,
-                "status": resp["status"] if resp else None}
+    evidence = write_evidence(cfg, "POST", path, resp, body=body)
     if cfg.dry_run:
         evidence.update({"verification": "not-run", "note": "dry run: nothing was sent"})
         emit(cfg, evidence)
@@ -983,10 +986,8 @@ def do_delete(cfg, path, body):
         "this object is about to be destroyed:",
         "  " + json.dumps(before_obj, sort_keys=True, default=str)])
     resp = send_request(cfg, "DELETE", path, body)
-    evidence = {"verb": "DELETE", "path": normalise_path(path), "object": before_obj,
-                "target": target_identity(before["data"] if before else None),
-                "url": canvas_url(cfg.host, path), "confirmation": cfg.confirmation,
-                "status": resp["status"] if resp else None}
+    evidence = write_evidence(cfg, "DELETE", path, resp, object=before_obj,
+                              target=target_identity(before["data"] if before else None))
     if cfg.dry_run:
         evidence.update({"verification": "not-run", "note": "dry run: nothing was deleted"})
         emit(cfg, evidence)
