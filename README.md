@@ -3,9 +3,10 @@
 A small, audited **API Only** transport for using the Canvas REST API from Codex without
 putting a Canvas token in `.env`, a repository, a command, or agent-visible output.
 
-The review surface is deliberately small: one Python 3.9+ standard-library program,
-one POSIX system installer, one macOS bootstrap, one Codex rules file, one Codex skill,
-and a stdlib test suite.
+The review surface is deliberately small: one Python 3.9+ standard-library program
+(`canvas_api_guard.py`, about 1,000 lines), one POSIX system installer, one macOS bootstrap,
+one Codex rules file, two Codex skills, the optional Specialized Functions program in
+`level2/`, and two stdlib test suites - 144 offline tests, all run by `python3 -m unittest`.
 
 ## The two-profile design
 
@@ -17,20 +18,28 @@ and a stdlib test suite.
 - a fixed, administrator-owned HTTPS Canvas host configuration;
 - one fixed, private audit log;
 - dry-run, human approval, pre-read, write, and fail-closed read-back verification;
-- no redirects and no automatic retries.
+- `--all-pages` and `--fields` on reads, so a complete list or a narrow projection needs no
+  shell pipeline, and complete JSON output whenever stdout is not a terminal;
+- refused redirects on every authenticated API request. A submitted file is fetched by a
+  separate, token-free request, described under "Optional Specialized Functions" below.
 
 **Specialized Functions** are an additive layer, not a second transport, an allow-list, or a
-more privileged token. They leave API Only available for all general API work and add small,
-reviewable instructor operations that resolve live Canvas objects, validate task-specific data,
-and produce compact evidence. It includes read-only course/student analytics plus narrowly
-defined rubric, rubric-grading, assignment, page, and announcement workflows. These writes use
-the same dry-run, explicit approval, and verified read-back as API Only.
+more privileged token. They leave API Only available for all general API work and add the seven
+operations that compute across several Canvas calls or validate structured input: participation
+and activity analysis, submission-file review for one student or a whole assignment, and rubric
+creation, attachment and grading. An operation that would be a single documented API call is
+deliberately absent - API Only does those, with the Canvas documentation. These writes use the
+same dry-run, explicit approval, and verified read-back as API Only.
 
 ## What this improves
 
 Compared with a token in `.env` and direct API use, Codex never receives the token, cannot
 select another destination host or audit path, and must put every write through an approved,
-logged, verified operation. The installed executable and host configuration are root-owned.
+logged, verified operation. The installed executable and host configuration are root-owned, and
+the guard enforces that itself: before it reads the token it requires its own real path, the
+fixed configuration, and every directory above them to be owned by root and not writable by
+group or others, naming the component that fails. A source-tree copy can demonstrate every
+refusal offline; it cannot make a live Canvas request.
 
 It adds no Canvas permission. Canvas remains the source of authorization: the guard can do
 only what the installed token can do.
@@ -168,8 +177,8 @@ newer revision; never substitute `main` or another mutable branch name.
   test "$(git -C "$guard_checkout" rev-parse HEAD)" = "$guard_commit"
   cd "$guard_checkout"
   python3 -m unittest
-  ./install.sh --plan --host clemson.instructure.com
-  sudo ./install.sh --host clemson.instructure.com
+  ./install.sh --plan --host school.instructure.com
+  sudo ./install.sh --host school.instructure.com
   echo
   echo "Installation complete. Now enter your Canvas API token:"
   /usr/local/libexec/canvas_api_guard.py --set-token
@@ -193,9 +202,10 @@ command-line overrides in the installed interface.
   "courses?enrollment_type=teacher&enrollment_state=active&state[]=available&include[]=term&per_page=100" -o json
 /usr/local/libexec/canvas_api_guard.py get "courses/123/students?per_page=100" -o json
 
-# Count every page of a collection without agent-side jq or repeated tool calls
-/usr/local/libexec/canvas_api_guard.py count \
-  "courses/123/enrollments?type[]=StudentEnrollment&state[]=active&per_page=100"
+# Every page of a collection, projected to the fields wanted: no jq, no repeated tool calls
+/usr/local/libexec/canvas_api_guard.py get \
+  "courses/123/enrollments?type[]=StudentEnrollment&state[]=active&per_page=100" \
+  --all-pages --fields id,user_id
 
 # Preview: exact request, no token read and no network call
 /usr/local/libexec/canvas_api_guard.py put \
@@ -223,24 +233,26 @@ reviewed immutable checkout:
 sudo ./install.sh --profile specialized-functions --host school.instructure.com
 ```
 
-Read operations include `course-health`, `assignment-performance`, `student-attention`, and
-`student-trajectory`. Named write operations include rubric creation/attachment, rubric grading,
-assignment creation/update, pages, and announcements. They accept a reviewed, allowlisted JSON
-definition and require `--dry-run` followed by explicit approval for `--yes`. See
+The read operation is `student-attention`, which reports Canvas activity, not verified
+attendance. The write operations are rubric creation, rubric attachment, and rubric grading for
+one student or for a batch. They accept a reviewed, allowlisted JSON definition and require
+`--dry-run` followed by explicit approval for `--yes`. See
 [level2/README.md](level2/README.md) for the exact boundary.
 
-Submission-file review is read-only. The guard authenticates only the pinned Canvas API metadata
-request. The returned file URL and every redirect are fetched without the Canvas token. Redirects
-copy only explicit request headers and always let the HTTP client derive a fresh `Host` header for
-the destination; signed URLs and external response details are never logged. Specialized Functions
-can prepare one student’s complete attachment set or
-download an assignment’s complete attachment set (including earlier submission attempts), subject
-to the documented 20-file-per-submission and 500-file-per-assignment limits. The files stay in a
+Submission-file review is read-only, and it is the one data flow that leaves the pinned API
+host. The guard authenticates only the Canvas metadata request that resolves the file. The file
+itself, and every HTTPS redirect Canvas issues to its own host or to the storage host it names,
+is fetched with no Authorization, no Cookie, no forwarded Host, and no system proxy. Only each
+hop's status, hostname and scope are logged - never the signed URL, its query, or a response
+body. A download copies a student's work onto the disk, so the Codex rules prompt for it.
+Specialized Functions can prepare one student's complete attachment set or download an
+assignment's complete attachment set (including earlier submission attempts), subject to the
+documented 20-file-per-submission and 500-file-per-assignment limits. The files stay in a
 user-private local review directory and no grade is inferred or written.
 
-Specialized Functions also provide base date/time changes for assignments and Classic Quizzes,
-plus verified assignment/attendance-assignment excusal. They stop on New Quizzes, date overrides,
-or an attendance source that is not represented by a Canvas assignment.
+Date changes, excusals, assignment/page/announcement authoring and the former analytics
+shortcuts are ordinary API Only calls against the documented Canvas endpoints, with the same
+dry-run, approval and read-back.
 
 ## Fail-closed write evidence
 
@@ -274,14 +286,18 @@ it private, covered by endpoint controls and retention policy, and do not make e
 
 ## Audit record
 
-Every request is appended and fsynced before the network call. Response bodies and the token
-are never logged. Existing audit directories and files are refused unless they are owned by
-the current user and mode `0700`/`0600`; symlinked or non-regular logs are refused.
+Every write is appended and fsynced before the network call and again after it; every read is
+recorded as one line after the fact. Response bodies and the token are never logged. Existing
+audit directories and files are refused unless they are owned by the current user and mode
+`0700`/`0600`; symlinked or non-regular logs are refused.
 
 Events include:
 
-- `request`: method, normalized path, URL, read/write kind, confirmation mode, and write body;
-- `response`: status, success, byte count or error type, and numeric-only timing diagnostics;
+- `read`: one line per read, written after the response: verb, normalized path, status, and
+  byte count or error type;
+- `request`: a write, recorded before it is sent: method, normalized path, URL, confirmation
+  mode, and the request body;
+- `response`: that write's status, success, and byte count or error type;
 - `evidence`: target identity, before/after changes, and verification result;
 - `refusal`: a write that lacked confirmation.
 
@@ -295,6 +311,8 @@ python3 -m unittest -v
 sh -n install.sh
 ./install.sh --plan --host school.instructure.com
 python3 canvas_api_guard.py --version
+rg -n "urlopen\(|build_opener|\.open\(" canvas_api_guard.py
+rg -n "read_token\(\)" canvas_api_guard.py
 ```
 
 The tests replace all Canvas network and credential-store calls. When Codex is available,

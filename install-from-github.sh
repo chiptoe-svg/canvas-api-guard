@@ -139,6 +139,10 @@ sh -n install.sh
 git diff --check
 ./install.sh --plan --profile "$PROFILE" --host "$CANVAS_HOST"
 
+printf '\nThat plan is what the next step will do. Nothing has changed yet.\n'
+printf 'Press Return to continue with the installation, or Ctrl-C to stop now. '
+read reviewed || true
+
 printf '\nThe next prompt is for your Mac administrator password.\n'
 printf 'Nothing will appear while you type it.\n\n'
 

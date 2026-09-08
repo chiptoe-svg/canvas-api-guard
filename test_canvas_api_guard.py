@@ -1608,6 +1608,48 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertIn('if [ "$UPGRADE" = no ]; then', script)
         self.assertIn('"$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST"', script)
 
+    def test_github_bootstrap_pauses_for_review_before_sudo(self):
+        """The plan is worth printing only if a person can stop before the privileged step."""
+        with open(self.BOOTSTRAP) as handle:
+            script = handle.read()
+        plan = script.index("./install.sh --plan --profile")
+        pause = script.index("Press Return to continue with the installation")
+        sudo = script.index('/usr/bin/sudo "$CHECKOUT/install.sh"')
+        self.assertLess(plan, pause)
+        self.assertLess(pause, sudo)
+        self.assertIn("read reviewed || true", script)
+
+
+class TestDocumentClaims(unittest.TestCase):
+    """The reviewer documents must not describe behaviour this code does not have."""
+
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+    README = os.path.join(ROOT, "README.md")
+    IT_REVIEW = os.path.join(ROOT, "docs", "IT-REVIEW.md")
+
+    def text(self, path):
+        with open(path) as handle:
+            return handle.read()
+
+    def test_neither_document_claims_that_every_redirect_is_refused(self):
+        for path in (self.README, self.IT_REVIEW):
+            with self.subTest(document=os.path.basename(path)):
+                text = self.text(path)
+                self.assertNotIn("no redirects and no automatic retries", text)
+                self.assertNotIn("All redirects are refused", text)
+                self.assertIn("no forwarded Host", text)
+
+    def test_both_documents_describe_the_shipped_interface(self):
+        readme, review = self.text(self.README), self.text(self.IT_REVIEW)
+        for text in (readme, review):
+            self.assertNotIn("canvas_api_guard.py count", text)
+            self.assertNotIn("timing", text)
+            self.assertIn("--all-pages", text)
+        self.assertIn('rg -n "urlopen\\(|build_opener|\\.open\\("', review)
+        self.assertIn("test_canvas_api_operations.py", review)
+        self.assertIn("submission-reviews", review)
+        self.assertNotIn("clemson.instructure.com", readme)
+
 
 if __name__ == "__main__":
     unittest.main()

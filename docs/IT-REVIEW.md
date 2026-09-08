@@ -18,7 +18,8 @@ The runtime and installation boundary consists of:
 | `codex/canvas-api-guard.rules` | installed-path reads allowed; installed-path writes prompt; known credential reads forbidden |
 | `codex/config.toml` | recommended Codex sandbox and human-review settings |
 | `codex/skills/canvas-api-guard/SKILL.md` | operating procedure and data-handling instructions |
-| `test_canvas_api_guard.py` | offline API Only security and behavior tests |
+| `test_canvas_api_guard.py` | offline API Only security and behavior tests, plus the rules and skill coverage tests |
+| `test_canvas_api_operations.py` | offline Specialized Functions behavior tests |
 | `level2/` | optional Specialized Functions, installed with `--profile specialized-functions` |
 
 The documents under `docs/superpowers/` are historical design/implementation records, not
@@ -34,6 +35,12 @@ Instructor request
   -> fixed https://<installed Canvas host>/api/v1/...
   -> Canvas response
   -> Codex result in the Clemson-approved ChatGPT Edu account
+
+Submitted-file review (the one flow that leaves the pinned API host)
+  -> pinned https://<installed Canvas host>/api/v1/files/<id> (authenticated) for the file URL
+  -> that URL, then any HTTPS redirect Canvas issues - its own host, or the storage host it
+     names - with no Authorization, no Cookie, no forwarded Host, and no system proxy
+  -> ~/.canvas-api-guard/submission-reviews/ (0700 directory, 0600 files)
 
 Local evidence
   -> fixed ~/.canvas-api-guard/audit.jsonl (0700 directory, 0600 file)
@@ -69,6 +76,12 @@ is never printed or logged.
 - Account selection uses the effective UID's password-database entry rather than `USER` or
   `LOGNAME` environment variables.
 - Dry-runs and refused non-TTY writes do not read the token.
+- Before any token read, the guard requires its own real path, the fixed configuration file,
+  and every ancestor directory to be owned by root and not writable by group or others, naming
+  the first component that fails. A source-tree copy can show `--version`, a dry run and every
+  refusal, but cannot make a live request - which is what the Codex rules already assume. The
+  check stands down only when the configuration path has been redirected by the offline test
+  seam, which the installed guard never does.
 
 ### Keep the token on one destination
 
@@ -78,7 +91,10 @@ is never printed or logged.
 - There is no production `--host` option.
 - The URL builder forces HTTPS and rejects paths containing a scheme, host, traversal,
   whitespace, or backslash.
-- All redirects are refused, including same-host redirects.
+- Every redirect on an authenticated API request is refused, including a same-host redirect.
+- A submitted-file download does follow Canvas's HTTPS redirects, and no hop carries the token,
+  a cookie, a forwarded Host header, or proxy credentials - the first hop already carries none.
+  Only each hop's status, hostname and scope are recorded.
 - Pagination links are returned only when their host matches; they are never followed
   automatically.
 
@@ -111,10 +127,10 @@ correlation sources.
 - The directory must be owned by the current user and mode `0700`.
 - The file is opened with append and no-follow semantics where supported and must be a
   regular user-owned `0600` file.
-- A request event is flushed and fsynced before network I/O.
+- A write's request event is flushed and fsynced before network I/O.
 - Response bodies and credentials are excluded.
-- Response timing records contain only numeric request-audit, credential, network, and
-  total-before-response-audit durations; they do not contain credentials or response bodies.
+- A read is one line, written after the response: verb, path, status, and byte count. A write
+  is three: the request before it is sent, the response after it, and the evidence.
 - Write evidence includes the Canvas user ID and student name when Canvas returns the user
   object, plus requested/before/after fields and the verification result.
 
@@ -151,10 +167,12 @@ that exact commit into a private `/private/tmp` directory, verifies the checked-
 state, then creates a mode-`0700`, token-free `.command` launcher. It opens that launcher with
 the explicit system application path `/System/Applications/Utilities/Terminal.app`, avoiding
 dependence on an application-name lookup or `.command` file association. The test suite and
-installation plan run there before `sudo` requests the user's administrator password. After a
-successful installation, the guard itself requests the Canvas token with hidden input and stores
-it in Keychain. The launcher deletes only itself; the reviewed checkout remains available for
-inspection. No Canvas API request is made.
+installation plan run there, and the workflow waits for Return between the printed plan and
+`sudo`, so a person can stop before the privileged step rather than watch it scroll past.
+`sudo` then requests the user's administrator password. After a successful installation, the
+guard itself requests the Canvas token with hidden input and stores it in Keychain. The
+launcher deletes only itself; the reviewed checkout remains available for inspection. No
+Canvas API request is made.
 
 Codex's ordinary filesystem sandbox cannot launch macOS applications. Therefore, Codex must run
 the exact immutable bootstrap command with scoped host/GUI execution permission. Without that
@@ -188,30 +206,31 @@ API Only intentionally permits every supported method and path allowed by the Ca
 Its security improvement over `.env` plus direct API use is credential isolation, destination
 pinning, fixed audit, explicit write approval, and verified evidence.
 
-Both `get` and `count` are read-only operations. `count` follows only pagination links that pass
-the same pinned-host validation as `get`, and returns a total without requiring an agent-created
-shell pipeline or repeated API tool calls. Codex rules allow these reads while continuing to
-prompt for every write verb.
+`get` is the only read verb. `--all-pages` follows only pagination links that pass the same
+pinned-host validation, refuses a page it has already read, and stops at 200 pages; `--fields`
+projects each returned object to named dot-paths, so a total or a narrow list needs no
+agent-created shell pipeline or repeated tool calls. Codex rules allow those reads, and prompt
+for every write verb and for `download-submission-file`, which copies student work to disk.
 
 Specialized Functions are optional rather than a replacement for API Only. Their installed
 program contains no token logic and no HTTP client; it invokes only the installed API Only guard,
-so every underlying Canvas request keeps API Only's host pinning and audit. They provide
-course/assignment patterns, student engagement and submission signals, individual trajectories,
-and clearly labelled non-attendance activity summaries.
+so every underlying Canvas request keeps API Only's host pinning and audit. The one read
+operation is `student-attention`, an activity signal, not verified attendance.
 
-It also provides named rubric, rubric-grading, assignment, page, and announcement workflows.
-Each accepts only an allowlisted JSON definition, resolves the live Canvas target before acting,
-requires a reviewed `--dry-run` before `--yes`, and delegates the write/read-back to API Only.
+It also provides named rubric, rubric-grading, and submission-review workflows. Each accepts
+only an allowlisted JSON definition, resolves the live Canvas target before acting, requires a
+reviewed `--dry-run` before `--yes`, and delegates the write and its read-back to API Only.
 Rubric creates use an explicit documented response-field read-back; grading rejects stale or
-invented rubric criterion IDs; batches are capped at 50 and are individually audited/read back
-rather than sent through an opaque asynchronous bulk endpoint. Codex rules prompt for each
-Specialized Functions write command.
+invented rubric criterion IDs; batches are capped at 50 students and are individually audited
+and read back rather than sent through an opaque asynchronous bulk endpoint. Codex rules prompt
+for each Specialized Functions write and for each of the two operations that download student
+work. An API Only exit status of 3 - a write that was sent and could not be verified -
+propagates out of these operations unchanged and is never retried.
 
-Date changes are restricted to regular assignments and Classic Quizzes, validate available/due/
-close ordering, and refuse to overwrite Canvas-reported overrides. Excusal uses the documented
-submission excuse field and verifies Canvas's returned `excused` state. Attendance excusal is
-limited to an instructor-identified Canvas attendance assignment; a separate attendance tool is
-not treated as interchangeable with that assignment.
+Operations that were a single documented API call - course listings, roster counts, student
+lookup, needs-grading queues, analytics shortcuts, date changes, excusals, and assignment, page
+and announcement authoring - were removed. API Only performs them directly against the
+documented Canvas endpoints under the same controls.
 
 ## Residual risks
 
@@ -225,6 +244,9 @@ not treated as interchangeable with that assignment.
   external identity and policy control.
 - A malicious root user can replace the executable/configuration or alter the audit.
 - The local audit can grow without bound until deployment adds rotation and retention.
+- Submission review writes copies of student work to `~/.canvas-api-guard/submission-reviews/`
+  (user-owned, mode 0700). Those files are education records, they are not deleted
+  automatically, and no retention policy is enforced here; deployment owns their lifetime.
 - Before/after comparison is generic and compares requested leaf fields to same-named fields
   in the returned Canvas object; unusual endpoints may need endpoint-specific verification in
   Specialized Functions.
@@ -244,7 +266,7 @@ sh -n install.sh
 sh -n install-from-github.sh
 ./install-from-github.sh --help
 ./install.sh --plan --host school.instructure.com
-rg -n "urlopen\(" canvas_api_guard.py
+rg -n "urlopen\(|build_opener|\.open\(" canvas_api_guard.py
 rg -n "read_token\(\)" canvas_api_guard.py
 codex execpolicy check --rules codex/canvas-api-guard.rules -- \
   /usr/local/libexec/canvas_api_guard.py get courses
