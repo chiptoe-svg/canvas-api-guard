@@ -1287,6 +1287,25 @@ def find_codex():
     return None
 
 
+def rule_lists(rules_path):
+    """The name lists a rules file declares, read the way Codex reads them."""
+    with open(rules_path) as handle:
+        text = handle.read()
+    return dict((name, re.findall(r'"([^"]+)"', body)) for name, body
+                in re.findall(r"^([A-Z_]+) = \[(.*?)\]", text, re.S | re.M))
+
+
+# The subcommands that must always prompt, regardless of which list the rules file currently
+# puts them in. Pinned here - not just derived from whatever the file says - so a rules-file
+# edit that reclassifies one of them as a read is caught both offline (TestRulesCoverage) and
+# by the real Codex matrix (TestCodexRules).
+GUARD_WRITES = ["post", "put", "patch", "delete"]
+GUARD_DOWNLOADS = ["download-submission-file"]
+LEVEL2_MUST_PROMPT = ["prepare-submission-review", "download-assignment-submissions",
+                      "create-rubric", "attach-rubric", "grade-with-rubric",
+                      "bulk-grade-with-rubric"]
+
+
 class TestCodexRules(unittest.TestCase):
     """The shipped rules file, evaluated by Codex itself. Skipped when Codex is absent."""
     RULES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "codex",
@@ -1313,26 +1332,29 @@ class TestCodexRules(unittest.TestCase):
                 return "none"
         self.fail("execpolicy check did not return JSON for %r:\n%s" % (argv, text))
 
+    GUARD = "/usr/local/libexec/canvas_api_guard.py"
+    OPERATIONS = "/usr/local/libexec/canvas_api_operations.py"
+
+    # Which decision a list means, and which program its subcommands belong to. The rows below
+    # are generated from these plus whatever the rules file's own lists currently declare, so a
+    # subcommand nobody hand-copied into this test still gets checked against real Codex.
+    DECISION_FOR_LIST = {"READS": "allow", "WRITES": "prompt", "DOWNLOADS": "prompt",
+                         "OPERATION_READS": "allow", "OPERATION_PROMPTS": "prompt"}
+
     def test_the_matrix(self):
-        rows = [
-            (["/usr/local/libexec/canvas_api_guard.py", "get", "courses"], "allow"),
-            (["/usr/local/libexec/canvas_api_guard.py", "get", "courses/1/enrollments",
-              "--all-pages", "--fields", "id"], "allow"),
-            (["/usr/local/libexec/canvas_api_guard.py", "put", "courses/1/assignments/2", "-d", "{}", "--yes"], "prompt"),
-            (["/usr/local/libexec/canvas_api_guard.py", "post", "courses/1/assignments", "-d", "{}", "--yes"], "prompt"),
-            (["/usr/local/libexec/canvas_api_guard.py", "patch", "courses/1", "-d", "{}", "--yes"], "prompt"),
-            (["/usr/local/libexec/canvas_api_guard.py", "delete", "courses/1", "--yes"], "prompt"),
-            (["/usr/local/libexec/canvas_api_guard.py", "download-submission-file",
-              "--course-id", "1", "--file-id", "10", "--submission-id", "20"], "prompt"),
-            (["/usr/local/libexec/canvas_api_operations.py", "student-attention",
-              "--course-id", "1"], "allow"),
-            (["/usr/local/libexec/canvas_api_operations.py", "attendance-summary",
-              "--course-id", "1"], "allow"),
-            (["/usr/local/libexec/canvas_api_operations.py", "download-assignment-submissions",
-              "--course-id", "1", "--assignment-id", "2"], "prompt"),
-            (["/usr/local/libexec/canvas_api_operations.py", "create-rubric", "--course-id", "1",
-              "--definition", "rubric.json", "--yes"], "prompt"),
-            (["canvas_api_guard.py", "get", "courses/1"], "none"),
+        must_prompt = GUARD_WRITES + GUARD_DOWNLOADS + LEVEL2_MUST_PROMPT
+        program_for_list = {"READS": self.GUARD, "WRITES": self.GUARD, "DOWNLOADS": self.GUARD,
+                            "OPERATION_READS": self.OPERATIONS,
+                            "OPERATION_PROMPTS": self.OPERATIONS}
+        lists = rule_lists(self.RULES)
+        rows = []
+        for list_name, base_decision in self.DECISION_FOR_LIST.items():
+            for name in lists[list_name]:
+                # Pinned names must prompt even if the file above has reclassified them - that
+                # mismatch is exactly what should fail this test.
+                want = "prompt" if name in must_prompt else base_decision
+                rows.append(([program_for_list[list_name], name], want))
+        rows += [
             (["./canvas_api_guard.py", "put", "courses/1", "--yes"], "none"),
             (["python3", "/usr/local/libexec/canvas_api_guard.py", "put", "courses/1", "--yes"], "none"),
             (["security", "find-generic-password", "-s", "canvas-api-guard", "-w"], "forbidden"),
@@ -1340,6 +1362,8 @@ class TestCodexRules(unittest.TestCase):
             (["/usr/bin/security", "find-generic-password", "-s", "canvas-api-guard", "-w"],
              "forbidden"),
             (["/usr/bin/secret-tool", "lookup", "service", "canvas-api-guard"], "forbidden"),
+            (["/opt/homebrew/bin/secret-tool", "lookup", "service", "canvas-api-guard"],
+             "forbidden"),
             (["security", "list-keychains"], "none"),
         ]
         for argv, want in rows:
@@ -1351,24 +1375,30 @@ class TestRulesCoverage(unittest.TestCase):
 
     RULES = TestCodexRules.RULES
 
-    def rule_lists(self):
-        """The name lists the rules file declares, read the way Codex reads them."""
-        with open(self.RULES) as handle:
-            text = handle.read()
-        return dict((name, re.findall(r'"([^"]+)"', body)) for name, body
-                    in re.findall(r"^([A-Z_]+) = \[(.*?)\]", text, re.S | re.M))
-
     def test_every_guard_subcommand_is_classified_exactly_once(self):
-        lists = self.rule_lists()
+        lists = rule_lists(self.RULES)
         classified = lists["READS"] + lists["WRITES"] + lists["DOWNLOADS"]
         self.assertEqual(sorted(classified), subcommand_names(guard.build_parser()))
         self.assertEqual(len(classified), len(set(classified)))
 
     def test_every_level_2_operation_is_classified_exactly_once(self):
-        lists = self.rule_lists()
+        lists = rule_lists(self.RULES)
         classified = lists["OPERATION_READS"] + lists["OPERATION_PROMPTS"]
         self.assertEqual(sorted(classified), subcommand_names(load_operations().parser()))
         self.assertEqual(len(classified), len(set(classified)))
+
+    def test_the_write_and_download_operations_are_pinned_to_prompt(self):
+        """Classifying every subcommand exactly once (the tests above) still accepts a write
+        landing in the wrong list, as long as it lands in some list. Pin which list carries
+        each safety-critical name, so a promotion to allow fails offline too."""
+        lists = rule_lists(self.RULES)
+        self.assertIn("get", lists["READS"])
+        for name in GUARD_WRITES:
+            self.assertIn(name, lists["WRITES"])
+        for name in GUARD_DOWNLOADS:
+            self.assertIn(name, lists["DOWNLOADS"])
+        for name in LEVEL2_MUST_PROMPT:
+            self.assertIn(name, lists["OPERATION_PROMPTS"])
 
 
 class TestGuardHeader(unittest.TestCase):

@@ -85,12 +85,14 @@ prefix_rule(
 # would be no rule at all.
 prefix_rule(
     pattern = [["security", "/usr/bin/security", "secret-tool", "/usr/bin/secret-tool",
-                "/usr/local/bin/secret-tool"], ["find-generic-password", "lookup"]],
+                "/usr/local/bin/secret-tool", "/opt/homebrew/bin/secret-tool"],
+               ["find-generic-password", "lookup"]],
     decision = "forbidden",
     justification = "The agent never needs the raw Canvas token",
     match = ["security find-generic-password -s canvas-api-guard -w",
              "secret-tool lookup service canvas-api-guard",
              "/usr/bin/security find-generic-password -s canvas-api-guard -w",
-             "/usr/bin/secret-tool lookup service canvas-api-guard"],
+             "/usr/bin/secret-tool lookup service canvas-api-guard",
+             "/opt/homebrew/bin/secret-tool lookup service canvas-api-guard"],
     not_match = ["security list-keychains"],
 )
