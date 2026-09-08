@@ -2653,3 +2653,6 @@ offline tests, `canvas_api_guard.py --version` prints `canvas-api-guard/1.14.0`,
 one thing a reviewer should check by hand is that a source-tree copy of the guard cannot make
 a live request: `python3 canvas_api_guard.py get courses` on an installed machine must refuse
 with `the guard executable is not trustworthy: ...` before touching the keychain.
+
+2026-09-08 amendment: `attendance-summary` was removed by owner ruling (Task 8b), so Level 2
+ships seven operations, not the eight described above.

@@ -1664,10 +1664,59 @@ class TestInstallerPlan(unittest.TestCase):
     def test_plan_runs_the_ancestor_ownership_check(self):
         """The installer refuses to leave the guard's own provenance check unsatisfiable, so
         the ancestor check must run -- and be visible -- even under --plan. This does not
-        simulate a bad /usr/local; it only proves the check ran and named its result."""
+        simulate a bad /usr/local; it counts the components it actually inspected, so
+        deleting either call site would show up here."""
         proc = self.run_installer("--plan", "--host", HOST)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("ancestor check", proc.stdout)
+        counted = re.search(r"(\d+) components checked", proc.stdout)
+        self.assertIsNotNone(counted, proc.stdout)
+        self.assertGreater(int(counted.group(1)), 0)
+
+    def extracted_ancestor_check(self):
+        """install.sh's ancestor check, alone: the platform's stat helpers and the function
+        itself, cut out with sed so its refusals can be exercised without root or /usr/local."""
+        import subprocess
+        platform = os.uname().sysname
+        if platform not in ("Darwin", "Linux"):
+            self.skipTest("install.sh supports macOS and Linux only")
+        helpers = subprocess.run(
+            "sed -n '/^    %s)$/,/^        ;;$/p' %s | sed '1d;$d'"
+            % (platform, shlex.quote(self.INSTALLER)), shell=True,
+            stdout=subprocess.PIPE, universal_newlines=True).stdout
+        function = subprocess.run(
+            ["sed", "-n", "/^check_ancestor_ownership() {$/,/^}$/p", self.INSTALLER],
+            stdout=subprocess.PIPE, universal_newlines=True).stdout
+        self.assertIn("stat_owner()", helpers)
+        self.assertIn("is not owned by root", function)
+        return "CHECKED=0\n" + helpers + function + '\ncheck_ancestor_ownership "$1"\n'
+
+    def run_ancestor_check(self, target):
+        import subprocess
+        script = os.path.join(tempfile.mkdtemp(prefix="cag-ancestor-check-"), "check.sh")
+        self.addCleanup(shutil.rmtree, os.path.dirname(script), True)
+        with open(script, "w") as handle:
+            handle.write(self.extracted_ancestor_check())
+        return subprocess.run(["sh", script, target], stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, universal_newlines=True)
+
+    def user_owned_directory(self):
+        directory = tempfile.mkdtemp(prefix="cag-ancestor-")
+        self.addCleanup(shutil.rmtree, directory, True)
+        return directory
+
+    def test_a_user_owned_destination_is_refused_with_a_chown_remedy(self):
+        proc = self.run_ancestor_check(self.user_owned_directory())
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertIn("is not owned by root", proc.stderr)
+        self.assertIn("remedy: sudo chown root:", proc.stderr)
+
+    def test_a_user_owned_ancestor_is_refused_and_offered_no_chown_remedy(self):
+        """chown on a prefix somebody else manages would be destructive advice, not a fix."""
+        proc = self.run_ancestor_check(os.path.join(self.user_owned_directory(), "libexec"))
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertIn("installed under a prefix a non-root user can write", proc.stderr)
+        self.assertNotIn("chown", proc.stderr)
 
     def test_specialized_functions_plan_lists_its_separate_artifacts(self):
         proc = self.run_installer("--plan", "--profile", "specialized-functions", "--host", HOST)

@@ -146,3 +146,6 @@ prints one line; stray stdout silenced. Every README reviewer command re-run.
 
 The workflow reference cards (branch `workflow-cards`) stay unmerged. Windows. Automatic
 audit-log rotation.
+
+2026-09-08 amendment: `attendance-summary` was removed by owner ruling (Task 8b), so Level 2
+ships seven operations, not the eight described above.

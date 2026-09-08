@@ -112,6 +112,7 @@ check_ancestor_ownership() {
     path=$1
     while :; do
         if [ -e "$path" ] || [ -L "$path" ]; then
+            CHECKED=$((CHECKED + 1))
             if [ -L "$path" ]; then
                 echo "refusing: $path is a symbolic link in the installation path" >&2
                 echo "  remedy: replace it with a real, root-owned directory" >&2
@@ -193,6 +194,7 @@ if command -v git >/dev/null 2>&1 && git -C "$SRC_DIR" rev-parse --is-inside-wor
     fi
 fi
 
+CHECKED=0
 check_ancestor_ownership "$DEST_DIR"
 check_ancestor_ownership "$CONFIG_DIR"
 
@@ -203,8 +205,9 @@ canvas-api-guard installation plan (no changes made)
   guard sha:    $SOURCE_SHA
   rules sha:    $RULES_SHA
   skill sha:    $SKILL_SHA
-  ancestor check: existing ancestors of $DEST_DIR and $CONFIG_DIR: root-owned, not links, not
-                  group/other-writable; missing components will be created root-owned
+  ancestor check: $CHECKED components checked; existing ancestors of $DEST_DIR and
+                  $CONFIG_DIR are root-owned, not links, not group/other-writable;
+                  missing components will be created root-owned
   Canvas host:  $CANVAS_HOST
   executable:   $DEST (root:$ROOT_GROUP, 0555)
   config:       $CONFIG (root:$ROOT_GROUP, 0644; profile $PROFILE_LABEL; compatibility key $PROFILE)
