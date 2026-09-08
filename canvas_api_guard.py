@@ -244,6 +244,12 @@ def invocation_source():
                    "agent_env": sorted(name for name in AGENT_MARKERS if name in os.environ)}
     return _SOURCE
 
+def user_private(info, kind):
+    """A real, non-symlink object of `kind` (stat.S_ISDIR or stat.S_ISREG), owned by the current
+    user and closed to group and others: the one rule for everything this tool writes."""
+    return (kind(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+            and info.st_uid == os.getuid() and not info.st_mode & 0o077)
+
 def secure_log_fd(log_path):
     """Open the fixed audit log without following a link; refuse weak ownership or modes."""
     directory = os.path.dirname(log_path)
@@ -259,8 +265,7 @@ def secure_log_fd(log_path):
                                  % (directory, err))
         except OSError as err:
             raise GuardError("cannot inspect audit directory %s: %s" % (directory, err))
-        if (not stat.S_ISDIR(dinfo.st_mode) or stat.S_ISLNK(dinfo.st_mode)
-                or dinfo.st_uid != os.getuid() or (dinfo.st_mode & 0o077)):
+        if not user_private(dinfo, stat.S_ISDIR):
             raise GuardError("audit directory must be a real directory owned by the current "
                              "user and mode 0700: %s" % directory)
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
@@ -271,7 +276,7 @@ def secure_log_fd(log_path):
     except OSError as err:
         raise GuardError("cannot securely open audit log %s: %s" % (log_path, err))
     info = os.fstat(fd)
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or (info.st_mode & 0o077):
+    if not user_private(info, stat.S_ISREG):
         os.close(fd)
         raise GuardError("audit log must be a regular file owned by the current user and mode 0600: %s"
                          % log_path)
@@ -746,8 +751,7 @@ def secure_review_dir():
         info = os.lstat(REVIEW_DIR)
     except OSError as err:
         raise GuardError("cannot inspect submission review directory: %s" % err)
-    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
-            or info.st_uid != os.getuid() or (info.st_mode & 0o077)):
+    if not user_private(info, stat.S_ISDIR):
         raise GuardError("submission review directory must be user-owned mode 0700: %s" % REVIEW_DIR)
     return REVIEW_DIR
 
