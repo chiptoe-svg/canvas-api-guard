@@ -16,7 +16,8 @@ import subprocess
 import sys
 
 GUARD = "/usr/local/libexec/canvas_api_guard.py"
-USER_AGENT = "canvas-api-operations/0.4.0"
+USER_AGENT = "canvas-api-operations/0.5.0"
+MAX_REVIEW_ATTACHMENTS = 500
 
 
 class OperationError(Exception):
@@ -425,30 +426,83 @@ def grade_with_rubric(args):
     print(json.dumps({"result": grade_one(args, definition_file(args.definition))}, indent=2, sort_keys=True))
 
 
+def submission_attachments(submission):
+    """Return each file once, retaining the earliest submission attempt that introduced it."""
+    seen, result = set(), []
+
+    def add(attempt, rows):
+        for attachment in rows or []:
+            file_id = str(attachment.get("id", "")) if isinstance(attachment, dict) else ""
+            if not file_id.isdigit() or file_id in seen:
+                continue
+            seen.add(file_id)
+            result.append({"attempt": attempt, "attachment": attachment})
+
+    for historical in submission.get("submission_history") or []:
+        if isinstance(historical, dict):
+            add(historical.get("attempt"), historical.get("attachments"))
+    add(submission.get("attempt"), submission.get("attachments"))
+    return result
+
+
+def download_submission_attachments(submission, limit):
+    """Download an attachment set through API Only; this program never opens a connection."""
+    submission_id = canvas_id(str(submission.get("id", "")), "submission ID")
+    attachments = submission_attachments(submission)
+    if len(attachments) > limit:
+        raise OperationError("submission review refuses more than %s distinct attachments" % limit)
+    downloaded = []
+    for item in attachments:
+        attachment = item["attachment"]
+        evidence = guard_download_attachment(attachment["id"], submission_id, attachment_suffix(attachment))
+        downloaded.append({"file_id": attachment.get("id"), "display_name": attachment.get("display_name"),
+                           "content_type": attachment.get("content-type"), "attempt": item["attempt"],
+                           "local_review_copy": evidence})
+    return downloaded
+
+
 def prepare_submission_review(args):
-    """Resolve one current submission and locally retrieve its complete attachment set."""
+    """Resolve one submission and locally retrieve every distinct attachment across its attempts."""
     assignment = guard_get("courses/%s/assignments/%s" % (args.course_id, args.assignment_id)).get("object") or {}
-    submission = guard_get("courses/%s/assignments/%s/submissions/%s?include[]=user" %
+    submission = guard_get("courses/%s/assignments/%s/submissions/%s?include[]=user&include[]=submission_history" %
                            (args.course_id, args.assignment_id, args.student_id)).get("object") or {}
     if str(submission.get("user_id")) != args.student_id:
         raise OperationError("Canvas submission did not belong to the requested student")
-    submission_id = canvas_id(str(submission.get("id", "")), "submission ID")
-    attachments = submission.get("attachments") or []
-    attachments = [row for row in attachments if isinstance(row, dict) and str(row.get("id", "")).isdigit()]
+    attachments = submission_attachments(submission)
     if not attachments:
         raise OperationError("submission review requires at least one Canvas file attachment")
-    if len(attachments) > 20:
-        raise OperationError("submission review refuses more than 20 attachments in one submission")
-    downloaded = []
-    for attachment in attachments:
-        evidence = guard_download_attachment(attachment["id"], submission_id, attachment_suffix(attachment))
-        downloaded.append({"file_id": attachment.get("id"), "display_name": attachment.get("display_name"),
-                           "content_type": attachment.get("content-type"), "local_review_copy": evidence})
+    downloaded = download_submission_attachments(submission, 20)
     return {"operation": "prepare-submission-review", "course_id": args.course_id,
             "assignment": {"assignment_id": assignment.get("id"), "title": assignment.get("name")},
             "student": {"student_id": submission.get("user_id"), "name": (submission.get("user") or {}).get("name")},
-            "submission_id": int(submission_id), "attachments": downloaded,
+            "submission_id": int(canvas_id(str(submission.get("id", "")), "submission ID")), "attachments": downloaded,
             "next_step": "Review the local attachment set against the live rubric; no grade has been written."}
+
+
+def download_assignment_submissions(args):
+    """Retrieve every distinct attachment from every submission attempt in one assignment."""
+    assignment = guard_get("courses/%s/assignments/%s" % (args.course_id, args.assignment_id)).get("object") or {}
+    submissions = all_items("courses/%s/assignments/%s/submissions?include[]=submission_history&per_page=100" %
+                            (args.course_id, args.assignment_id))
+    planned = sum(len(submission_attachments(row)) for row in submissions if isinstance(row, dict))
+    if planned > MAX_REVIEW_ATTACHMENTS:
+        raise OperationError("assignment download has %s distinct attachments; the reviewed limit is %s" %
+                             (planned, MAX_REVIEW_ATTACHMENTS))
+    files, no_attachment = [], 0
+    for submission in submissions:
+        if not isinstance(submission, dict):
+            continue
+        if not submission_attachments(submission):
+            no_attachment += 1
+            continue
+        for record in download_submission_attachments(submission, MAX_REVIEW_ATTACHMENTS):
+            record.update({"student_id": submission.get("user_id"), "submission_id": submission.get("id")})
+            files.append(record)
+    return {"operation": "download-assignment-submissions", "course_id": args.course_id,
+            "assignment": {"assignment_id": assignment.get("id"), "title": assignment.get("name")},
+            "submission_count": len(submissions), "no_attachment_submission_count": no_attachment,
+            "downloaded_file_count": len(files), "files": files,
+            "next_step": "Files are private local review copies. Review against the live rubric; no grade has been written."}
 
 
 def bulk_grade_with_rubric(args):
@@ -648,6 +702,7 @@ OPERATIONS = {"current-courses": current_courses, "roster-count": roster_count,
               "student-attention": student_attention, "student-trajectory": student_trajectory,
               "attendance-summary": attendance_summary,
               "prepare-submission-review": prepare_submission_review,
+              "download-assignment-submissions": download_assignment_submissions,
               "create-rubric": create_rubric, "attach-rubric": attach_rubric,
               "grade-with-rubric": grade_with_rubric,
               "bulk-grade-with-rubric": bulk_grade_with_rubric,
@@ -678,6 +733,9 @@ def parser():
     review.add_argument("--course-id", type=lambda value: canvas_id(value, "course ID"), required=True)
     review.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)
     review.add_argument("--student-id", type=lambda value: canvas_id(value, "student ID"), required=True)
+    download = subs.add_parser("download-assignment-submissions")
+    download.add_argument("--course-id", type=lambda value: canvas_id(value, "course ID"), required=True)
+    download.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)
     write = argparse.ArgumentParser(add_help=False)
     write.add_argument("--course-id", type=lambda value: canvas_id(value, "course ID"), required=True)
     write.add_argument("--definition", required=True, help="path to a reviewed JSON operation definition")

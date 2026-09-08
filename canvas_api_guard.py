@@ -43,7 +43,7 @@ import argparse, datetime, getpass, hashlib, json, os, pty, pwd, re, stat, subpr
 import urllib.error, urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
-USER_AGENT = "canvas-api-guard/1.5.0"
+USER_AGENT = "canvas-api-guard/1.6.0"
 KEYCHAIN_SERVICE = "canvas-api-guard"
 SECURITY_BIN = "/usr/bin/security"
 SECRET_TOOL_PATHS = ("/usr/bin/secret-tool", "/usr/local/bin/secret-tool")
@@ -72,11 +72,11 @@ class VerificationFailure(GuardError):
     """The write returned, but the required read-back did not prove the outcome."""
 
 # ------------------------------------------------------------------------------------- token
-# The token is in exactly two places in this file: read_token() reads it, and one line in
-# send_request() puts it into the Authorization header. It is never printed, logged, echoed,
-# stored in a file, or taken from argv or the environment - and under --dry-run, or on a
-# refused write, it is never even read. It lives in the macOS keychain or the Linux secret
-# service; any other platform is refused.
+# read_token() is the only credential reader. Its value is used only to make an Authorization
+# header for a pinned Canvas API request or a pinned Canvas attachment-download first hop; it is
+# never printed, logged, echoed, stored in a file, or taken from argv or the environment. Under
+# --dry-run, or on a refused write, it is never read. It lives in the macOS keychain or the Linux
+# secret service; any other platform is refused.
 def account_name():
     """The OS account running the guard, independent of forgeable USER/LOGNAME variables."""
     return pwd.getpwuid(os.getuid()).pw_name
@@ -297,11 +297,34 @@ class CredentialFreeRedirects(urllib.request.HTTPRedirectHandler):
 urllib.request.install_opener(urllib.request.build_opener(RefuseRedirects))
 _CREDENTIAL_FREE_OPENER = urllib.request.build_opener(CredentialFreeRedirects)
 
+
+class PinnedAttachmentRedirects(urllib.request.HTTPRedirectHandler):
+    """Keep credentials only for same-host attachment redirects; strip them everywhere else."""
+    def __init__(self, host):
+        super(PinnedAttachmentRedirects, self).__init__()
+        self.host = host
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parsed = urllib.parse.urlsplit(newurl)
+        if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+            raise GuardError("refusing a non-HTTPS or malformed attachment redirect")
+        forwarded = dict((name, value) for name, value in req.header_items()
+                         if name.lower() != "proxy-authorization")
+        if parsed.netloc != self.host:
+            forwarded = dict((name, value) for name, value in forwarded.items()
+                             if name.lower() not in ("authorization", "cookie"))
+        return urllib.request.Request(newurl, headers=forwarded, method="GET")
+
 def open_request(request, credential_free_redirects=False):
     """Open a pinned authenticated request, or a Canvas-issued credential-free attachment URL."""
     if credential_free_redirects:
         return _CREDENTIAL_FREE_OPENER.open(request, timeout=TIMEOUT)
     return urllib.request.urlopen(request, timeout=TIMEOUT)
+
+
+def open_pinned_attachment_request(request, host):
+    """Open a Canvas file URL with a token only on the configured Canvas host."""
+    return urllib.request.build_opener(PinnedAttachmentRedirects(host)).open(request, timeout=TIMEOUT)
 
 
 def safe_download_failure(err):
@@ -575,6 +598,17 @@ def safe_download_suffix(value):
         raise GuardError("download suffix must be a simple extension of at most 16 letters or digits")
     return value.lower()
 
+
+def submission_file_url(cfg, file_id):
+    """Resolve a fresh Canvas File URL through the pinned authenticated request path."""
+    metadata = send_request(cfg, "GET", "files/%s" % file_id)
+    file_url = (metadata.get("data") or {}).get("url")
+    parsed = urllib.parse.urlsplit(file_url or "")
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+        raise GuardError("Canvas did not return a usable HTTPS submission download URL")
+    return file_url
+
+
 def do_download_submission_file(cfg, file_id, submission_id, suffix):
     """Download one Canvas-authorized submission attachment, never forwarding the token."""
     file_id, submission_id = numeric_id(file_id, "file ID"), numeric_id(submission_id, "submission ID")
@@ -584,51 +618,62 @@ def do_download_submission_file(cfg, file_id, submission_id, suffix):
     # it can produce a different, CDN-specific route.  The metadata lookup is
     # authenticated and pinned; the download URL is treated as a signed bearer
     # capability and receives no Canvas credential at all.
-    metadata = send_request(cfg, "GET", "files/%s" % file_id)
-    file_url = (metadata.get("data") or {}).get("url")
-    parsed = urllib.parse.urlsplit(file_url or "")
-    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
-        raise GuardError("Canvas did not return a usable HTTPS submission download URL")
     directory = secure_review_dir()
-    fd, output = tempfile.mkstemp(prefix="canvas-submission-", suffix=suffix, dir=directory)
-    digest, total = hashlib.sha256(), 0
-    try:
-        log_event(cfg.log_path, {"event": "download", "kind": "read", "file_id": file_id,
-                                 "submission_id": submission_id, "confirmation": None})
-        request = urllib.request.Request(file_url, headers={"User-Agent": USER_AGENT}, method="GET")
-        raw = open_request(request, credential_free_redirects=True)
-        with os.fdopen(fd, "wb") as handle:
-            fd = None
-            while True:
-                chunk = raw.read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > 50 * 1024 * 1024:
-                    raise GuardError("submitted attachment exceeds the 50 MiB review limit")
-                digest.update(chunk)
-                handle.write(chunk)
-            handle.flush(); os.fsync(handle.fileno())
-        raw.close()
-    except Exception as err:
-        if fd is not None:
-            os.close(fd)
-        try: os.unlink(output)
-        except OSError: pass
-        failure = safe_download_failure(err)
+    for attempt in (1, 2):
+        fd, output = tempfile.mkstemp(prefix="canvas-submission-", suffix=suffix, dir=directory)
+        digest, total = hashlib.sha256(), 0
+        try:
+            # A 5xx from a signed storage URL can be transient. Resolve fresh metadata once,
+            # then retry immediately; never retry other failures or any write.
+            file_url = submission_file_url(cfg, file_id)
+            log_event(cfg.log_path, {"event": "download", "kind": "read", "file_id": file_id,
+                                     "submission_id": submission_id, "attempt": attempt,
+                                     "confirmation": None})
+            # File.url is Canvas's authenticated download route. The token is added only after
+            # confirming this first hop is precisely the configured Canvas host; the redirect
+            # handler removes it before any CDN/storage request.
+            if urllib.parse.urlsplit(file_url).netloc != cfg.host:
+                raise GuardError("Canvas File URL did not stay on the pinned host")
+            request = urllib.request.Request(file_url, headers={"User-Agent": USER_AGENT,
+                                         "Authorization": "Bearer " + read_token()}, method="GET")
+            raw = open_pinned_attachment_request(request, cfg.host)
+            with os.fdopen(fd, "wb") as handle:
+                fd = None
+                while True:
+                    chunk = raw.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > 50 * 1024 * 1024:
+                        raise GuardError("submitted attachment exceeds the 50 MiB review limit")
+                    digest.update(chunk)
+                    handle.write(chunk)
+                handle.flush(); os.fsync(handle.fileno())
+            raw.close()
+        except Exception as err:
+            if fd is not None:
+                os.close(fd)
+            try: os.unlink(output)
+            except OSError: pass
+            failure = safe_download_failure(err)
+            retryable = failure["http_status"] in (500, 502, 503, 504) and attempt == 1
+            log_event(cfg.log_path, {"event": "download-response", "kind": "read", "file_id": file_id,
+                                     "submission_id": submission_id, "attempt": attempt, "ok": False,
+                                     "will_retry": retryable, **failure})
+            if retryable:
+                continue
+            # Network exceptions can embed an expiring signed URL. Preserve only the exception class.
+            status = (" HTTP %s" % failure["http_status"]) if failure["http_status"] else ""
+            raise GuardError("submission attachment download failed (%s%s)" %
+                             (failure["error"], status))
         log_event(cfg.log_path, {"event": "download-response", "kind": "read", "file_id": file_id,
-                                 "submission_id": submission_id, "ok": False, **failure})
-        # Network exceptions can embed an expiring signed URL. Preserve only the exception class.
-        status = (" HTTP %s" % failure["http_status"]) if failure["http_status"] else ""
-        raise GuardError("submission attachment download failed (%s%s)" %
-                         (failure["error"], status))
-    log_event(cfg.log_path, {"event": "download-response", "kind": "read", "file_id": file_id,
-                             "submission_id": submission_id, "ok": True, "bytes": total,
-                             "sha256": digest.hexdigest()})
-    emit(cfg, {"verb": "DOWNLOAD", "path": "/api/v1/files/%s" % file_id,
-               "note": "submitted attachment saved for local review", "object": {"path": output,
-               "bytes": total, "sha256": digest.hexdigest(), "file_id": int(file_id),
-               "submission_id": int(submission_id)}})
+                                 "submission_id": submission_id, "attempt": attempt, "ok": True,
+                                 "bytes": total, "sha256": digest.hexdigest()})
+        emit(cfg, {"verb": "DOWNLOAD", "path": "/api/v1/files/%s" % file_id,
+                   "note": "submitted attachment saved for local review", "object": {"path": output,
+                   "bytes": total, "sha256": digest.hexdigest(), "file_id": int(file_id),
+                   "submission_id": int(submission_id)}})
+        return
 
 def do_update(cfg, method, path, body):
     """PUT/PATCH: read, show the change, confirm, write, read back, print before and after."""

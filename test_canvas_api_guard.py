@@ -585,6 +585,16 @@ class TestRedirectsAreRefused(unittest.TestCase):
             guard.CredentialFreeRedirects().redirect_request(
                 request, None, 302, "Found", {}, "http://cdn.example.edu/file")
 
+    def test_pinned_attachment_redirect_keeps_token_only_on_canvas_host(self):
+        request = urllib.request.Request("https://%s/files/9/download" % HOST, headers={
+            "Authorization": "Bearer pinned-only", "User-Agent": "canvas-api-guard-test"})
+        handler = guard.PinnedAttachmentRedirects(HOST)
+        same_host = handler.redirect_request(request, None, 302, "Found", {},
+                                             "https://%s/files/9/again" % HOST)
+        external = handler.redirect_request(request, None, 302, "Found", {}, "https://cdn.example.edu/file")
+        self.assertIn("authorization", {key.lower() for key, _ in same_host.header_items()})
+        self.assertNotIn("authorization", {key.lower() for key, _ in external.header_items()})
+
     def test_attachment_download_error_records_status_not_signed_url(self):
         signed_url = "https://cdn.example.edu/file?X-Amz-Signature=do-not-log"
         error = urllib.error.HTTPError(signed_url, 403, "Forbidden", {}, None)
@@ -597,19 +607,35 @@ class TestRedirectsAreRefused(unittest.TestCase):
 
 class TestAttachmentDownload(GuardTestCase):
     def test_download_uses_file_metadata_then_a_credential_free_file_url(self):
-        cfg = type("Config", (), {"log_path": self.log_path, "out": "json"})()
+        cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST})()
         file_url = "https://%s/files/9/download?verifier=not-for-output" % HOST
         with mock.patch.object(guard, "send_request", return_value={"data": {"url": file_url}}) as send, \
                 mock.patch.object(guard, "secure_review_dir", return_value=self.state_dir), \
-                mock.patch.object(guard, "open_request", return_value=io.BytesIO(b"student work")) as open_it, \
+                mock.patch.object(guard, "open_pinned_attachment_request", return_value=io.BytesIO(b"student work")) as open_it, \
                 mock.patch("sys.stdout", io.StringIO()):
             guard.do_download_submission_file(cfg, "9", "12", ".pdf")
         self.assertEqual(send.call_args[0][1:], ("GET", "files/9"))
         request = open_it.call_args[0][0]
         self.assertEqual(request.full_url, file_url)
-        self.assertNotIn("Authorization", dict(request.header_items()))
+        self.assertIn("authorization", {key.lower() for key, _ in request.header_items()})
         evidence = [line for line in self.log_lines() if line["event"] == "evidence"][-1]
         self.assertEqual(evidence["path"], "/api/v1/files/9")
+
+    def test_download_retries_one_transient_server_error_with_fresh_file_metadata(self):
+        cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST})()
+        file_url = "https://%s/files/9/download?verifier=not-for-output" % HOST
+        transient = urllib.error.HTTPError(file_url, 500, "Server Error", {}, None)
+        with mock.patch.object(guard, "send_request", return_value={"data": {"url": file_url}}) as send, \
+                mock.patch.object(guard, "secure_review_dir", return_value=self.state_dir), \
+                mock.patch.object(guard, "open_pinned_attachment_request", side_effect=[transient, io.BytesIO(b"student work")]), \
+                mock.patch("sys.stdout", io.StringIO()):
+            guard.do_download_submission_file(cfg, "9", "12", ".pdf")
+        transient.close()
+        self.assertEqual(send.call_count, 2)
+        responses = [line for line in self.log_lines() if line["event"] == "download-response"]
+        self.assertTrue(responses[0]["will_retry"])
+        self.assertEqual(responses[-1]["attempt"], 2)
+        self.assertTrue(responses[-1]["ok"])
 
 
 class FakeProc(object):

@@ -230,6 +230,13 @@ assignment creation/update, pages, and announcements. They accept a reviewed, al
 definition and require `--dry-run` followed by explicit approval for `--yes`. See
 [level2/README.md](level2/README.md) for the exact boundary.
 
+Submission-file review is read-only. The guard authenticates only the initial Canvas-host file
+download request; if Canvas redirects to a storage/CDN host, the Authorization header is removed
+before that request. Specialized Functions can prepare one student’s complete attachment set or
+download an assignment’s complete attachment set (including earlier submission attempts), subject
+to the documented 20-file-per-submission and 500-file-per-assignment limits. The files stay in a
+user-private local review directory and no grade is inferred or written.
+
 Specialized Functions also provide base date/time changes for assignments and Classic Quizzes,
 plus verified assignment/attendance-assignment excusal. They stop on New Quizzes, date overrides,
 or an attendance source that is not represented by a Canvas assignment.

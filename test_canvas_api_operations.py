@@ -166,6 +166,39 @@ class TestLevel2Operations(unittest.TestCase):
         self.assertEqual(download.call_args_list[1][0], (2, "99", ".docx"))
         self.assertEqual(len(result["attachments"]), 2)
 
+    def test_submission_review_keeps_earlier_attempt_files_once(self):
+        args = Args()
+        args.assignment_id = "22"
+        submission = {"id": 99, "user_id": 34, "user": {"name": "Jordan Lee"}, "attempt": 2,
+                      "attachments": [{"id": 2, "display_name": "revision.png"}],
+                      "submission_history": [
+                          {"attempt": 1, "attachments": [{"id": 1, "display_name": "notes.pdf"}]},
+                          {"attempt": 2, "attachments": [{"id": 2, "display_name": "revision.png"}]}]}
+        with mock.patch.object(operations, "guard_get", side_effect=[{"object": {"id": 22}}, {"object": submission}]), \
+                mock.patch.object(operations, "guard_download_attachment", return_value={"path": "/private/file"}) as download:
+            result = operations.prepare_submission_review(args)
+        self.assertEqual([call[0] for call in download.call_args_list], [(1, "99", ".pdf"), (2, "99", ".png")])
+        self.assertEqual([row["attempt"] for row in result["attachments"]], [1, 2])
+
+    def test_batch_download_collects_all_students_and_attempts_without_submission_text(self):
+        args = Args()
+        args.assignment_id = "22"
+        submissions = [
+            {"id": 90, "user_id": 30, "attempt": 2,
+             "attachments": [{"id": 2, "display_name": "photo.jpg"}],
+             "submission_history": [{"attempt": 1, "attachments": [{"id": 1, "display_name": "draft.docx"}]}]},
+            {"id": 91, "user_id": 31, "workflow_state": "unsubmitted", "body": "do not return this", "attachments": []},
+        ]
+        with mock.patch.object(operations, "guard_get", return_value={"object": {"id": 22, "name": "Week 2"}}), \
+                mock.patch.object(operations, "all_items", return_value=submissions) as listed, \
+                mock.patch.object(operations, "guard_download_attachment", return_value={"path": "/private/file"}) as download:
+            result = operations.download_assignment_submissions(args)
+        self.assertIn("include[]=submission_history", listed.call_args[0][0])
+        self.assertEqual([call[0] for call in download.call_args_list], [(1, "90", ".docx"), (2, "90", ".jpg")])
+        self.assertEqual(result["downloaded_file_count"], 2)
+        self.assertEqual(result["no_attachment_submission_count"], 1)
+        self.assertNotIn("do not return this", str(result))
+
     def test_date_helper_rejects_invalid_or_new_quiz_dates_before_a_write(self):
         args = Args()
         args.assignment_id = "22"

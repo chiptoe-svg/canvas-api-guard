@@ -41,13 +41,15 @@ prefix_rule(
 prefix_rule(
     pattern = [OPERATIONS, ["current-courses", "roster-count", "find-student", "needs-grading",
                             "course-health", "assignment-performance", "student-attention",
-                            "student-trajectory", "attendance-summary", "prepare-submission-review"]],
+                            "student-trajectory", "attendance-summary", "prepare-submission-review",
+                            "download-assignment-submissions"]],
     decision = "allow",
     justification = "Canvas read-only analysis through installed Specialized Functions",
     match = ["/usr/local/libexec/canvas_api_operations.py current-courses",
              "/usr/local/libexec/canvas_api_operations.py course-health --course-id 1",
              "/usr/local/libexec/canvas_api_operations.py student-attention --course-id 1",
-             "/usr/local/libexec/canvas_api_operations.py prepare-submission-review --course-id 1 --assignment-id 2 --student-id 3"],
+             "/usr/local/libexec/canvas_api_operations.py prepare-submission-review --course-id 1 --assignment-id 2 --student-id 3",
+             "/usr/local/libexec/canvas_api_operations.py download-assignment-submissions --course-id 1 --assignment-id 2"],
     not_match = ["./level2/canvas_api_operations.py course-health --course-id 1",
                  "/usr/local/libexec/canvas_api_operations.py create-rubric --course-id 1"],
 )
