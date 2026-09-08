@@ -18,7 +18,6 @@ those, with the Canvas documentation, and does them as well.
 | Operation | Why it is not a single API call |
 | --- | --- |
 | `student-attention` | joins analytics summaries with a name lookup for only the flagged students; transparent signals, not a risk score or a roster dump |
-| `attendance-summary` | aggregates course activity by day, labelled as activity rather than verified attendance |
 | `prepare-submission-review` | resolves one submission, deduplicates files across attempts, downloads each through API Only, reports provenance and SHA-256 |
 | `download-assignment-submissions` | the same across one assignment, up to 500 files, with file/student/attempt provenance and no submission text |
 | `create-rubric` | converts a flat criteria list into Canvas's indexed shape and reads every criterion back |
@@ -26,6 +25,6 @@ those, with the Canvas documentation, and does them as well.
 | `grade-with-rubric` | reads the live rubric, rejects criterion IDs absent from it, totals the points, writes grade and assessment as one verified write |
 | `bulk-grade-with-rubric` | up to 50 students, duplicates refused, each an individually audited and read-back write |
 
-Read operations are open; the two download operations and every write require the same Codex
+The read operation is open; the two download operations and every write require the same Codex
 prompt, dry-run, explicit approval, and API Only read-back evidence. See `SKILL.md` for the
 operator workflow.

@@ -428,13 +428,6 @@ def student_attention(args):
             "students": candidates}
 
 
-def attendance_summary(args):
-    rows = all_items("courses/%s/analytics/activity?per_page=100" % args.course_id)
-    return {"operation": "attendance-summary", "course_id": args.course_id,
-            "definition": "Canvas activity counts only. This is not verified attendance; use a designated Roll Call or attendance source for attendance decisions.",
-            "daily_activity": rows[-args.limit:]}
-
-
 # Each of these computes across several Canvas calls or validates structured input. An
 # operation that is one API call belongs in API Only, with the Canvas documentation.
 OPERATIONS = {"create-rubric": create_rubric, "attach-rubric": attach_rubric,
@@ -442,18 +435,16 @@ OPERATIONS = {"create-rubric": create_rubric, "attach-rubric": attach_rubric,
               "bulk-grade-with-rubric": bulk_grade_with_rubric,
               "prepare-submission-review": prepare_submission_review,
               "download-assignment-submissions": download_assignment_submissions,
-              "student-attention": student_attention,
-              "attendance-summary": attendance_summary}
+              "student-attention": student_attention}
 
 
 def parser():
     result = argparse.ArgumentParser(description="Specialized Canvas instructor operations via API Only")
     result.add_argument("--version", action="version", version=USER_AGENT)
     subs = result.add_subparsers(dest="operation", required=True)
-    for name in ("student-attention", "attendance-summary"):
-        item = subs.add_parser(name)
-        item.add_argument("--course-id", type=lambda value: canvas_id(value, "course ID"), required=True)
-        item.add_argument("--limit", type=int, default=20)
+    attention = subs.add_parser("student-attention")
+    attention.add_argument("--course-id", type=lambda value: canvas_id(value, "course ID"), required=True)
+    attention.add_argument("--limit", type=int, default=20)
     review = subs.add_parser("prepare-submission-review")
     review.add_argument("--course-id", type=lambda value: canvas_id(value, "course ID"), required=True)
     review.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)

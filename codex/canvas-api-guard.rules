@@ -16,7 +16,7 @@ OPERATIONS = "/usr/local/libexec/canvas_api_operations.py"
 READS = ["get"]
 WRITES = ["post", "put", "patch", "delete"]
 DOWNLOADS = ["download-submission-file"]
-OPERATION_READS = ["student-attention", "attendance-summary"]
+OPERATION_READS = ["student-attention"]
 OPERATION_PROMPTS = ["prepare-submission-review", "download-assignment-submissions",
                      "create-rubric", "attach-rubric", "grade-with-rubric",
                      "bulk-grade-with-rubric"]
@@ -55,13 +55,12 @@ prefix_rule(
 )
 
 # Specialized Functions have no credential or HTTP code; they invoke API Only above for every
-# underlying Canvas request. These two only read and summarise.
+# underlying Canvas request. This one only reads and summarises.
 prefix_rule(
     pattern = [OPERATIONS, OPERATION_READS],
     decision = "allow",
     justification = "Canvas read-only analysis through installed Specialized Functions",
-    match = ["/usr/local/libexec/canvas_api_operations.py student-attention --course-id 1",
-             "/usr/local/libexec/canvas_api_operations.py attendance-summary --course-id 1"],
+    match = ["/usr/local/libexec/canvas_api_operations.py student-attention --course-id 1"],
     not_match = ["./level2/canvas_api_operations.py student-attention --course-id 1",
                  "/usr/local/libexec/canvas_api_operations.py create-rubric --course-id 1"],
 )

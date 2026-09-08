@@ -163,9 +163,9 @@ class TestLevel2Operations(unittest.TestCase):
         self.assertIn("--dry-run", command)
         self.assertNotIn("--yes", command)
 
-    def test_only_the_eight_computing_operations_remain(self):
+    def test_only_the_seven_computing_operations_remain(self):
         self.assertEqual(sorted(operations.OPERATIONS), [
-            "attach-rubric", "attendance-summary", "bulk-grade-with-rubric", "create-rubric",
+            "attach-rubric", "bulk-grade-with-rubric", "create-rubric",
             "download-assignment-submissions", "grade-with-rubric",
             "prepare-submission-review", "student-attention"])
         with open(SOURCE) as handle:

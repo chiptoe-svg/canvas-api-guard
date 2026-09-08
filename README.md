@@ -223,9 +223,8 @@ reviewed immutable checkout:
 sudo ./install.sh --profile specialized-functions --host school.instructure.com
 ```
 
-Read operations include `course-health`, `assignment-performance`, `student-attention`,
-`student-trajectory`, and `attendance-summary`; the last reports Canvas activity, not verified
-attendance. Named write operations include rubric creation/attachment, rubric grading,
+Read operations include `course-health`, `assignment-performance`, `student-attention`, and
+`student-trajectory`. Named write operations include rubric creation/attachment, rubric grading,
 assignment creation/update, pages, and announcements. They accept a reviewed, allowlisted JSON
 definition and require `--dry-run` followed by explicit approval for `--yes`. See
 [level2/README.md](level2/README.md) for the exact boundary.

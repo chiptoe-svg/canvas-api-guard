@@ -9,7 +9,7 @@ description: Use named Canvas Specialized Functions for rubric creation and rubr
 token and opens no network connection. Every Canvas request it makes goes through the
 root-owned API Only guard, with the same host pinning, approval, and audit record.
 
-There are eight operations, and each one exists because it computes something across several
+There are seven operations, and each one exists because it computes something across several
 Canvas calls or validates structured input. **Anything else - any documented Canvas endpoint,
 any one-off read, any write these do not cover - belongs to the `canvas-api-guard` skill, which
 can do all of it.** A missing named operation is never a reason to decline a Canvas task.
@@ -19,14 +19,11 @@ Never substitute curl, browser automation, Python HTTP code, or a source-tree co
 
 ```sh
 /usr/local/libexec/canvas_api_operations.py student-attention --course-id 123 --limit 20
-/usr/local/libexec/canvas_api_operations.py attendance-summary --course-id 123
 ```
 
 - `student-attention` joins Canvas’s analytics summaries with a name lookup for only the
   students it flagged, so the report names people without retrieving the whole roster. It is
   transparent signals - missing, late, participations, page views - not a risk score.
-- `attendance-summary` returns the course’s Canvas activity by day. That is activity, not
-  verified attendance; say so every time it is used.
 
 ## Reading student work (a local copy is made)
 
