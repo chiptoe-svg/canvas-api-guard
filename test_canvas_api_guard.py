@@ -2147,6 +2147,115 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertEqual(proc.returncode, 0)
         self.assertIn("FULL_COMMIT_SHA", proc.stdout)
 
+    def test_github_bootstrap_on_main_carries_no_pin_and_says_so(self):
+        """main never pins: only tools/release.sh writes RELEASE_REF, on the release branch."""
+        with open(self.BOOTSTRAP) as handle:
+            script = handle.read()
+        self.assertRegex(script, r"(?m)^RELEASE_REF=[ \t]*(#.*)?$")
+        proc = self.run_bootstrap("--host", HOST)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("carries no release pin", proc.stderr)
+
+    def pinned_bootstrap(self, pin):
+        import subprocess
+        directory = tempfile.mkdtemp(prefix="cag-pinned-")
+        self.addCleanup(shutil.rmtree, directory, True)
+        with open(self.BOOTSTRAP) as handle:
+            script = handle.read()
+        pinned = re.sub(r"(?m)^RELEASE_REF=.*$", "RELEASE_REF=%s" % pin, script, count=1)
+        self.assertNotEqual(pinned, script)
+        path = os.path.join(directory, "install-from-github.sh")
+        with open(path, "w") as handle:
+            handle.write(pinned)
+        os.chmod(path, 0o755)
+
+        def run(*args):
+            return subprocess.run([path] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  universal_newlines=True)
+        return run
+
+    def test_github_bootstrap_uses_its_release_pin_only_when_no_ref_is_given(self):
+        """The release copy needs no --ref; an explicit --ref still wins; a bad pin is refused
+        exactly like a bad --ref. Every run stops at host validation, before any network."""
+        run = self.pinned_bootstrap("a" * 40)
+        proc = run("--host", "https://evil.example/x")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("invalid Canvas host", proc.stderr)          # the pin was accepted
+        proc = run("--ref", "main", "--host", HOST)
+        self.assertIn("full lowercase hexadecimal", proc.stderr)   # explicit --ref wins, and is checked
+        proc = self.pinned_bootstrap("release")("--host", HOST)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("full lowercase hexadecimal", proc.stderr)
+
+    def test_release_script_points_release_at_main_plus_one_pin_commit(self):
+        """tools/release.sh against a scratch origin: release = the released commit + one
+        commit whose bootstrap carries that commit's hash; main and its empty pin untouched."""
+        import subprocess
+        work = tempfile.mkdtemp(prefix="cag-release-")
+        self.addCleanup(shutil.rmtree, work, True)
+        bare, repo = os.path.join(work, "origin.git"), os.path.join(work, "repo")
+        env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.edu",
+                   GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.edu", HOME=work)
+
+        def git(*args, cwd=repo):
+            return subprocess.run(["git"] + list(args), cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, universal_newlines=True, check=True).stdout.strip()
+
+        subprocess.run(["git", "init", "--quiet", "--bare", bare], env=env, check=True)
+        os.makedirs(os.path.join(repo, "tools"))
+        shutil.copy(self.BOOTSTRAP, os.path.join(repo, "install-from-github.sh"))
+        shutil.copy(os.path.join(self.ROOT, "tools", "release.sh"), os.path.join(repo, "tools", "release.sh"))
+        git("init", "--quiet")
+        git("checkout", "--quiet", "-b", "main")
+        git("add", "-A")
+        git("commit", "--quiet", "-m", "reviewed")
+        git("remote", "add", "origin", bare)
+        git("push", "--quiet", "origin", "main")
+        main_sha = git("rev-parse", "main")
+
+        proc = subprocess.run(["tools/release.sh"], cwd=repo, env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("release ->", proc.stdout)
+        self.assertEqual(git("rev-parse", "release~1", cwd=bare), main_sha)
+        released = git("show", "release:install-from-github.sh", cwd=bare)
+        self.assertIn("RELEASE_REF=%s   # pinned by tools/release.sh\n" % main_sha, released)
+        self.assertEqual(git("rev-parse", "main", cwd=bare), main_sha)
+        self.assertEqual(git("rev-parse", "--abbrev-ref", "HEAD"), "main")
+        self.assertEqual(git("status", "--porcelain"), "")
+        with open(os.path.join(repo, "install-from-github.sh")) as handle:
+            self.assertRegex(handle.read(), r"(?m)^RELEASE_REF=[ \t]*(#.*)?$")
+
+        # a second release is a clean replacement, not a pile of pin commits
+        with open(os.path.join(repo, "NOTE"), "w") as handle:
+            handle.write("later\n")
+        git("add", "NOTE"); git("commit", "--quiet", "-m", "later"); git("push", "--quiet", "origin", "main")
+        proc = subprocess.run(["tools/release.sh"], cwd=repo, env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(git("rev-parse", "release~1", cwd=bare), git("rev-parse", "main"))
+        self.assertEqual(git("rev-list", "--count", "main..release", cwd=bare), "1")
+
+        # the released copy runs without --ref, and stops at host validation before any network
+        path = os.path.join(work, "released.sh")
+        with open(path, "w") as handle:
+            handle.write(released)
+        os.chmod(path, 0o755)
+        proc = subprocess.run([path, "--host", "https://evil.example/x"], stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertIn("invalid Canvas host", proc.stderr)
+
+        # a commit that is not on origin/main is refused
+        git("checkout", "--quiet", "-b", "side")
+        with open(os.path.join(repo, "SIDE"), "w") as handle:
+            handle.write("x\n")
+        git("add", "SIDE"); git("commit", "--quiet", "-m", "side"); side = git("rev-parse", "HEAD")
+        git("checkout", "--quiet", "main")
+        proc = subprocess.run(["tools/release.sh", side], cwd=repo, env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("is not on origin/main", proc.stderr)
+
     def test_github_bootstrap_refuses_a_mutable_ref_before_network(self):
         proc = self.run_bootstrap("--ref", "main", "--host", HOST)
         self.assertEqual(proc.returncode, 1)

@@ -127,11 +127,24 @@ or an environment variable.
 
 ### One-command macOS installation or upgrade from GitHub
 
-Codex can run the immutable bootstrap URL supplied with a reviewed commit. The same command
-serves a new Mac, an older installation, and an up-to-date one. The bootstrap downloads that
-exact commit and opens a private, self-deleting `.command` in macOS Terminal. The user enters
-the administrator password and, when none is stored, the Canvas token in Terminal; neither
-secret passes through Codex or appears in the launcher.
+One fixed command installs or updates; running it again is how you update:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/release/install-from-github.sh \
+  | sh -s -- --host school.instructure.com --profile specialized-functions
+```
+
+The `release` branch is main plus one commit that writes the reviewed commit's hash into the
+bootstrap's `RELEASE_REF` default, so the copy fetched from that branch downloads exactly that
+commit and nothing else; the bootstrap never resolves a branch name or "latest". The fetch
+of the bootstrap itself is a branch fetch, so the trust root of the fixed command is whoever
+can push to `release`, the same people who can push to `main`; protect both branches alike.
+The owner advances it with `tools/release.sh`, which refuses a commit that is not on
+`origin/main`.
+The same command serves a new Mac, an older installation, and an up-to-date one. The
+bootstrap downloads that exact commit and opens a private, self-deleting `.command` in macOS
+Terminal. The user enters the administrator password and, when none is stored, the Canvas
+token in Terminal; neither secret passes through Codex or appears in the launcher.
 
 The bootstrap addresses Terminal by its fixed macOS system path,
 `/System/Applications/Utilities/Terminal.app`; it does not depend on application-name lookup or
@@ -142,6 +155,9 @@ bootstrap, it must run the exact pinned command with host/GUI execution permissi
 normal scoped command approval needed to open Terminal, not a second installation-phase approval.
 Running the command without that permission can make Launch Services report the misleading
 `kLSNoExecutableErr` even though Terminal is installed.
+
+To install a specific reviewed commit instead of the release, fetch the bootstrap from that
+commit and name it with `--ref`; an explicit `--ref` always wins over the pin:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/FULL_COMMIT_SHA/install-from-github.sh \
@@ -170,10 +186,21 @@ itself contact Canvas.
 
 ### Upgrading
 
-Run the same bootstrap with the new commit. Specify `specialized-functions` when adding
-operations; `api-only` upgrades only the core guard. Legacy `level-1` and `level-2` flags
-remain accepted for existing installations. To replace a stored token, run the guard's
-`--set-token` afterward in a visible terminal.
+Run the same fixed command. Specify `specialized-functions` when adding operations;
+`api-only` upgrades only the core guard. Legacy `level-1` and `level-2` flags remain accepted
+for existing installations. To replace a stored token, run the guard's `--set-token`
+afterward in a visible terminal.
+
+### Releasing (owner)
+
+```sh
+tools/release.sh            # release origin/main
+tools/release.sh COMMIT     # release a commit that is on origin/main
+```
+
+It checks the tracked tree is clean, resets `release` to that commit plus one commit that pins
+`RELEASE_REF` in `install-from-github.sh`, and force-pushes `release` with a lease. Nothing on
+`main` changes, and `main`'s copy of the bootstrap keeps an empty pin.
 
 ### Copy/paste installation from a reviewed checkout (macOS and Linux)
 

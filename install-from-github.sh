@@ -10,6 +10,7 @@ OPEN_BIN=/usr/bin/open
 TERMINAL_APP=/System/Applications/Utilities/Terminal.app
 CANVAS_HOST=
 SOURCE_REF=
+RELEASE_REF=                            # set only on the release branch, by tools/release.sh
 PROFILE=level-1                         # stable on-disk compatibility key
 
 die() {
@@ -19,10 +20,11 @@ die() {
 
 usage() {
     cat <<'EOF'
-usage: install-from-github.sh --ref FULL_COMMIT_SHA --host school.instructure.com [--profile api-only|specialized-functions]
+usage: install-from-github.sh [--ref FULL_COMMIT_SHA] --host school.instructure.com [--profile api-only|specialized-functions]
 
-Downloads exactly FULL_COMMIT_SHA, creates a private self-deleting .command launcher, and
-opens it in macOS Terminal. The same command serves a new Mac, an older installation, and an
+Downloads exactly one commit, creates a private self-deleting .command launcher, and opens it
+in macOS Terminal. The copy of this script on the release branch carries the reviewed
+commit as its default, so --ref is needed only to install a different reviewed commit. The same command serves a new Mac, an older installation, and an
 up-to-date one: the reviewed plan compares every installed file's SHA-256 with the downloaded
 commit, and the administrator password is asked for only when a root-owned file needs to
 change; when only the Codex rules, skills, or settings differ they are replaced without one. The
@@ -53,6 +55,10 @@ case "$PROFILE" in
     *) die "--profile must be api-only or specialized-functions" ;;
 esac
 
+if [ -z "$SOURCE_REF" ]; then
+    [ -n "$RELEASE_REF" ] || die "this copy carries no release pin; pass --ref FULL_COMMIT_SHA or fetch it from the release branch"
+    SOURCE_REF=$RELEASE_REF
+fi
 case "$SOURCE_REF" in
     *[!0-9a-f]*|"") die "--ref must be a full lowercase hexadecimal commit SHA" ;;
 esac

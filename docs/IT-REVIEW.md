@@ -217,8 +217,17 @@ guard itself requests the Canvas token with hidden input and stores it in Keycha
 launcher deletes only itself; the reviewed checkout remains available for inspection. No
 Canvas API request is made.
 
+The bootstrap is fetched from the `release` branch, whose only difference from `main` is one
+commit that writes the reviewed commit's hash into the bootstrap's `RELEASE_REF` default; the
+bootstrap refuses to run without a full commit hash from that default or `--ref`, verifies
+the checkout matches it, and never resolves a branch name. The fetch of the bootstrap is a
+branch fetch, so the trust root of the fixed command is whoever can push to `release`: the
+same people who can push to `main`, and the branch should carry the same protection.
+`tools/release.sh` advances the branch and refuses a commit that is not on `origin/main`;
+that check is a convention of the tool, not a server-side control.
+
 Codex's ordinary filesystem sandbox cannot launch macOS applications. Therefore, Codex must run
-the exact immutable bootstrap command with scoped host/GUI execution permission. Without that
+the exact bootstrap command with scoped host/GUI execution permission. Without that
 permission, Launch Services may return `kLSNoExecutableErr` even when Terminal and its executable
 are present.
 
