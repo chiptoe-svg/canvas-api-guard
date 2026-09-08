@@ -255,6 +255,24 @@ def grade_payload(value, rubric):
     return student_id, normalized, total
 
 
+def verify_rubric_assessment(args, student_id, criteria):
+    """API Only proves the grade it wrote, but a rubric criterion is not a field of the
+    submission object, so it reports those leaves as null. Read the assessment back here and
+    compare each criterion's points; the write has already happened, so a difference is
+    uncertain, never a refusal."""
+    submission = guard_get("courses/%s/assignments/%s/submissions/%s?include[]=rubric_assessment"
+                           % (args.course_id, args.assignment_id, student_id)).get("object") or {}
+    assessment = submission.get("rubric_assessment")
+    if not isinstance(assessment, dict):
+        raise GuardUncertain("WRITE STATUS UNCERTAIN: Canvas returned no rubric assessment for "
+                             "student %s" % student_id)
+    for criterion_id, score in criteria.items():
+        scored = assessment.get(criterion_id)
+        if not isinstance(scored, dict) or number(scored.get("points")) != score["points"]:
+            raise GuardUncertain("WRITE STATUS UNCERTAIN: rubric criterion %s did not read back "
+                                 "for student %s" % (criterion_id, student_id))
+
+
 def grade_one(args, value):
     assignment, rubric, association_id = live_rubric(args)
     student_id, criteria, total = grade_payload(value, rubric)
@@ -264,6 +282,8 @@ def grade_one(args, value):
     body = {"submission": {"posted_grade": total}, "rubric_assessment": criteria}
     write_plan("grade-with-rubric", args, path, body)
     guard_write("put", path, body, operation_phase(args))
+    if operation_phase(args) != "dry-run":
+        verify_rubric_assessment(args, student_id, criteria)
     return {"student_id": student_id, "rubric_association_id": association_id, "posted_grade": total}
 
 

@@ -22,7 +22,7 @@ those, with the Canvas documentation, and does them as well.
 | `download-assignment-submissions` | the same across one assignment, up to 500 files, with file/student/attempt provenance and no submission text |
 | `create-rubric` | converts a flat criteria list into Canvas's indexed shape and reads every criterion back |
 | `attach-rubric` | reads the rubric and the assignment before associating them; its definition file accepts only the optional `purpose` (default `grading`, or `bookmark`) and `use_for_grading` (default true) |
-| `grade-with-rubric` | reads the live rubric, rejects criterion IDs absent from it, totals the points, writes grade and assessment as one verified write |
+| `grade-with-rubric` | reads the live rubric, rejects criterion IDs absent from it, totals the points, writes grade and assessment as one verified write, then reads each scored criterion back - a criterion is not a field of the submission object, so API Only cannot prove it |
 | `bulk-grade-with-rubric` | up to 50 students, duplicates refused, each an individually audited and read-back write |
 
 The read operation is open; the two download operations and every write require the same Codex

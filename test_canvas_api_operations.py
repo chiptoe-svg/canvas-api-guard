@@ -200,6 +200,53 @@ class TestLevel2Operations(unittest.TestCase):
                 operations.create_rubric(args)
         self.assertIn("WRITE STATUS UNCERTAIN", str(caught.exception))
 
+    def grade_args(self):
+        args = Args()
+        args.assignment_id, args.definition = "22", "unused"
+        args.dry_run, args.yes = False, True
+        return args
+
+    def graded(self, args, assessment, points=8):
+        """One grade-with-rubric write with the rubric assessment Canvas reads back."""
+        rubric = {"data": [{"id": "criterion_1", "points": 10}]}
+        value = {"student_id": 4, "criteria": {"criterion_1": {"points": points}}}
+        reads = [{"object": {}}, {"object": {}}, {"object": assessment}]
+        with mock.patch.object(operations, "live_rubric", return_value=({}, rubric, "10")), \
+                mock.patch.object(operations, "guard_get", side_effect=reads) as get, \
+                mock.patch.object(operations, "guard_write", return_value={}) as write, \
+                mock.patch("sys.stdout", io.StringIO()):
+            result = operations.grade_one(args, value)
+        return result, get, write
+
+    def test_a_graded_rubric_criterion_is_read_back_by_level_2_itself(self):
+        """API Only proves the grade; the rubric criteria are leaves it cannot see on the
+        submission object, so this layer reads the assessment back and compares each one."""
+        result, get, write = self.graded(
+            self.grade_args(), {"rubric_assessment": {"criterion_1": {"points": 8}}})
+        self.assertEqual(result["posted_grade"], 8)
+        self.assertEqual(write.call_args[0][4:], ())     # no verification flags left to pass
+        read_back = get.call_args[0][0]
+        self.assertEqual(read_back,
+                         "courses/12/assignments/22/submissions/4?include[]=rubric_assessment")
+
+    def test_a_graded_rubric_criterion_that_does_not_read_back_is_uncertain(self):
+        with self.assertRaises(operations.GuardUncertain) as caught:
+            self.graded(self.grade_args(),
+                        {"rubric_assessment": {"criterion_1": {"points": 3}}})
+        self.assertIn("criterion_1", str(caught.exception))
+        self.assertIn("WRITE STATUS UNCERTAIN", str(caught.exception))
+
+    def test_a_grade_with_no_rubric_assessment_at_all_is_uncertain(self):
+        with self.assertRaises(operations.GuardUncertain):
+            self.graded(self.grade_args(), {"id": 4})
+
+    def test_a_dry_run_grade_reads_nothing_back(self):
+        args = self.grade_args()
+        args.dry_run, args.yes = True, False
+        result, get, _ = self.graded(args, {"rubric_assessment": {}})
+        self.assertEqual(result["posted_grade"], 8)
+        self.assertEqual(get.call_count, 2)      # the submission pre-read and write_plan's
+
     def test_a_bulk_batch_that_stops_after_a_write_is_uncertain(self):
         args = Args()
         args.assignment_id, args.definition = "22", "unused"
