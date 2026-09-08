@@ -595,6 +595,23 @@ class TestRedirectsAreRefused(unittest.TestCase):
         self.assertIsNone(guard.safe_download_failure(OSError("unavailable"))["http_status"])
 
 
+class TestAttachmentDownload(GuardTestCase):
+    def test_download_uses_file_metadata_then_a_credential_free_file_url(self):
+        cfg = type("Config", (), {"log_path": self.log_path, "out": "json"})()
+        file_url = "https://%s/files/9/download?verifier=not-for-output" % HOST
+        with mock.patch.object(guard, "send_request", return_value={"data": {"url": file_url}}) as send, \
+                mock.patch.object(guard, "secure_review_dir", return_value=self.state_dir), \
+                mock.patch.object(guard, "open_request", return_value=io.BytesIO(b"student work")) as open_it, \
+                mock.patch("sys.stdout", io.StringIO()):
+            guard.do_download_submission_file(cfg, "9", "12", ".pdf")
+        self.assertEqual(send.call_args[0][1:], ("GET", "files/9"))
+        request = open_it.call_args[0][0]
+        self.assertEqual(request.full_url, file_url)
+        self.assertNotIn("Authorization", dict(request.header_items()))
+        evidence = [line for line in self.log_lines() if line["event"] == "evidence"][-1]
+        self.assertEqual(evidence["path"], "/api/v1/files/9")
+
+
 class FakeProc(object):
     def __init__(self, returncode=0, stdout=b""):
         self.returncode, self.stdout, self.stderr = returncode, stdout, b""

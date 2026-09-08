@@ -579,9 +579,14 @@ def do_download_submission_file(cfg, file_id, submission_id, suffix):
     """Download one Canvas-authorized submission attachment, never forwarding the token."""
     file_id, submission_id = numeric_id(file_id, "file ID"), numeric_id(submission_id, "submission ID")
     suffix = safe_download_suffix(suffix)
-    metadata = send_request(cfg, "GET", "files/%s/public_url?submission_id=%s" % (file_id, submission_id))
-    public_url = (metadata.get("data") or {}).get("public_url")
-    parsed = urllib.parse.urlsplit(public_url or "")
+    # Canvas CLI's proven download shape is GET /files/{id}, then a separate
+    # unauthenticated GET of that File object's URL.  Do not use public_url:
+    # it can produce a different, CDN-specific route.  The metadata lookup is
+    # authenticated and pinned; the download URL is treated as a signed bearer
+    # capability and receives no Canvas credential at all.
+    metadata = send_request(cfg, "GET", "files/%s" % file_id)
+    file_url = (metadata.get("data") or {}).get("url")
+    parsed = urllib.parse.urlsplit(file_url or "")
     if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
         raise GuardError("Canvas did not return a usable HTTPS submission download URL")
     directory = secure_review_dir()
@@ -590,7 +595,7 @@ def do_download_submission_file(cfg, file_id, submission_id, suffix):
     try:
         log_event(cfg.log_path, {"event": "download", "kind": "read", "file_id": file_id,
                                  "submission_id": submission_id, "confirmation": None})
-        request = urllib.request.Request(public_url, headers={"User-Agent": USER_AGENT}, method="GET")
+        request = urllib.request.Request(file_url, headers={"User-Agent": USER_AGENT}, method="GET")
         raw = open_request(request, credential_free_redirects=True)
         with os.fdopen(fd, "wb") as handle:
             fd = None
@@ -620,7 +625,7 @@ def do_download_submission_file(cfg, file_id, submission_id, suffix):
     log_event(cfg.log_path, {"event": "download-response", "kind": "read", "file_id": file_id,
                              "submission_id": submission_id, "ok": True, "bytes": total,
                              "sha256": digest.hexdigest()})
-    emit(cfg, {"verb": "DOWNLOAD", "path": "/api/v1/files/%s/public_url" % file_id,
+    emit(cfg, {"verb": "DOWNLOAD", "path": "/api/v1/files/%s" % file_id,
                "note": "submitted attachment saved for local review", "object": {"path": output,
                "bytes": total, "sha256": digest.hexdigest(), "file_id": int(file_id),
                "submission_id": int(submission_id)}})
