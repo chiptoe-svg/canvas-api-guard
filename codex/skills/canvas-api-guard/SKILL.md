@@ -30,6 +30,7 @@ names, and do not decline a Canvas task because no example below matches it.
 /usr/local/libexec/canvas_api_guard.py delete courses/123/assignments/9 --yes
 ```
 `courses/123`, `api/v1/courses/123` and `/api/v1/courses/123` all mean the same path.
+A create whose new id is nested in the response takes `--created-id rubric.id`; the default is `id`.
 
 ## Two flags, so you never need a pipeline
 
@@ -47,8 +48,7 @@ a private review directory, bearer-free, and prints the local path and its sha25
 ```sh
 /usr/local/libexec/canvas_api_guard.py download-submission-file --course-id 123 --file-id 456 --submission-id 789 --suffix .pdf
 ```
-`--file-id` is that submission's `attachments[].id`; show it to the instructor first, like a
-write, and keep the file on this machine (confidential-records rule below).
+`--file-id` is that submission's `attachments[].id`; show it first, like a write; the file stays here (rule below).
 
 ## The four disciplines
 

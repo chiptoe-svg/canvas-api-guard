@@ -267,10 +267,14 @@ Every `POST`, `PUT` and `PATCH` is verified by one rule. Each requested leaf fie
 by name with the field of the read-back object that proves it: a field the object exposes must
 match, and any mismatch is `WRITE STATUS UNCERTAIN`. A requested field the object does not
 expose at all is reported with `match: null` and cannot fail, because it proves nothing either
-way; a write whose read-back proved nothing at all is uncertain too. A `POST` must first locate
-the created object: the response's own `id`, the response field named by `--created-id`, or a
-same-host `Location` header. For `DELETE`, success requires a definite HTTP 404 on the
-read-back.
+way; a write whose read-back proved nothing at all is uncertain too.
+
+A `POST` must locate the created object first, in this order: the response field named by
+`--created-id`, which defaults to the response's own top-level `id`; then, only when
+`--created-id` was not given and Canvas returned no `id`, a same-host `Location` header. An
+explicit `--created-id` that does not resolve is uncertain and never falls back to `Location` -
+the object may exist and could not be read back. For `DELETE`, success requires a definite HTTP
+404 on the read-back.
 
 Exit codes: `0` the command completed, and any write verified; `2` refused or failed with
 nothing applied (bad input, an unconfirmed write, a validation failure, or a 4xx on the write

@@ -17,6 +17,7 @@ import sys
 GUARD = "/usr/local/libexec/canvas_api_guard.py"
 USER_AGENT = "canvas-api-operations/0.13.0"
 MAX_REVIEW_ATTACHMENTS = 500
+SCORE_TOLERANCE = 0.005        # API Only's own tolerance: Canvas rounds a score to two decimals
 
 
 class OperationError(Exception):
@@ -76,6 +77,10 @@ def guard_write(verb, path, body, phase, extra=None):
         evidence = json.loads(result.stdout)
     except ValueError as err:
         raise OperationError("API Only guard did not return write evidence: %s" % err)
+    # "passed" means every requested leaf API Only could see matched, and at least one was
+    # checked. It does not promise a PARTICULAR field was proved: a leaf the read-back object
+    # does not expose is reported null. A caller that needs a specific field proved reads it
+    # back itself - create_rubric and verify_rubric_assessment below both do.
     if evidence.get("verification") != "passed":
         raise OperationError("API Only guard did not prove the write")
     return evidence
@@ -258,7 +263,8 @@ def verify_rubric_assessment(args, student_id, criteria):
                              "student %s" % student_id)
     for criterion_id, score in criteria.items():
         scored = assessment.get(criterion_id)
-        if not isinstance(scored, dict) or number(scored.get("points")) != score["points"]:
+        if (not isinstance(scored, dict)
+                or abs(number(scored.get("points")) - score["points"]) > SCORE_TOLERANCE):
             raise GuardUncertain("WRITE STATUS UNCERTAIN: rubric criterion %s did not read back "
                                  "for student %s" % (criterion_id, student_id))
 

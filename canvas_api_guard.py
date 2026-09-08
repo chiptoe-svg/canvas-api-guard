@@ -659,7 +659,8 @@ def emit(cfg, ev):
         # Sort only the evidence's own top-level keys, for a stable diff; a nested "object" or
         # "items" keeps the order project() built, which --fields promises to preserve. A dry
         # run folds in the exact request it did not send, so stdout is still one JSON object.
-        ev = dict(ev, **(getattr(cfg, "dry_run_request", None) or {}))
+        if cfg.dry_run:
+            ev = dict(ev, **(cfg.dry_run_request or {}))
         print(json.dumps(dict(sorted(ev.items())), indent=2, default=str))
         return
     for key in ("verb", "path", "url", "confirmation", "status", "verification", "note",
@@ -899,7 +900,8 @@ def do_update(cfg, method, path, body):
     after_obj = after["data"]
     evidence["target"] = target_identity(before_obj, resp.get("data"), after_obj)
     evidence["changes"] = compare_fields(body, before_obj, after_obj)
-    mismatches = [row["field"] for row in evidence["changes"] if row["match"] is False]
+    mismatches = dict.fromkeys(row["field"] for row in evidence["changes"]
+                               if row["match"] is False)
     if mismatches:
         uncertain(cfg, evidence, "read-back did not match requested field(s): %s"
                   % ", ".join(mismatches))
@@ -967,7 +969,8 @@ def do_post(cfg, path, body):
         uncertain(cfg, evidence, "read-back at %s was not a Canvas object" % read_path)
     evidence.update({"object": created, "target": target_identity(resp["data"], back["data"]),
                      "changes": compare_fields(body, None, back["data"])})
-    mismatches = [row["field"] for row in evidence["changes"] if row["match"] is False]
+    mismatches = dict.fromkeys(row["field"] for row in evidence["changes"]
+                               if row["match"] is False)
     if mismatches:
         uncertain(cfg, evidence, "created object did not match requested field(s): %s"
                   % ", ".join(mismatches))
@@ -1020,7 +1023,8 @@ def make_config(args):
                               out=args.output or default_output(), log_path=DEFAULT_LOG,
                               dry_run=args.dry_run, all_pages=args.all_pages,
                               fields=parse_fields(args.fields), yes=args.yes, confirmation=None,
-                              created_id=getattr(args, "created_id", None))
+                              created_id=getattr(args, "created_id", None),
+                              dry_run_request=None)
 
 def read_config():
     """Read the fixed config after checking that untrusted users cannot modify it."""

@@ -615,6 +615,58 @@ class TestEvidence(GuardTestCase):
         self.assertIn("neither an id nor a usable Location header", output)
         self.assertIn("WRITE STATUS UNCERTAIN", output)
 
+    def test_a_post_to_an_off_host_location_is_refused_and_uncertain(self):
+        """The create was sent, so a Location pointing elsewhere is uncertain, not a refusal -
+        and the guard reads back nothing at all rather than following it."""
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(
+                status=201, headers={"Location": "https://evil.example.com/api/v1/x"},
+                payload={"ok": True})
+            code, output = self.run_main(
+                ["post", "courses/1/assignments", "--yes",
+                 "-d", '{"assignment": {"name": "Lab 4"}}'])
+        self.assertEqual(code, 3)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+        self.assertIn("evil.example.com", self.last_stderr)
+        self.assertEqual(urlopen.call_count, 1)          # the POST, and nothing after it
+
+    def rubric_create(self, read_back):
+        """One create-rubric POST, with the exact body Level 2's rubric_body() builds."""
+        operations = load_operations()
+        body = operations.rubric_body({"title": "Lab rubric", "criteria": [
+            {"description": "Craft", "points": 10,
+             "ratings": [{"description": "Complete", "points": 10},
+                         {"description": "Incomplete", "points": 0}]}]})
+        body["rubric_association"]["association_id"] = 1
+        responses = [FakeResponse(status=201, payload={"rubric": {"id": 42}}),
+                     FakeResponse(payload=read_back)]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            return self.run_main(["post", "courses/1/rubrics", "--yes", "-o", "json",
+                                  "--created-id", "rubric.id", "-d", json.dumps(body)])
+
+    CANVAS_RUBRIC = {"id": 42, "title": "Lab rubric", "free_form_criterion_comments": False,
+                     "points_possible": 10,
+                     "data": [{"id": "_1234", "description": "Craft", "points": 10,
+                               "ratings": [{"description": "Complete", "points": 10},
+                                           {"description": "Incomplete", "points": 0}]}]}
+
+    def test_a_whole_create_rubric_body_verifies_on_the_leaves_canvas_exposes(self):
+        code, output = self.rubric_create(self.CANVAS_RUBRIC)
+        self.assertEqual(code, 0)
+        rows = {row["field"]: row["match"] for row in json.loads(output)["changes"]}
+        self.assertEqual(rows, {"title": True, "free_form_criterion_comments": True,
+                                "description": None, "points": None, "ratings": None,
+                                "association_type": None, "purpose": None,
+                                "association_id": None})
+
+    def test_a_nested_leaf_the_created_object_happens_to_expose_still_fails_closed(self):
+        """A criterion's "description" and a rubric's own top-level "description" are the same
+        NAME. The rule is by name, so the collision is checked, and a contradiction fails."""
+        code, output = self.rubric_create(dict(self.CANVAS_RUBRIC, description=None))
+        self.assertEqual(code, 3)
+        self.assertIn("WRITE STATUS UNCERTAIN: created object did not match requested "
+                      "field(s): description", output)
+
     def test_post_reads_back_the_created_object_by_id(self):
         responses = [FakeResponse(status=201, payload={"id": 42, "name": "Lab 4"}),
                      FakeResponse(payload={"id": 42, "name": "Lab 4"})]
@@ -951,7 +1003,8 @@ class TestAttachmentDownload(GuardTestCase):
         self.assertEqual(captured["timeout"], guard.TIMEOUT)
 
     def test_download_uses_file_url_without_a_token(self):
-        cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST})()
+        cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST,
+                            "dry_run": False, "dry_run_request": None})()
         file_url = "https://%s/files/9/download?verifier=not-for-output" % HOST
         with mock.patch.object(guard, "send_request", return_value={"data": {"url": file_url}}) as send, \
                 mock.patch.object(guard, "secure_review_dir", return_value=self.state_dir), \
@@ -967,7 +1020,8 @@ class TestAttachmentDownload(GuardTestCase):
         self.assertEqual((logged["file_id"], logged["ok"]), ("9", True))
 
     def test_download_retries_one_transient_server_error_with_a_fresh_file_url(self):
-        cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST})()
+        cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST,
+                            "dry_run": False, "dry_run_request": None})()
         file_url = "https://%s/files/9/download?verifier=not-for-output" % HOST
         transient = urllib.error.HTTPError(file_url, 500, "Server Error", {}, None)
         with mock.patch.object(guard, "send_request", return_value={"data": {"url": file_url}}) as send, \
@@ -985,7 +1039,8 @@ class TestAttachmentDownload(GuardTestCase):
         self.assertTrue(responses[-1]["ok"])
 
     def test_download_uses_submission_public_url_only_after_two_file_url_5xx_failures(self):
-        cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST})()
+        cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST,
+                            "dry_run": False, "dry_run_request": None})()
         file_url = "https://%s/files/9/download?verifier=not-for-output" % HOST
         public_url = "https://cdn.example.edu/submission-file?signature=not-for-output"
         first = urllib.error.HTTPError(file_url, 500, "Server Error", {}, None)
@@ -1006,7 +1061,8 @@ class TestAttachmentDownload(GuardTestCase):
         self.assertEqual(logged[-1]["download_route"], "submission-public-url")
 
     def test_a_download_failure_names_the_reason_and_never_a_signed_url(self):
-        cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST})()
+        cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST,
+                            "dry_run": False, "dry_run_request": None})()
         refusal = "Canvas did not return a usable HTTPS submission download URL"
         with mock.patch.object(guard, "send_request", side_effect=guard.GuardError(refusal)), \
                 mock.patch.object(guard, "secure_review_dir", return_value=self.state_dir), \
@@ -1033,7 +1089,8 @@ class TestAttachmentDownload(GuardTestCase):
         self.assertIn("canvas-api-guard:", self.last_stderr)
 
     def test_every_download_attempt_closes_its_response(self):
-        cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST})()
+        cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST,
+                            "dry_run": False, "dry_run_request": None})()
         file_url = "https://%s/files/9/download?verifier=not-for-output" % HOST
         closed = []
 

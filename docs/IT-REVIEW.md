@@ -129,8 +129,11 @@ correlation sources.
   match it. A requested field the object does not expose is reported with `match: null` and
   cannot fail, because it proves nothing either way; a write whose read-back proved none of the
   requested fields is uncertain.
-- `POST` must locate the created object first: the response's own ID, the response field named
-  by `--created-id`, or a usable same-host `Location` header.
+- `POST` must locate the created object first, in this order: the response field named by
+  `--created-id`, which defaults to the response's own top-level `id`; then, only when
+  `--created-id` was not given and no `id` came back, a usable same-host `Location` header. An
+  explicit `--created-id` that does not resolve is `WRITE STATUS UNCERTAIN` and never falls
+  back to `Location`.
 - `DELETE`: the read-back must return HTTP 404.
 - Any mismatch, unprovable write, read-back failure, missing created-object location, or
   still-present delete target is `WRITE STATUS UNCERTAIN` and is never retried automatically. So is a write whose
@@ -306,4 +309,9 @@ write. A source-tree command such as `./canvas_api_guard.py get courses` should 
 8. On a test object, approve one write and verify target identity, before/after fields, and
    `verification: passed` in the audit.
 9. Induce or mock a read-back failure and verify exit `3` (`WRITE STATUS UNCERTAIN`) behavior.
-10. Establish local audit retention and incident-review ownership before broader use.
+10. Verify on a test course whether `courses/<id>/rubric_associations/<id>` reads back. Canvas
+    documents no `GET` for a single rubric association, so the guard may report `WRITE STATUS
+    UNCERTAIN` (exit `3`) for that one create even though it succeeded; if it does not read
+    back, the note in `level2/SKILL.md` stands and the attachment is confirmed instead from
+    the assignment's `rubric_settings`.
+11. Establish local audit retention and incident-review ownership before broader use.
