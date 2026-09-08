@@ -278,46 +278,64 @@ class TestConfirmation(GuardTestCase):
 
 
 class TestLogBeforeRequest(GuardTestCase):
-    def test_the_request_line_is_on_disk_before_urlopen_is_called(self):
+    def test_the_write_request_line_is_on_disk_before_urlopen_is_called(self):
         seen = {}
 
         def inspect_the_log(request, timeout=None):
+            if request.get_method() != "PUT":
+                return FakeResponse(payload={"id": 3, "grade": "60", "score": 60.0})
             # runs INSIDE urlopen: whatever is in the log now was written beforehand
             seen["lines"] = self.log_lines()
             raise OSError("no network in tests")
 
         with mock.patch("urllib.request.urlopen", side_effect=inspect_the_log):
-            code, _ = self.run_main(["get", "courses/1"])
+            code, _ = self.run_main(["put", "courses/1/assignments/2/submissions/3", "--yes",
+                                     "-d", '{"submission": {"posted_grade": 95}}'])
         self.assertEqual(code, 2)
-        self.assertEqual(len(seen["lines"]), 1)
-        self.assertEqual(seen["lines"][0]["event"], "request")
-        self.assertEqual(seen["lines"][0]["verb"], "GET")
-        self.assertEqual(seen["lines"][0]["path"], "/api/v1/courses/1")
+        self.assertEqual([line["event"] for line in seen["lines"]], ["read", "request"])
+        self.assertEqual(seen["lines"][-1]["verb"], "PUT")
+        self.assertEqual(seen["lines"][-1]["path"], "/api/v1/courses/1/assignments/2/submissions/3")
+        self.assertEqual(seen["lines"][-1]["request_body"], {"submission": {"posted_grade": 95}})
 
     def test_a_failed_write_still_leaves_its_request_line(self):
-        def boom(request, timeout=None):
-            raise OSError("no network in tests")
-
-        with mock.patch("urllib.request.urlopen", side_effect=boom):
-            code, _ = self.run_main(["delete", "courses/1/assignments/2", "--yes"])
+        responses = [FakeResponse(payload={"id": 3, "grade": "60", "score": 60.0}),
+                     OSError("no network in tests")]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, _ = self.run_main(["put", "courses/1/assignments/2/submissions/3", "--yes",
+                                     "-d", '{"submission": {"posted_grade": 95}}'])
         self.assertEqual(code, 2)
         events = [(line["event"], line.get("verb")) for line in self.log_lines()]
-        self.assertIn(("request", "GET"), events)
-        self.assertEqual(events[0][0], "request")
+        self.assertEqual(events, [("read", "GET"), ("request", "PUT"), ("response", "PUT")])
+        self.assertFalse(self.log_lines()[-1]["ok"])
+        self.assertEqual(self.log_lines()[-1]["error"], "OSError")
 
-    def test_response_timing_is_numeric_and_visible_without_sensitive_data(self):
+    def test_a_read_is_one_line_written_after_the_response(self):
         with mock.patch("urllib.request.urlopen") as urlopen:
             urlopen.return_value = FakeResponse(payload={"id": 1})
-            code, output = self.run_main(["get", "courses/1", "-o", "json"])
+            code, _ = self.run_main(["get", "courses/1"])
         self.assertEqual(code, 0)
-        timing = json.loads(output)["timing_ms"]
-        self.assertEqual(set(timing), {"request_audit", "credential", "network",
-                                       "total_before_response_audit"})
-        self.assertTrue(all(isinstance(value, int) and value >= 0
-                            for value in timing.values()))
-        response = [line for line in self.log_lines() if line["event"] == "response"][-1]
-        self.assertEqual(response["timing_ms"], timing)
-        self.assertNotIn(TOKEN, json.dumps(timing))
+        lines = self.log_lines()
+        self.assertEqual([line["event"] for line in lines], ["read"])
+        self.assertEqual(lines[0]["verb"], "GET")
+        self.assertEqual(lines[0]["path"], "/api/v1/courses/1")
+        self.assertEqual(lines[0]["status"], 200)
+        self.assertTrue(lines[0]["ok"])
+        self.assertEqual(lines[0]["bytes"], len(json.dumps({"id": 1})))
+        self.assertNotIn("timing_ms", self.log_text())
+
+    def test_a_write_keeps_its_three_lines_and_its_read_backs_keep_one_each(self):
+        graded = {"id": 3, "user_id": 3, "grade": "95", "entered_grade": "95",
+                  "score": 95.0, "entered_score": 95.0}
+        responses = [FakeResponse(payload=dict(graded, grade="60", entered_grade="60",
+                                               score=60.0, entered_score=60.0)),
+                     FakeResponse(payload=graded), FakeResponse(payload=graded)]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, _ = self.run_main(["put", "courses/1/assignments/2/submissions/3", "--yes",
+                                     "-d", '{"submission": {"posted_grade": 95}}'])
+        self.assertEqual(code, 0)
+        self.assertEqual([(line["event"], line["verb"]) for line in self.log_lines()],
+                         [("read", "GET"), ("request", "PUT"), ("response", "PUT"),
+                          ("read", "GET"), ("evidence", "PUT")])
 
     def test_the_log_file_and_its_directory_are_created_private(self):
         """The fixed audit path is created with private directory and file modes."""
@@ -732,8 +750,9 @@ class TestAttachmentDownload(GuardTestCase):
         request = open_it.call_args[0][0]
         self.assertEqual(request.full_url, file_url)
         self.assertNotIn("authorization", {key.lower() for key, _ in request.header_items()})
-        evidence = [line for line in self.log_lines() if line["event"] == "evidence"][-1]
-        self.assertEqual(evidence["path"], "/api/v1/files/9")
+        self.assertEqual([line for line in self.log_lines() if line["event"] == "evidence"], [])
+        logged = [line for line in self.log_lines() if line["event"] == "download-response"][-1]
+        self.assertEqual((logged["file_id"], logged["ok"]), ("9", True))
 
     def test_download_retries_one_transient_server_error_with_a_fresh_file_url(self):
         cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST})()
@@ -1047,7 +1066,7 @@ class TestSourceField(GuardTestCase):
             for name in guard.AGENT_MARKERS:            # isolate from this process's own env
                 if name != "CODEX_SANDBOX":
                     guard.os.environ.pop(name, None)
-            code, _ = self.run_main(["get", "courses/1", "--dry-run"])
+            code, _ = self.run_main(["put", "courses/1/assignments/2", "-d", "{}", "--dry-run"])
         self.assertEqual(code, 0)
         lines = self.log_lines()
         self.assertTrue(lines)
@@ -1061,7 +1080,8 @@ class TestSourceField(GuardTestCase):
                 mock.patch.object(guard, "parent_process_name", return_value="zsh"):
             for name in guard.AGENT_MARKERS:
                 guard.os.environ.pop(name, None)
-            code, _ = self.run_main(["get", "courses/1", "--dry-run"], stdin_is_tty=True)
+            code, _ = self.run_main(["put", "courses/1/assignments/2", "-d", "{}", "--dry-run"],
+                                    stdin_is_tty=True)
         self.assertEqual(code, 0)
         self.assertEqual(self.log_lines()[0]["source"],
                          {"tty": True, "parent": "zsh", "agent_env": []})
@@ -1069,7 +1089,7 @@ class TestSourceField(GuardTestCase):
     def test_a_failed_parent_lookup_is_null_and_does_not_break_the_call(self):
         with mock.patch.object(guard.os, "getppid", side_effect=OSError("no ppid")):
             self.assertIsNone(guard.parent_process_name())
-            code, _ = self.run_main(["get", "courses/1", "--dry-run"])
+            code, _ = self.run_main(["put", "courses/1/assignments/2", "-d", "{}", "--dry-run"])
         self.assertEqual(code, 0)
         self.assertIsNone(self.log_lines()[0]["source"]["parent"])
 

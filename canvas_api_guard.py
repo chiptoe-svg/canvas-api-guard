@@ -39,7 +39,7 @@
 # READ TOP TO BOTTOM: constants, token, logging, host pinning, the one request function,
 # confirmation, evidence, verbs, argparse, main.
 
-import argparse, datetime, getpass, hashlib, json, os, pty, pwd, re, stat, subprocess, sys, tempfile, time
+import argparse, datetime, getpass, hashlib, json, os, pty, pwd, re, stat, subprocess, sys, tempfile
 import urllib.error, urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
@@ -56,6 +56,7 @@ INSTALLED_CONFIG_PATH = CONFIG_PATH          # the offline-test seam: the suite 
                                              # provenance check below stands down. The
                                              # installed guard never does that.
 WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+READ_VERBS = ("GET", "DOWNLOAD")   # evidence verbs already logged as their own single line
 TIMEOUT = 30
 REDACTED = "Bearer <redacted>"
 AGENT_MARKERS = ("AI_AGENT", "CLAUDE_CODE_SESSION_ID", "CODEX_SANDBOX",
@@ -279,10 +280,6 @@ def log_event(log_path, fields):
         os.fsync(handle.fileno())
     return record
 
-def elapsed_ms(start):
-    """Return a rounded monotonic duration suitable for non-sensitive diagnostics."""
-    return int(round((time.monotonic() - start) * 1000))
-
 # ------------------------------------------------------------------------------- host pinning
 # Every URL this tool builds comes from canvas_url(). A path carrying a scheme, a netloc or a
 # ".." segment is refused: it could otherwise send the Authorization header off-host. And the
@@ -418,17 +415,18 @@ def redirect_stage(trace):
     return ",".join(hop["scope"] for hop in trace) or "none"
 
 def send_request(cfg, method, path, body=None):
-    """Perform an authenticated request to the pinned Canvas host and log before it does."""
-    started = time.monotonic()
+    """Perform an authenticated request to the pinned Canvas host, and log it.
+
+    A write is logged before the call - so an interrupted write leaves a request line with no
+    response beside it - and again afterwards. A read is logged once, after the fact: one line
+    saying what was read, with what status, and how many bytes came back."""
     method = method.upper()
     url, npath = canvas_url(cfg.host, path), normalise_path(path)
     is_write = method in WRITE_METHODS
-    audit_started = time.monotonic()
-    log_event(cfg.log_path, {
-        "event": "request", "verb": method, "path": npath, "url": url,
-        "kind": "write" if is_write else "read", "dry_run": cfg.dry_run,
-        "confirmation": cfg.confirmation, "request_body": body if is_write else None})
-    request_audit_ms = elapsed_ms(audit_started)
+    if is_write:
+        log_event(cfg.log_path, {
+            "event": "request", "verb": method, "path": npath, "url": url, "kind": "write",
+            "dry_run": cfg.dry_run, "confirmation": cfg.confirmation, "request_body": body})
     headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
     payload = None
     if body is not None:
@@ -441,37 +439,30 @@ def send_request(cfg, method, path, body=None):
         print("\n".join("  header   %s: %s" % (k, shown[k]) for k in sorted(shown)))
         print("  body     %s" % (json.dumps(body) if body is not None else "(none)"))
         return None
-    credential_started = time.monotonic()
-    check_provenance()                          # before the keychain, before the network
+    if not is_write:
+        os.close(secure_log_fd(cfg.log_path))  # a read logs nothing yet, but must still be
+                                                # gated on a secure log before the network call
+    check_provenance()                       # before the keychain, before the network
     headers["Authorization"] = "Bearer " + read_token()                   # the only use
-    credential_ms = elapsed_ms(credential_started)
     request = urllib.request.Request(url, data=payload, headers=headers, method=method)
-    network_started = time.monotonic()
+    event = "response" if is_write else "read"
     try:
         raw = open_request(request)
         status, head, text = raw.status, dict(raw.headers), raw.read()
         raw.close()
     except Exception as err:                       # HTTPError, DNS, TLS, timeout, ...
         status = getattr(err, "code", None)
-        timing_ms = {"request_audit": request_audit_ms, "credential": credential_ms,
-                     "network": elapsed_ms(network_started),
-                     "total_before_response_audit": elapsed_ms(started)}
-        log_event(cfg.log_path, {"event": "response", "verb": method, "path": npath, "ok": False,
-                                 "status": status, "error": type(err).__name__,
-                                 "timing_ms": timing_ms})
+        log_event(cfg.log_path, {"event": event, "verb": method, "path": npath, "ok": False,
+                                 "status": status, "error": type(err).__name__})
         raise RequestFailure("%s %s failed: %s: %s"
                              % (method, url, type(err).__name__, err), status=status)
-    timing_ms = {"request_audit": request_audit_ms, "credential": credential_ms,
-                 "network": elapsed_ms(network_started),
-                 "total_before_response_audit": elapsed_ms(started)}
-    log_event(cfg.log_path, {"event": "response", "verb": method, "path": npath,
-                             "status": status, "ok": True, "bytes": len(text),
-                             "timing_ms": timing_ms})
+    log_event(cfg.log_path, {"event": event, "verb": method, "path": npath, "status": status,
+                             "ok": True, "bytes": len(text)})
     try:
         data = json.loads(text.decode("utf-8")) if text else None
     except ValueError:
         data = None
-    return {"status": status, "headers": head, "data": data, "timing_ms": timing_ms}
+    return {"status": status, "headers": head, "data": data}
 
 # ------------------------------------------------------------------------------ confirmation
 # Reads need no confirmation. Writes need one, and the KIND of it is recorded in the log.
@@ -616,18 +607,20 @@ def next_link(headers, host):
     return parsed.path + (("?" + parsed.query) if parsed.query else "")
 
 def emit(cfg, ev):
-    """Render the evidence, and record a short form of it (before/after) in the log."""
-    log_event(cfg.log_path, {"event": "evidence", "verb": ev.get("verb"), "note": ev.get("note"),
-                             "path": ev.get("path"), "status": ev.get("status"),
-                             "confirmation": ev.get("confirmation"),
-                             "verification": ev.get("verification"),
-                             "target": ev.get("target"), "changes": ev.get("changes"),
-                             "timing_ms": ev.get("timing_ms")})
+    """Render the evidence. A write also records a short form of it (before/after) in the log;
+    a read is already there as its own single line, and a download as its own pair."""
+    if ev.get("verb") not in READ_VERBS:
+        log_event(cfg.log_path, {"event": "evidence", "verb": ev.get("verb"),
+                                 "note": ev.get("note"), "path": ev.get("path"),
+                                 "status": ev.get("status"),
+                                 "confirmation": ev.get("confirmation"),
+                                 "verification": ev.get("verification"),
+                                 "target": ev.get("target"), "changes": ev.get("changes")})
     if cfg.out == "json":
         print(json.dumps(ev, indent=2, sort_keys=True, default=str))
         return
     for key in ("verb", "path", "url", "confirmation", "status", "verification", "note",
-                "count", "pages", "next", "timing_ms"):
+                "count", "pages", "next"):
         if ev.get(key) is not None:
             print("%-14s %s" % (key + ":", ev[key]))
     if ev.get("target"):
@@ -653,8 +646,7 @@ def emit(cfg, ev):
 def do_get(cfg, path, body):
     resp = send_request(cfg, "GET", path)
     ev = {"verb": "GET", "path": normalise_path(path), "url": canvas_url(cfg.host, path),
-          "status": resp["status"] if resp else None,
-          "timing_ms": resp.get("timing_ms") if resp else None}
+          "status": resp["status"] if resp else None}
     if resp and isinstance(resp["data"], list):
         count = len(resp["data"])
         ev["note"] = "%d item%s returned" % (count, "" if count == 1 else "s")
