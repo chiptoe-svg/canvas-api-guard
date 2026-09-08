@@ -950,6 +950,16 @@ class TestInstallerPlan(unittest.TestCase):
             script = handle.read()
         self.assertIn("In Canvas, what are my current classes?", script)
 
+    def test_github_bootstrap_emits_a_private_nonsecret_completion_status(self):
+        with open(self.BOOTSTRAP) as handle:
+            script = handle.read()
+        self.assertIn('STATUS_FILE="$INSTALL_ROOT/completion-status.json"', script)
+        self.assertIn('"state":"launched"', script)
+        self.assertIn('"state":"running"', script)
+        self.assertIn('state=succeeded', script)
+        self.assertIn('state=failed', script)
+        self.assertIn('Completion status file:', script)
+
     def test_github_bootstrap_upgrade_preserves_the_existing_token(self):
         with open(self.BOOTSTRAP) as handle:
             script = handle.read()

@@ -12,6 +12,7 @@ CANVAS_HOST=
 SOURCE_REF=
 PROFILE=level-1                         # stable on-disk compatibility key
 UPGRADE=no
+UPGRADE_JSON=false
 
 die() {
     printf 'canvas-api-guard bootstrap: %s\n' "$1" >&2
@@ -24,7 +25,9 @@ usage: install-from-github.sh --ref FULL_COMMIT_SHA --host school.instructure.co
 
 Downloads exactly FULL_COMMIT_SHA, creates a private self-deleting .command launcher, and
 opens it in macOS Terminal. Terminal prompts for the Mac administrator password and then the
-Canvas API token. Neither secret is passed to this bootstrap or stored in the launcher.
+Canvas API token. Neither secret is passed to this bootstrap or stored in the launcher. A
+private, non-secret completion-status JSON file is printed after Terminal launches so an active
+Codex task can wait for success or failure without observing either prompt.
 
 --upgrade preserves the existing Keychain/Secret Service token and skips token entry. Use it
 only on a machine where canvas-api-guard is already installed and has a working token.
@@ -52,6 +55,8 @@ case "$PROFILE" in
     *) die "--profile must be api-only or specialized-functions" ;;
 esac
 
+[ "$UPGRADE" = yes ] && UPGRADE_JSON=true
+
 case "$SOURCE_REF" in
     *[!0-9a-f]*|"") die "--ref must be a full lowercase hexadecimal commit SHA" ;;
 esac
@@ -70,6 +75,7 @@ INSTALL_ROOT=$(mktemp -d /private/tmp/canvas-api-guard-install.XXXXXX)
 chmod 0700 "$INSTALL_ROOT"
 CHECKOUT="$INSTALL_ROOT/repository"
 LAUNCHER="$INSTALL_ROOT/install-canvas-api-guard.command"
+STATUS_FILE="$INSTALL_ROOT/completion-status.json"
 
 cleanup_before_open() {
     rm -rf "$INSTALL_ROOT"
@@ -85,6 +91,11 @@ ACTUAL_REF=$("$GIT_BIN" -C "$CHECKOUT" rev-parse HEAD)
 [ -z "$("$GIT_BIN" -C "$CHECKOUT" status --porcelain)" ] \
     || die "downloaded checkout is not clean"
 
+umask 077
+printf '{"state":"launched","commit":"%s","profile":"%s","upgrade":%s}\n' \
+    "$SOURCE_REF" "$PROFILE" "$UPGRADE_JSON" > "$STATUS_FILE"
+chmod 0600 "$STATUS_FILE"
+
 cat > "$LAUNCHER" <<EOF
 #!/bin/sh
 set -eu
@@ -92,6 +103,15 @@ set -eu
 finish() {
     status=\$?
     trap - EXIT HUP INT TERM
+    if [ "\$status" -eq 0 ]; then
+        state=succeeded
+    else
+        state=failed
+    fi
+    status_temp="$STATUS_FILE.\$\$.tmp"
+    (umask 077; printf '{"state":"%s","commit":"%s","profile":"%s","upgrade":%s,"exit_status":%s}\n' \
+        "\$state" "$SOURCE_REF" "$PROFILE" "$UPGRADE_JSON" "\$status" > "\$status_temp" && mv -f "\$status_temp" "$STATUS_FILE") \
+        || printf 'Warning: could not update completion-status file.\n' >&2
     rm -f "\$0"
     printf '\n'
     if [ "\$status" -eq 0 ]; then
@@ -105,6 +125,11 @@ finish() {
     exit "\$status"
 }
 trap finish EXIT HUP INT TERM
+
+status_temp="$STATUS_FILE.\$\$.tmp"
+(umask 077; printf '{"state":"running","commit":"%s","profile":"%s","upgrade":%s}\n' \
+    "$SOURCE_REF" "$PROFILE" "$UPGRADE_JSON" > "\$status_temp" && mv -f "\$status_temp" "$STATUS_FILE") \
+    || { printf 'Could not initialize completion-status file.\n' >&2; exit 1; }
 
 cd "$CHECKOUT"
 printf 'Installing reviewed canvas-api-guard commit:\n  %s\n\n' "$SOURCE_REF"
@@ -143,4 +168,6 @@ trap - EXIT HUP INT TERM
 
 printf 'Opened a visible macOS Terminal installation window.\n'
 printf 'Downloaded and verified commit: %s\n' "$SOURCE_REF"
+printf 'Completion status file: %s\n' "$STATUS_FILE"
+printf 'It contains only workflow state, commit, profile, and exit status; never a password, token, or Canvas data.\n'
 printf 'The temporary launcher contains no password or Canvas token and deletes itself.\n'
