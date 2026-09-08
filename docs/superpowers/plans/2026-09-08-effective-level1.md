@@ -907,127 +907,6 @@ Claude-Session: https://claude.ai/code/session_018Sg4JytXUDBceJk8aRCqFp"
 
 ---
 
-### Task 5: Redact credentials and free text from the logged write body
-
-> **Beyond the spec.** The spec keeps the write body in the log; this task keeps it while
-> replacing the two kinds of value that must not survive there in the clear. Ported from the
-> owner's Go tool: `canvas-cli internal/activity/activity.go` — `Redact`, `secretKeys`,
-> `freeTextFlags`, and the `Redacted` constant. Redaction applies to the log only: the
-> confirmation prompt and the printed evidence still show the instructor exactly what they are
-> about to post.
-
-**Files:** Modify `canvas_api_guard.py` (new block before `# ---- logging`; `send_request` request line; `emit` evidence line). Test `test_canvas_api_guard.py` (new `TestLogRedaction`).
-
-**Interfaces:**
-- Consumes: `send_request`/`emit` from Task 4.
-- Produces: `REDACTED_VALUE = "[REDACTED]"`, `SECRET_KEY_PARTS`, `FREE_TEXT_KEYS`, `redacted_key(name) -> bool`, `redact(value) -> value`, `redact_rows(rows) -> list`.
-
-- [ ] **Step 1: Write the failing test** — append to `test_canvas_api_guard.py`, immediately after the `TestLogBeforeRequest` class:
-
-```python
-class TestLogRedaction(GuardTestCase):
-    """The log records what was written. It must not be where a student's feedback lives."""
-
-    def test_free_text_in_a_write_body_is_redacted_in_the_log_but_shown_to_the_person(self):
-        page = {"url": "week-2", "title": "Week 2", "body": "<p>read chapter 4</p>"}
-        with mock.patch("urllib.request.urlopen") as urlopen:
-            urlopen.return_value = FakeResponse(payload=page)
-            code, output = self.run_main(
-                ["put", "courses/1/pages/week-2", "--yes",
-                 "-d", '{"wiki_page": {"title": "Week 2", "body": "<p>read chapter 4</p>"}}'])
-        self.assertEqual(code, 0)
-        self.assertIn("read chapter 4", output)                  # the person sees it
-        self.assertNotIn("read chapter 4", self.log_text())      # the log does not keep it
-        request = [line for line in self.log_lines() if line["event"] == "request"][0]
-        self.assertEqual(request["request_body"],
-                         {"wiki_page": {"title": "Week 2", "body": "[REDACTED]"}})
-        evidence = [line for line in self.log_lines() if line["event"] == "evidence"][-1]
-        self.assertEqual(dict((row["field"], row["requested"]) for row in evidence["changes"]),
-                         {"title": "Week 2", "body": "[REDACTED]"})
-
-    def test_ids_scores_and_switches_are_kept(self):
-        self.assertEqual(guard.redact({"submission": {"posted_grade": 95, "excuse": True},
-                                       "assignment": {"published": False, "id": 7}}),
-                         {"submission": {"posted_grade": 95, "excuse": True},
-                          "assignment": {"published": False, "id": 7}})
-
-    def test_a_credential_shaped_key_is_redacted_at_any_depth(self):
-        self.assertEqual(guard.redact({"a": [{"access_token": "7~secret"},
-                                             {"API-Key": "k"}, {"message": "hello"}]}),
-                         {"a": [{"access_token": "[REDACTED]"},
-                                {"API-Key": "[REDACTED]"}, {"message": "[REDACTED]"}]})
-```
-
-- [ ] **Step 2: Run it to verify it fails** — `python3 -m unittest test_canvas_api_guard.TestLogRedaction -v`
-  Expect `AttributeError: module 'canvas_api_guard' has no attribute 'redact'`, and the first test failing with the page body still present in `self.log_text()`.
-
-- [ ] **Step 3: Implement** — two edits to `canvas_api_guard.py`.
-
-  3a. Insert this block immediately before the line `# ----------------------------------------------------------------------------------- logging`:
-
-```python
-# --------------------------------------------------------------------------------- redaction
-# The log records the body of every write - that is what makes it an audit record - and the
-# before/after evidence beside it. Two kinds of value must not survive there in the clear: a
-# credential, and the free text an instructor writes about a student. The evidence still proves
-# the write happened and what it changed; the words themselves stay in Canvas, where the student
-# can see them. Redaction is for the log only: the confirmation prompt and the printed evidence
-# show the person exactly what they are about to post. (The same split canvas-cli makes in
-# internal/activity/activity.go: Redact, secretKeys, freeTextFlags.)
-REDACTED_VALUE = "[REDACTED]"
-SECRET_KEY_PARTS = ("token", "secret", "password", "passwd", "authorization", "access_code",
-                    "api_key", "apikey")
-FREE_TEXT_KEYS = ("comment", "comments", "text_comment", "rubric_comment", "message", "body",
-                  "subject", "email")
-
-def redacted_key(name):
-    """Whether this key's value is credential-shaped or free text about a person."""
-    folded = str(name).lower().replace("-", "_")
-    return any(part in folded for part in SECRET_KEY_PARTS) or folded in FREE_TEXT_KEYS
-
-def redact(value):
-    """A copy of a decoded JSON value with every secret or free-text value replaced."""
-    if isinstance(value, dict):
-        return dict((key, REDACTED_VALUE if redacted_key(key) else redact(value[key]))
-                    for key in value)
-    if isinstance(value, list):
-        return [redact(item) for item in value]
-    return value
-
-def redact_rows(rows):
-    """The evidence rows as the log keeps them: a free-text field's match is recorded, its
-    words are not."""
-    kept = []
-    for row in rows or []:
-        if redacted_key(row.get("field")):
-            row = dict(row, **dict((key, REDACTED_VALUE) for key in
-                                   ("requested", "before", "after") if row.get(key) is not None))
-        kept.append(row)
-    return kept
-
-```
-
-  3b. Use them on the two log lines that can carry a body. In `send_request`, replace `"confirmation": cfg.confirmation, "request_body": body})` with `"confirmation": cfg.confirmation, "request_body": redact(body)})`; in `emit`, replace `"target": ev.get("target"), "changes": ev.get("changes")})` with `"target": ev.get("target"), "changes": redact_rows(ev.get("changes"))})`.
-
-- [ ] **Step 4: Run tests** — `python3 -m unittest`
-  Expect `Ran 121 tests` and `OK`.
-
-- [ ] **Step 5: Commit**
-
-```sh
-git add canvas_api_guard.py test_canvas_api_guard.py
-git commit -m "feat: keep credentials and student feedback out of the audit log
-
-The logged write body and evidence rows now replace credential-shaped keys
-and free text (comment, message, body, subject, email) with [REDACTED]. The
-person still sees the exact text in the confirmation and the evidence.
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_018Sg4JytXUDBceJk8aRCqFp"
-```
-
----
-
 ### Task 6: `--all-pages`, `--fields`, JSON by default, and the `count` verb removed
 
 **Files:** Modify `canvas_api_guard.py` (constants near line 55; `do_get` lines 576-593; delete `do_count` lines 595-616; `VERBS` line 882; `make_config` lines 887-895; `build_parser` lines 941-971; `main` download branch lines 983-988). Test `test_canvas_api_guard.py` (`GuardTestCase.run_argv`; `TestNextPage`; `TestDryRunSendsNothing`; `TestCodexRules.test_the_matrix`). Modify `codex/canvas-api-guard.rules` (line 13 and the `count` example on line 22).
@@ -1363,7 +1242,7 @@ def make_config(args):
   3g. The rules file still authorizes a verb that no longer exists. In `codex/canvas-api-guard.rules`, replace `READS = ["get", "count", "download-submission-file"]` with `READS = ["get", "download-submission-file"]` and delete the example line `             "/usr/local/libexec/canvas_api_guard.py count courses/1/enrollments?per_page=100",`. (Task 9 rewrites the rest of this file.)
 
 - [ ] **Step 4: Run tests** — `python3 -m unittest`
-  Expect `Ran 129 tests` (121, minus the `count` test, plus nine) and `OK`. Then check the two claims by hand:
+  Expect `Ran 126 tests` (118, minus the `count` test, plus nine) and `OK`. Then check the two claims by hand:
   `python3 canvas_api_guard.py get courses --help | grep -e --all-pages -e --fields` prints both flags, and `python3 canvas_api_guard.py count courses 2>&1 | head -2` reports `invalid choice: 'count'`.
 
 - [ ] **Step 5: Commit**
@@ -1410,7 +1289,7 @@ class TestGuardHeader(unittest.TestCase):
     def test_every_section_the_header_promises_has_a_banner(self):
         source = self.source()
         header = source.split("# READ TOP TO BOTTOM:")[1].split("import argparse")[0]
-        for name in ("constants", "provenance", "token", "logging", "redaction",
+        for name in ("constants", "provenance", "token", "logging",
                      "host pinning", "the one request function", "attachment downloads",
                      "confirmation", "evidence", "verbs", "argparse"):
             with self.subTest(section=name):
@@ -1458,7 +1337,7 @@ class TestGuardHeader(unittest.TestCase):
 # storage. That fetch carries no Authorization, no Cookie, no proxy, and no forwarded Host on
 # any hop; only the status, hostname and scope of each hop are recorded, never the signed URL.
 #
-# READ TOP TO BOTTOM: constants, provenance, token, logging, redaction, host pinning, the one
+# READ TOP TO BOTTOM: constants, provenance, token, logging, host pinning, the one
 # request function, attachment downloads, confirmation, evidence helpers, verbs, argparse, main.
 ```
 
@@ -1473,7 +1352,7 @@ class TestGuardHeader(unittest.TestCase):
 ```
 
 - [ ] **Step 4: Run tests** — `python3 -m unittest`
-  Expect `Ran 132 tests` and `OK`. Then confirm the version is what the CLI reports: `python3 canvas_api_guard.py --version` prints `canvas-api-guard/1.14.0`.
+  Expect `Ran 129 tests` and `OK`. Then confirm the version is what the CLI reports: `python3 canvas_api_guard.py --version` prints `canvas-api-guard/1.14.0`.
 
 - [ ] **Step 5: Commit**
 
@@ -1691,7 +1570,7 @@ def main(argv=None):
 ```
 
 - [ ] **Step 4: Run tests** — `python3 -m unittest`
-  Expect `Ran 129 tests` (132, minus the eight deleted Level 2 tests, plus five new ones) and `OK`. The suite must also be quiet: `python3 -m unittest 2>&1 | grep -v "^\." | grep -c "operation"` prints `0` — no operation's JSON leaks into the test output. Then check the program directly: `python3 level2/canvas_api_operations.py --help` lists exactly the eight operations, and `python3 level2/canvas_api_operations.py --version` prints `canvas-api-operations/0.13.0`.
+  Expect `Ran 126 tests` (129, minus the eight deleted Level 2 tests, plus five new ones) and `OK`. The suite must also be quiet: `python3 -m unittest 2>&1 | grep -v "^\." | grep -c "operation"` prints `0` — no operation's JSON leaks into the test output. Then check the program directly: `python3 level2/canvas_api_operations.py --help` lists exactly the eight operations, and `python3 level2/canvas_api_operations.py --version` prints `canvas-api-operations/0.13.0`.
 
 - [ ] **Step 5: Commit**
 
@@ -1910,7 +1789,7 @@ prefix_rule(
 ```
 
 - [ ] **Step 4: Run tests** — `python3 -m unittest`
-  Expect `Ran 130 tests` (129, minus the deleted verb-coverage test, plus two) and `OK`. When Codex is installed, `TestCodexRules` runs the matrix too; when it is not, confirm the file still parses for a human reviewer with `grep -c prefix_rule codex/canvas-api-guard.rules` printing `6`.
+  Expect `Ran 127 tests` (126, minus the deleted verb-coverage test, plus two) and `OK`. When Codex is installed, `TestCodexRules` runs the matrix too; when it is not, confirm the file still parses for a human reviewer with `grep -c prefix_rule codex/canvas-api-guard.rules` printing `6`.
 
 - [ ] **Step 5: Commit**
 
@@ -2094,7 +1973,7 @@ operator workflow.
 ```
 
 - [ ] **Step 4: Run tests** — `python3 -m unittest`
-  Expect `Ran 132 tests` (130 plus the two document tests) and `OK`. Then check the skill against the program by hand: every command line in `level2/SKILL.md` must be accepted by `--help`, so
+  Expect `Ran 129 tests` (127 plus the two document tests) and `OK`. Then check the skill against the program by hand: every command line in `level2/SKILL.md` must be accepted by `--help`, so
   `grep -o "canvas_api_operations.py [a-z-]*" level2/SKILL.md | sort -u` and
   `python3 level2/canvas_api_operations.py --help` list the same eight names.
 
@@ -2243,7 +2122,7 @@ the instructor verbatim. Do not retry a write on your own.
 ````
 
 - [ ] **Step 4: Run tests** — `python3 -m unittest`
-  Expect `Ran 135 tests` and `OK`. Then confirm the file is what it claims:
+  Expect `Ran 132 tests` and `OK`. Then confirm the file is what it claims:
   `wc -l codex/skills/canvas-api-guard/SKILL.md` prints `88`, and every command line in it is
   accepted by `python3 canvas_api_guard.py <verb> --help`.
 
@@ -2541,10 +2420,6 @@ recorded as one line after the fact. Response bodies and the token are never log
 - `evidence`: target identity, before/after changes, and verification result;
 - `refusal`: a write that lacked confirmation.
 
-Credential-shaped keys and free text about a person - a submission comment, an announcement
-message, a page body, a subject line, an email address - are recorded as `[REDACTED]` in the
-logged request body and evidence rows. The instructor still sees the exact text in the
-confirmation prompt and in the printed evidence; the words themselves live in Canvas.
 ```
 
   3l. Replace the review command block:
@@ -2649,8 +2524,6 @@ Local evidence
 - Response bodies and credentials are excluded.
 - A read is one line, written after the response: verb, path, status, and byte count. A write
   is three: the request before it is sent, the response after it, and the evidence.
-- Credential-shaped keys and free-text fields (comment, message, body, subject, email) are
-  replaced with `[REDACTED]` in the logged request body and in the logged evidence rows.
 ```
 
   3r. Replace the `count` paragraph:
@@ -2738,7 +2611,7 @@ installation plan run there, and the workflow waits for Return between the print
 `sudo` then requests the user's administrator password.
 ```
 
-- [ ] **Step 4: Run tests, then re-run every reviewer command the documents promise** — first `python3 -m unittest`, which must print `Ran 138 tests` and `OK`; put that number into README where Step 3b left `NNN`, and run `python3 -m unittest` once more to confirm it is unchanged. Then run, from the repository root, every command both documents tell a reviewer to run, and confirm each succeeds:
+- [ ] **Step 4: Run tests, then re-run every reviewer command the documents promise** — first `python3 -m unittest`, which must print `Ran 135 tests` and `OK`; put that number into README where Step 3b left `NNN`, and run `python3 -m unittest` once more to confirm it is unchanged. Then run, from the repository root, every command both documents tell a reviewer to run, and confirm each succeeds:
 
 ```sh
 git status --short --branch
@@ -2764,8 +2637,7 @@ git add README.md docs/IT-REVIEW.md install-from-github.sh test_canvas_api_guard
 git commit -m "docs: describe the redirect, download and audit behaviour that exists
 
 Removes the two false redirect claims, states the submitted-file data flow and
-where the local copies live, records the provenance check and the log
-redaction, replaces the retired count verb with --all-pages/--fields, and adds
+where the local copies live, records the provenance check, replaces the retired count verb with --all-pages/--fields, and adds
 a Return pause between the bootstrap's printed plan and sudo.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
