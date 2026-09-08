@@ -43,7 +43,7 @@ import argparse, datetime, getpass, json, os, pty, pwd, re, stat, subprocess, sy
 import urllib.error, urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
-USER_AGENT = "canvas-api-guard/1.1.1"
+USER_AGENT = "canvas-api-guard/1.2.0"
 KEYCHAIN_SERVICE = "canvas-api-guard"
 SECURITY_BIN = "/usr/bin/security"
 SECRET_TOOL_PATHS = ("/usr/bin/secret-tool", "/usr/local/bin/secret-tool")
