@@ -639,7 +639,8 @@ class TestEvidence(GuardTestCase):
             {"description": "Craft", "points": 10,
              "ratings": [{"description": "Complete", "points": 10},
                          {"description": "Incomplete", "points": 0}]}]})
-        body["rubric_association"]["association_id"] = 1
+        body["rubric_association"] = {"association_type": "Assignment", "association_id": 1,
+                                      "purpose": "grading", "use_for_grading": True}
         responses = [FakeResponse(status=201, payload={"rubric": {"id": 42}}),
                      FakeResponse(payload=read_back)]
         with mock.patch("urllib.request.urlopen", side_effect=responses):
@@ -656,10 +657,12 @@ class TestEvidence(GuardTestCase):
         code, output = self.rubric_create(self.CANVAS_RUBRIC)
         self.assertEqual(code, 0)
         rows = {row["field"]: row["match"] for row in json.loads(output)["changes"]}
+        # ratings is an index-keyed hash now, so the guard descends into it: its leaves are
+        # the same names as the criterion's, description and points
         self.assertEqual(rows, {"title": True, "free_form_criterion_comments": True,
-                                "description": None, "points": None, "ratings": None,
+                                "description": None, "points": None,
                                 "association_type": None, "purpose": None,
-                                "association_id": None})
+                                "association_id": None, "use_for_grading": None})
 
     def test_a_nested_leaf_the_created_object_happens_to_expose_still_fails_closed(self):
         """A criterion's "description" and a rubric's own top-level "description" are the same
@@ -1726,20 +1729,21 @@ class TestSkillDocuments(unittest.TestCase):
         """A typo'd flag (--al-pages) would silently teach the agent a dead path; catch it
         by actually parsing every command line against the real parser, not just the verb.
         Both skills are read: the Level 2 skill shows guard calls for what it does not do."""
-        parser = guard.build_parser()
+        parsers = {"canvas_api_guard.py": guard.build_parser(),
+                   "canvas_api_operations.py": load_operations().parser()}
         for skill in (self.GUARD_SKILL, self.OPERATIONS_SKILL):
             with open(skill) as handle:
                 text = handle.read()
-            lines = re.findall(r"^/usr/local/libexec/canvas_api_guard\.py .+$", text, re.M)
-            self.assertTrue(lines, "no guard command lines found in %s" % skill)
-            for line in lines:
-                tokens = shlex.split(line)[1:]
+            lines = re.findall(r"^/usr/local/libexec/(canvas_api_\w+\.py) (.+)$", text, re.M)
+            self.assertTrue(lines, "no command lines found in %s" % skill)
+            for program, rest in lines:
+                tokens = shlex.split(rest)
                 with mock.patch("sys.stderr", io.StringIO()) as stderr:
                     try:
-                        parser.parse_args(tokens)
+                        parsers[program].parse_args(tokens)
                     except SystemExit:
-                        self.fail("skill command failed to parse: %r\n%s"
-                                  % (line, stderr.getvalue()))
+                        self.fail("skill command failed to parse: %r %r\n%s"
+                                  % (program, rest, stderr.getvalue()))
 
 
 class TestGuardHeader(unittest.TestCase):

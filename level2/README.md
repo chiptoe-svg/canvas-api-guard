@@ -20,7 +20,7 @@ those, with the Canvas documentation, and does them as well.
 | `student-attention` | joins analytics summaries with a name lookup for only the flagged students; transparent signals, not a risk score or a roster dump |
 | `prepare-submission-review` | resolves one submission, deduplicates files across attempts, downloads each through API Only, reports provenance and SHA-256 |
 | `download-assignment-submissions` | the same across one assignment, up to 500 files, with file/student/attempt provenance and no submission text |
-| `create-rubric` | converts a flat criteria list into Canvas's indexed shape and reads every criterion back |
+| `create-rubric` | converts a flat criteria list into Canvas's indexed shape and reads every criterion back; with `--assignment-id`, the same write attaches it to that assignment for grading, proven by reading the assignment back |
 | `grade-with-rubric` | reads the live rubric, rejects criterion IDs absent from it, totals the points, writes grade and assessment as one verified write, then reads each scored criterion back - a criterion is not a field of the submission object, so API Only cannot prove it |
 | `bulk-grade-with-rubric` | up to 50 students, duplicates refused, each an individually audited and read-back write |
 

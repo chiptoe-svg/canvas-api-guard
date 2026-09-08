@@ -161,7 +161,7 @@ def write_plan(operation, args, target, body):
                      indent=2, sort_keys=True))
 
 
-def criterion(value, number_key):
+def criterion(value):
     definition = exact_object(value, ("description", "points", "ratings"), ("long_description",))
     text(definition["description"], "criterion description")
     nonnegative(definition["points"], "criterion points")
@@ -175,8 +175,10 @@ def criterion(value, number_key):
         if rating["points"] > definition["points"]:
             raise OperationError("rating points cannot exceed criterion points")
         ratings.append(rating)
-    definition["ratings"] = ratings
-    return definition
+    # Canvas wants ratings, like criteria, as an index-keyed hash: rubric[criteria][0][ratings][1]
+    # [points]. An array here is what canvas-cli's live-tested encoder avoids, and a bare
+    # HTTP 500 is how Canvas answers the wrong shape.
+    return dict(definition, ratings={str(index): rating for index, rating in enumerate(ratings)})
 
 
 def rubric_body(value):
@@ -184,16 +186,29 @@ def rubric_body(value):
     text(definition["title"], "rubric title")
     if not isinstance(definition["criteria"], list) or not definition["criteria"]:
         raise OperationError("rubric criteria must be a non-empty array")
-    criteria = {str(index): criterion(item, index) for index, item in enumerate(definition["criteria"])}
+    criteria = {str(index): criterion(item) for index, item in enumerate(definition["criteria"])}
     return {"rubric": {"title": definition["title"], "criteria": criteria,
                         "free_form_criterion_comments": bool(
                             definition.get("free_form_criterion_comments", False))},
+            # a bookmark on the course is what lists the rubric on the course's Rubrics page
             "rubric_association": {"association_type": "Course", "purpose": "bookmark"}}
 
 
 def create_rubric(args):
+    """One write. With --assignment-id, Canvas's create call also attaches the new rubric to
+    that assignment for grading; the assignment is then read back to prove it."""
     body = rubric_body(definition_file(args.definition))
-    body["rubric_association"]["association_id"] = int(args.course_id)
+    assignment_id = getattr(args, "assignment_id", None)
+    if assignment_id:
+        attached = (guard_get("courses/%s/assignments/%s" % (args.course_id, assignment_id)).get("object") or {}
+                    ).get("rubric_settings") or {}
+        if attached.get("id") is not None:
+            raise OperationError("assignment %s already has rubric %s attached for grading; detach it in Canvas "
+                                 "first, or create this rubric without --assignment-id" % (assignment_id, attached["id"]))
+        body["rubric_association"] = {"association_type": "Assignment", "association_id": int(assignment_id),
+                                      "purpose": "grading", "use_for_grading": True}
+    else:
+        body["rubric_association"]["association_id"] = int(args.course_id)
     path = "courses/%s/rubrics" % args.course_id
     write_plan("create-rubric", args, path, body)
     evidence = guard_write("post", path, body, operation_phase(args),
@@ -211,6 +226,20 @@ def create_rubric(args):
             if (actual_row.get("description") != expected_row["description"]
                     or number(actual_row.get("points")) != expected_row["points"]):
                 raise GuardUncertain("WRITE STATUS UNCERTAIN: rubric criterion did not read back")
+            wanted = list(expected_row["ratings"].values())
+            got = actual_row.get("ratings") or []
+            if len(got) != len(wanted) or any(
+                    row.get("description") != want["description"] or number(row.get("points")) != want["points"]
+                    for row, want in zip(got, wanted)):
+                raise GuardUncertain("WRITE STATUS UNCERTAIN: rubric ratings did not read back")
+        result = {"rubric_id": rubric_id, "assignment_id": assignment_id, "speedgrader_url": None}
+        if assignment_id:
+            assignment = guard_get("courses/%s/assignments/%s" % (args.course_id, assignment_id)).get("object") or {}
+            if str((assignment.get("rubric_settings") or {}).get("id")) != str(rubric_id):
+                raise GuardUncertain("WRITE STATUS UNCERTAIN: assignment %s did not read back rubric %s"
+                                     % (assignment_id, rubric_id))
+            result["speedgrader_url"] = speedgrader_url(assignment)
+        return {"result": result}
 
 
 def live_rubric(args):
@@ -319,14 +348,14 @@ def download_submission_attachments(course_id, submission, limit):
     return downloaded
 
 
-def speedgrader_url(assignment, student_id):
-    """The instructor's SpeedGrader page for this student, built from the assignment's own
-    html_url so the host is Canvas's, never a guess; None when Canvas gave no URL."""
+def speedgrader_url(assignment, student_id=None):
+    """The instructor's SpeedGrader page for this assignment, and for one student when given,
+    built from the assignment's own html_url so the host is Canvas's; None without one."""
     match = re.match(r"(https://[^/]+)/courses/(\d+)/assignments/(\d+)$", str(assignment.get("html_url") or ""))
     if not match:
         return None
-    return "%s/courses/%s/gradebook/speed_grader?assignment_id=%s&student_id=%s" % (
-        match.group(1), match.group(2), match.group(3), student_id)
+    url = "%s/courses/%s/gradebook/speed_grader?assignment_id=%s" % match.groups()
+    return url if student_id is None else url + "&student_id=%s" % student_id
 
 
 def current_grade(submission):
@@ -501,7 +530,9 @@ def parser():
     phase = write.add_mutually_exclusive_group(required=True)
     phase.add_argument("--dry-run", action="store_true", help="read and show the exact write; send nothing")
     phase.add_argument("--yes", action="store_true", help="perform the previously reviewed write")
-    subs.add_parser("create-rubric", parents=[write])
+    create = subs.add_parser("create-rubric", parents=[write])
+    create.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"),
+                        help="also attach the new rubric to this assignment for grading, in the same write")
     for name in ("grade-with-rubric", "bulk-grade-with-rubric"):
         grade = subs.add_parser(name, parents=[write])
         grade.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)

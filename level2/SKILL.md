@@ -65,13 +65,17 @@ which is enough for OCR and reading handwriting. Otherwise render once per page 
 ## Writes
 
 ```sh
-/usr/local/libexec/canvas_api_operations.py create-rubric --course-id 123 --definition rubric.json --dry-run
+/usr/local/libexec/canvas_api_operations.py create-rubric --course-id 123 --assignment-id 20 --definition rubric.json --dry-run
 /usr/local/libexec/canvas_api_operations.py grade-with-rubric --course-id 123 --assignment-id 20 --definition grade.json --dry-run
 /usr/local/libexec/canvas_api_operations.py bulk-grade-with-rubric --course-id 123 --assignment-id 20 --definition grades.json --dry-run
 ```
 
 - `create-rubric` turns a flat criteria list into Canvas’s indexed rubric shape and reads every
-  criterion back after the create - which one API call cannot prove.
+  criterion and rating back after the create - which one API call cannot prove. With
+  `--assignment-id` the same single write also attaches the rubric to that assignment with
+  "use this rubric for grading" on, proven by reading the assignment back; a new rubric for an
+  assignment is one step, never create-then-attach. It refuses an assignment that already
+  grades with a rubric. Without the flag the rubric is created on the course, for reuse.
 - `grade-with-rubric` reads the assignment’s live rubric, refuses any criterion ID that is not
   in it, totals the points, and writes the grade and the assessment as one verified write.
   API Only proves the grade; each scored criterion is read back here, because a rubric

@@ -62,6 +62,10 @@ class TestLevel2Operations(unittest.TestCase):
             "ratings": [{"description": "Complete", "points": 10},
                         {"description": "Incomplete", "points": 0}]}]})
         self.assertEqual(body["rubric"]["criteria"]["0"]["description"], "Craft")
+        # ratings are index-keyed like criteria; Canvas answers an array with a bare 500
+        self.assertEqual(body["rubric"]["criteria"]["0"]["ratings"],
+                         {"0": {"description": "Complete", "points": 10},
+                          "1": {"description": "Incomplete", "points": 0}})
         self.assertEqual(body["rubric_association"]["purpose"], "bookmark")
 
     def test_rubric_grade_uses_only_live_criterion_ids(self):
@@ -234,6 +238,83 @@ class TestLevel2Operations(unittest.TestCase):
             with self.assertRaises(operations.GuardUncertain) as caught:
                 operations.create_rubric(args)
         self.assertIn("WRITE STATUS UNCERTAIN", str(caught.exception))
+
+    def test_create_rubric_with_an_assignment_attaches_it_in_the_same_write_and_reads_the_assignment_back(self):
+        """Canvas's create call takes the assignment association, so creating and attaching a
+        rubric is one approved write, proven by the assignment's rubric_settings."""
+        args = Args()
+        args.assignment_id, args.definition, args.dry_run, args.yes = "22", "unused", False, True
+        definition = {"title": "AI Work", "criteria": [
+            {"description": "Screenshot", "points": 15,
+             "ratings": [{"description": "Shown", "points": 15}]}]}
+        bare = {"id": 22, "html_url": "https://canvas.example.edu/courses/12/assignments/22"}
+        created = {"id": 7, "data": [{"description": "Screenshot", "points": 15,
+                                      "ratings": [{"description": "Shown", "points": 15}]}]}
+        reads = [{"object": bare}, {"object": {"id": 12}}, {"object": created},
+                 {"object": dict(bare, rubric_settings={"id": 7})}]
+        with mock.patch.object(operations, "definition_file", return_value=definition), \
+                mock.patch.object(operations, "guard_get", side_effect=reads) as get, \
+                mock.patch.object(operations, "guard_write", return_value={"object": {"id": 7}}) as write, \
+                mock.patch("sys.stdout", io.StringIO()):
+            result = operations.create_rubric(args)["result"]
+        association = write.call_args[0][2]["rubric_association"]
+        self.assertEqual(association, {"association_type": "Assignment", "association_id": 22,
+                                       "purpose": "grading", "use_for_grading": True})
+        self.assertEqual(get.call_args_list[0][0][0], "courses/12/assignments/22")   # pre-read
+        self.assertEqual(get.call_args[0][0], "courses/12/assignments/22")            # proof
+        self.assertEqual(result, {"rubric_id": 7, "assignment_id": "22", "speedgrader_url":
+                                  "https://canvas.example.edu/courses/12/gradebook/speed_grader?assignment_id=22"})
+
+        # the assignment read back a different rubric: uncertain, never silently fine
+        reads = [{"object": bare}, {"object": {"id": 12}}, {"object": created},
+                 {"object": dict(bare, rubric_settings={"id": 6})}]
+        with mock.patch.object(operations, "definition_file", return_value=definition), \
+                mock.patch.object(operations, "guard_get", side_effect=reads), \
+                mock.patch.object(operations, "guard_write", return_value={"object": {"id": 7}}), \
+                mock.patch("sys.stdout", io.StringIO()):
+            with self.assertRaises(operations.GuardUncertain) as caught:
+                operations.create_rubric(args)
+        self.assertIn("did not read back rubric 7", str(caught.exception))
+
+        # a rating that did not read back is uncertain too: ratings are what the encoder shapes
+        mangled = {"id": 7, "data": [{"description": "Screenshot", "points": 15,
+                                      "ratings": [{"description": "Shown", "points": 10}]}]}
+        with mock.patch.object(operations, "definition_file", return_value=definition), \
+                mock.patch.object(operations, "guard_get", side_effect=[{"object": bare}, {"object": {"id": 12}},
+                                                                       {"object": mangled}]), \
+                mock.patch.object(operations, "guard_write", return_value={"object": {"id": 7}}), \
+                mock.patch("sys.stdout", io.StringIO()):
+            with self.assertRaises(operations.GuardUncertain) as caught:
+                operations.create_rubric(args)
+        self.assertIn("rubric ratings did not read back", str(caught.exception))
+
+        # an assignment that already grades with a rubric is refused before any write
+        with mock.patch.object(operations, "definition_file", return_value=definition), \
+                mock.patch.object(operations, "guard_get",
+                                  return_value={"object": dict(bare, rubric_settings={"id": 9})}), \
+                mock.patch.object(operations, "guard_write") as write:
+            with self.assertRaises(operations.OperationError) as caught:
+                operations.create_rubric(args)
+        self.assertIn("already has rubric 9 attached", str(caught.exception))
+        write.assert_not_called()
+
+    def test_create_rubric_without_an_assignment_bookmarks_it_to_the_course(self):
+        args = Args()
+        args.definition, args.dry_run, args.yes = "unused", True, False
+        definition = {"title": "Lab", "criteria": [
+            {"description": "Craft", "points": 10, "ratings": [{"description": "Done", "points": 10}]}]}
+        with mock.patch.object(operations, "definition_file", return_value=definition), \
+                mock.patch.object(operations, "guard_get", return_value={"object": {"id": 12}}), \
+                mock.patch.object(operations, "guard_write", return_value={}) as write, \
+                mock.patch("sys.stdout", io.StringIO()):
+            operations.create_rubric(args)
+        self.assertEqual(write.call_args[0][2]["rubric_association"],
+                         {"association_type": "Course", "purpose": "bookmark", "association_id": 12})
+
+    def test_speedgrader_url_is_the_assignment_page_without_a_student(self):
+        assignment = {"html_url": "https://canvas.example.edu/courses/12/assignments/22"}
+        self.assertEqual(operations.speedgrader_url(assignment),
+                         "https://canvas.example.edu/courses/12/gradebook/speed_grader?assignment_id=22")
 
     def grade_args(self):
         args = Args()
