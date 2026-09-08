@@ -588,7 +588,7 @@ class TestRedirectsAreRefused(unittest.TestCase):
     def test_pinned_attachment_redirect_keeps_token_only_on_canvas_host(self):
         request = urllib.request.Request("https://%s/files/9/download" % HOST, headers={
             "Authorization": "Bearer pinned-only", "User-Agent": "canvas-api-guard-test"})
-        handler = guard.PinnedAttachmentRedirects(HOST)
+        handler = guard.PinnedAttachmentRedirects(HOST, [])
         same_host = handler.redirect_request(request, None, 302, "Found", {},
                                              "https://%s/files/9/again" % HOST)
         external = handler.redirect_request(request, None, 302, "Found", {}, "https://cdn.example.edu/file")

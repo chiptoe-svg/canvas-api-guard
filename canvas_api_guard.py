@@ -300,14 +300,15 @@ _CREDENTIAL_FREE_OPENER = urllib.request.build_opener(CredentialFreeRedirects)
 
 class PinnedAttachmentRedirects(urllib.request.HTTPRedirectHandler):
     """Keep credentials only for same-host attachment redirects; strip them everywhere else."""
-    def __init__(self, host):
+    def __init__(self, host, trace):
         super(PinnedAttachmentRedirects, self).__init__()
-        self.host = host
+        self.host, self.trace = host, trace
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         parsed = urllib.parse.urlsplit(newurl)
         if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
             raise GuardError("refusing a non-HTTPS or malformed attachment redirect")
+        self.trace.append("pinned" if parsed.netloc == self.host else "external")
         forwarded = dict((name, value) for name, value in req.header_items()
                          if name.lower() != "proxy-authorization")
         if parsed.netloc != self.host:
@@ -322,9 +323,9 @@ def open_request(request, credential_free_redirects=False):
     return urllib.request.urlopen(request, timeout=TIMEOUT)
 
 
-def open_pinned_attachment_request(request, host):
+def open_pinned_attachment_request(request, host, trace):
     """Open a Canvas file URL with a token only on the configured Canvas host."""
-    return urllib.request.build_opener(PinnedAttachmentRedirects(host)).open(request, timeout=TIMEOUT)
+    return urllib.request.build_opener(PinnedAttachmentRedirects(host, trace)).open(request, timeout=TIMEOUT)
 
 
 def safe_download_failure(err):
@@ -622,6 +623,7 @@ def do_download_submission_file(cfg, file_id, submission_id, suffix):
     for attempt in (1, 2):
         fd, output = tempfile.mkstemp(prefix="canvas-submission-", suffix=suffix, dir=directory)
         digest, total = hashlib.sha256(), 0
+        redirect_trace = []
         try:
             # A 5xx from a signed storage URL can be transient. Resolve fresh metadata once,
             # then retry immediately; never retry other failures or any write.
@@ -636,7 +638,7 @@ def do_download_submission_file(cfg, file_id, submission_id, suffix):
                 raise GuardError("Canvas File URL did not stay on the pinned host")
             request = urllib.request.Request(file_url, headers={"User-Agent": USER_AGENT,
                                          "Authorization": "Bearer " + read_token()}, method="GET")
-            raw = open_pinned_attachment_request(request, cfg.host)
+            raw = open_pinned_attachment_request(request, cfg.host, redirect_trace)
             with os.fdopen(fd, "wb") as handle:
                 fd = None
                 while True:
@@ -659,16 +661,18 @@ def do_download_submission_file(cfg, file_id, submission_id, suffix):
             retryable = failure["http_status"] in (500, 502, 503, 504) and attempt == 1
             log_event(cfg.log_path, {"event": "download-response", "kind": "read", "file_id": file_id,
                                      "submission_id": submission_id, "attempt": attempt, "ok": False,
-                                     "will_retry": retryable, **failure})
+                                     "redirect_trace": redirect_trace, "will_retry": retryable, **failure})
             if retryable:
                 continue
             # Network exceptions can embed an expiring signed URL. Preserve only the exception class.
             status = (" HTTP %s" % failure["http_status"]) if failure["http_status"] else ""
-            raise GuardError("submission attachment download failed (%s%s)" %
-                             (failure["error"], status))
+            stage = " after %s redirect(s): %s" % (len(redirect_trace),
+                                                     ",".join(redirect_trace) or "none")
+            raise GuardError("submission attachment download failed (%s%s%s)" %
+                             (failure["error"], status, stage))
         log_event(cfg.log_path, {"event": "download-response", "kind": "read", "file_id": file_id,
                                  "submission_id": submission_id, "attempt": attempt, "ok": True,
-                                 "bytes": total, "sha256": digest.hexdigest()})
+                                 "redirect_trace": redirect_trace, "bytes": total, "sha256": digest.hexdigest()})
         emit(cfg, {"verb": "DOWNLOAD", "path": "/api/v1/files/%s" % file_id,
                    "note": "submitted attachment saved for local review", "object": {"path": output,
                    "bytes": total, "sha256": digest.hexdigest(), "file_id": int(file_id),
