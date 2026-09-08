@@ -44,6 +44,18 @@ Both copy confidential student records into a user-private review directory, so 
 before either runs. Neither infers a score or writes a grade. Review the files against the live
 rubric, then use `grade-with-rubric --dry-run`.
 
+To grade one student, do not download the assignment. Find who is ungraded with one projected
+read, then prepare only that submission:
+
+```sh
+/usr/local/libexec/canvas_api_guard.py get "courses/123/assignments/20/submissions?per_page=100" --all-pages --fields user_id,workflow_state,score,graded_at
+```
+
+Scanned PDFs are usually one photo per page. Check with `pdfimages -list`; when each page is
+one full-page image, extract it with `pdfimages` and downscale to a 2048-pixel longest edge,
+which is enough for OCR and reading handwriting. Otherwise render once per page with
+`pdftoppm -png -scale-to 2048`. Render larger only if that result is unreadable.
+
 ## Writes
 
 ```sh
