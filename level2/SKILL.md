@@ -54,7 +54,8 @@ rubric, then use `grade-with-rubric --dry-run`.
 - `grade-with-rubric` reads the assignment’s live rubric, refuses any criterion ID that is not
   in it, totals the points, and writes the grade and the assessment as one verified write.
   API Only proves the grade; each scored criterion is read back here, because a rubric
-  criterion is not a field of the submission object API Only reads back.
+  criterion is not a field of the submission object API Only reads back. The rubric only has
+  to be attached to the assignment; its "use for grading" setting is not required.
 - `bulk-grade-with-rubric` does that for up to 50 students, refusing duplicates, as
   individually audited and read-back writes - never an opaque bulk request.
 

@@ -220,12 +220,9 @@ def live_rubric(args):
     association_id = settings.get("rubric_association_id") or assignment.get("rubric_association_id")
     if rubric_id is None or association_id is None:
         raise OperationError("assignment has no live Canvas rubric association; attach a rubric first")
-    rubric = guard_get("courses/%s/rubrics/%s?include[]=associations" %
-                       (args.course_id, rubric_id)).get("object") or {}
-    association = next((row for row in rubric.get("associations") or []
-                        if str(row.get("id")) == str(association_id)), None)
-    if association is None or not association.get("use_for_grading"):
-        raise OperationError("assignment's live rubric is not configured for grading")
+    # The write below posts the rubric total as the grade itself, so the association's
+    # "use for grading" setting does not decide whether the score lands; it is not checked.
+    rubric = guard_get("courses/%s/rubrics/%s" % (args.course_id, rubric_id)).get("object") or {}
     return assignment, rubric, str(association_id)
 
 

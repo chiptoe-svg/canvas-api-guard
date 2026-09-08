@@ -74,17 +74,24 @@ class TestLevel2Operations(unittest.TestCase):
             operations.grade_payload({"student_id": 4,
                                       "criteria": {"criterion_404": {"points": 8}}}, rubric)
 
-    def test_live_rubric_requires_the_assignment_association_to_grade(self):
+    def test_live_rubric_needs_an_attached_rubric_but_not_the_use_for_grading_flag(self):
+        """The grade write carries the rubric total as posted_grade, so a rubric attached for
+        feedback only still grades; only a missing association refuses."""
         args = Args()
         args.assignment_id = "22"
         assignment = {"rubric_settings": {"id": 9, "rubric_association_id": 10}}
         rubric = {"data": [{"id": "criterion_1", "points": 10}],
-                  "associations": [{"id": 10, "use_for_grading": True}]}
+                  "associations": [{"id": 10, "use_for_grading": False}]}
         with mock.patch.object(operations, "guard_get",
-                               side_effect=[{"object": assignment}, {"object": rubric}]):
+                               side_effect=[{"object": assignment}, {"object": rubric}]) as get:
             _, resolved, association = operations.live_rubric(args)
         self.assertEqual(resolved["data"][0]["id"], "criterion_1")
         self.assertEqual(association, "10")
+        self.assertEqual(get.call_args[0][0], "courses/12/rubrics/9")
+        with mock.patch.object(operations, "guard_get", return_value={"object": {"id": 22}}):
+            with self.assertRaises(operations.OperationError) as caught:
+                operations.live_rubric(args)
+        self.assertIn("attach a rubric first", str(caught.exception))
 
     def test_prepare_submission_review_accepts_one_pdf_and_does_not_grade(self):
         args = Args()
