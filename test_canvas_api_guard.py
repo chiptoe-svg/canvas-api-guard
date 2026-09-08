@@ -1025,6 +1025,8 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertIn('state=succeeded', script)
         self.assertIn('state=failed', script)
         self.assertIn('Completion status file:', script)
+        self.assertIn('written before Terminal waits for Return', script)
+        self.assertIn('Do not use a fixed polling loop', script)
 
     def test_github_bootstrap_upgrade_preserves_the_existing_token(self):
         with open(self.BOOTSTRAP) as handle:

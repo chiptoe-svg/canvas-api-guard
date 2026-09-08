@@ -170,4 +170,6 @@ printf 'Opened a visible macOS Terminal installation window.\n'
 printf 'Downloaded and verified commit: %s\n' "$SOURCE_REF"
 printf 'Completion status file: %s\n' "$STATUS_FILE"
 printf 'It contains only workflow state, commit, profile, and exit status; never a password, token, or Canvas data.\n'
+printf 'A succeeded or failed state is final immediately and is written before Terminal waits for Return.\n'
+printf 'For an active Codex task: read this file once; if it is still launched/running, use one watcher that exits at a final state. Do not use a fixed polling loop.\n'
 printf 'The temporary launcher contains no password or Canvas token and deletes itself.\n'
