@@ -16,6 +16,10 @@ task-aware operations that are more efficient and less error-prone for recurring
 
 | Operation | Purpose |
 | --- | --- |
+| `current-courses` | Compact list of active teacher courses and term data |
+| `roster-count` | Distinct active-student count; never enrollment-row count |
+| `find-student` | Course-scoped active-student lookup |
+| `needs-grading` | Assignment queue and total needing grading |
 | `course-health` | Assignment-level score and late/missing patterns |
 | `assignment-performance` | Same evidence, ordered for instructional review |
 | `student-attention` | Transparent submission and engagement signals, not a risk score |

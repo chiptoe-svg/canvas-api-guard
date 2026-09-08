@@ -60,6 +60,62 @@ def number(value):
     return value if isinstance(value, (int, float)) else 0
 
 
+def quote_query(value):
+    """Percent-encode a query value without adding an HTTP client to Level 2."""
+    safe = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+    return "".join(chr(byte) if byte in safe else "%%%02X" % byte
+                   for byte in value.encode("utf-8"))
+
+
+def compact_course(course):
+    term = course.get("term") or {}
+    return {"course_id": course.get("id"), "course_code": course.get("course_code"),
+            "name": course.get("name"), "term_id": term.get("id"),
+            "term_name": term.get("name"), "term_start_at": term.get("start_at"),
+            "term_end_at": term.get("end_at")}
+
+
+def current_courses(args):
+    rows = all_items("courses?enrollment_type=teacher&enrollment_state=active&state[]=available&include[]=term&per_page=100")
+    return {"operation": "current-courses",
+            "definition": "available courses with an active teacher enrollment",
+            "courses": [compact_course(row) for row in rows]}
+
+
+def roster_count(args):
+    rows = all_items("courses/%s/users?enrollment_type[]=student&enrollment_state[]=active&per_page=100" %
+                     args.course_id)
+    student_ids = {row.get("id") for row in rows if row.get("id") is not None}
+    return {"operation": "roster-count", "course_id": args.course_id,
+            "definition": "distinct active students, not enrollment rows",
+            "active_student_count": len(student_ids)}
+
+
+def find_student(args):
+    rows = all_items("courses/%s/users?enrollment_type[]=student&enrollment_state[]=active&search_term=%s&per_page=100" %
+                     (args.course_id, quote_query(args.query)))
+    matches = []
+    for row in rows:
+        matches.append({"student_id": row.get("id"), "name": row.get("name"),
+                        "sortable_name": row.get("sortable_name"), "sis_user_id": row.get("sis_user_id")})
+    return {"operation": "find-student", "course_id": args.course_id,
+            "query": args.query, "matches": matches}
+
+
+def needs_grading(args):
+    rows = all_items("courses/%s/assignments?per_page=100" % args.course_id)
+    assignments = []
+    for row in rows:
+        count = number(row.get("needs_grading_count"))
+        if count:
+            assignments.append({"assignment_id": row.get("id"), "title": row.get("name"),
+                                "due_at": row.get("due_at"), "needs_grading_count": count})
+    assignments.sort(key=lambda row: (row["needs_grading_count"], row["due_at"] or ""), reverse=True)
+    return {"operation": "needs-grading", "course_id": args.course_id,
+            "total_needing_grading": sum(row["needs_grading_count"] for row in assignments),
+            "assignments": assignments[:args.limit]}
+
+
 def assignment_rows(course_id, limit):
     rows = all_items("courses/%s/analytics/assignments?per_page=100" % course_id)
     compact = []
@@ -140,7 +196,9 @@ def attendance_summary(args):
             "daily_activity": rows[-args.limit:]}
 
 
-OPERATIONS = {"course-health": course_health, "assignment-performance": assignment_performance,
+OPERATIONS = {"current-courses": current_courses, "roster-count": roster_count,
+              "find-student": find_student, "needs-grading": needs_grading,
+              "course-health": course_health, "assignment-performance": assignment_performance,
               "student-attention": student_attention, "student-trajectory": student_trajectory,
               "attendance-summary": attendance_summary}
 
@@ -149,10 +207,15 @@ def parser():
     result = argparse.ArgumentParser(description="Specialized read-only Canvas analysis via Level 1")
     result.add_argument("--version", action="version", version=USER_AGENT)
     subs = result.add_subparsers(dest="operation", required=True)
-    for name in ("course-health", "assignment-performance", "student-attention", "attendance-summary"):
+    subs.add_parser("current-courses")
+    for name in ("roster-count", "needs-grading", "course-health", "assignment-performance",
+                 "student-attention", "attendance-summary"):
         item = subs.add_parser(name)
         item.add_argument("--course-id", type=lambda value: canvas_id(value, "course ID"), required=True)
         item.add_argument("--limit", type=int, default=20)
+    find = subs.add_parser("find-student")
+    find.add_argument("--course-id", type=lambda value: canvas_id(value, "course ID"), required=True)
+    find.add_argument("--query", required=True)
     trajectory = subs.add_parser("student-trajectory")
     trajectory.add_argument("--course-id", type=lambda value: canvas_id(value, "course ID"), required=True)
     trajectory.add_argument("--student-id", type=lambda value: canvas_id(value, "student ID"), required=True)

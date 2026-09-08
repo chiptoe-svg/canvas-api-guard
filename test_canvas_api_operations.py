@@ -45,6 +45,41 @@ class TestLevel2Operations(unittest.TestCase):
         self.assertNotIn("name", report["students"][0])
         self.assertIn("not a risk score", report["definition"])
 
+    def test_current_courses_uses_the_server_side_teacher_and_term_filters(self):
+        with mock.patch.object(operations, "all_items", return_value=[
+                {"id": 12, "course_code": "GC1010", "name": "Orientation",
+                 "term": {"id": 8, "name": "Fall", "start_at": "2026-08-01", "end_at": "2026-12-01"}},
+        ]) as read:
+            report = operations.current_courses(Args())
+        self.assertEqual(report["courses"][0]["course_code"], "GC1010")
+        self.assertIn("enrollment_type=teacher", read.call_args[0][0])
+        self.assertIn("include[]=term", read.call_args[0][0])
+
+    def test_roster_count_deduplicates_users_in_multiple_sections(self):
+        with mock.patch.object(operations, "all_items", return_value=[{"id": 1}, {"id": 1}, {"id": 2}]):
+            report = operations.roster_count(Args())
+        self.assertEqual(report["active_student_count"], 2)
+
+    def test_find_student_escapes_query_and_returns_only_matching_identity_fields(self):
+        with mock.patch.object(operations, "all_items", return_value=[
+                {"id": 2, "name": "Jordan Lee", "sortable_name": "Lee, Jordan", "sis_user_id": "C123"},
+        ]) as read:
+            args = Args()
+            args.query = "Jordan & Lee"
+            report = operations.find_student(args)
+        self.assertIn("Jordan%20%26%20Lee", read.call_args[0][0])
+        self.assertEqual(report["matches"][0]["student_id"], 2)
+
+    def test_needs_grading_returns_compact_assignment_queue(self):
+        with mock.patch.object(operations, "all_items", return_value=[
+                {"id": 1, "name": "Done", "needs_grading_count": 0},
+                {"id": 2, "name": "Lab", "due_at": "2026-09-01", "needs_grading_count": 3},
+        ]):
+            report = operations.needs_grading(Args())
+        self.assertEqual(report["total_needing_grading"], 3)
+        self.assertEqual(report["assignments"], [{"assignment_id": 2, "title": "Lab",
+                                                    "due_at": "2026-09-01", "needs_grading_count": 3}])
+
     def test_assignment_performance_uses_missing_then_late_rates(self):
         with mock.patch.object(operations, "all_items", return_value=[
                 {"assignment_id": 3, "title": "Later", "tardiness_breakdown": {"missing": .1, "late": .8}},

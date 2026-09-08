@@ -861,6 +861,13 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertIn("no changes made", proc.stdout)
         self.assertIn("does not read or store a token", proc.stdout)
 
+    def test_level_2_plan_lists_its_separate_artifacts(self):
+        proc = self.run_installer("--plan", "--profile", "level-2", "--host", HOST)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("profile level-2", proc.stdout)
+        self.assertIn("Level 2 executable:", proc.stdout)
+        self.assertIn("Level 2 skill:", proc.stdout)
+
     def test_invalid_host_is_refused(self):
         proc = self.run_installer("--plan", "--host", "https://evil.example/x")
         self.assertEqual(proc.returncode, 2)
@@ -906,6 +913,13 @@ class TestInstallerPlan(unittest.TestCase):
         with open(self.BOOTSTRAP) as handle:
             script = handle.read()
         self.assertIn("In Canvas, what are my current classes?", script)
+
+    def test_github_bootstrap_upgrade_preserves_the_existing_token(self):
+        with open(self.BOOTSTRAP) as handle:
+            script = handle.read()
+        self.assertIn("--upgrade preserves the existing Keychain/Secret Service token", script)
+        self.assertIn('if [ "$UPGRADE" = no ]; then', script)
+        self.assertIn('"$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST"', script)
 
 
 if __name__ == "__main__":

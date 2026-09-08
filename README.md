@@ -135,6 +135,22 @@ classes?` That separate, read-only request is the live smoke test: it proves the
 pinned host, audit path, execution rule, and skill work together without making installation
 itself contact Canvas.
 
+### Clean macOS upgrade
+
+Use the same immutable bootstrap with `--upgrade` on a machine that already has a working
+canvas-api-guard token. It retains the existing Keychain item, runs the new checkout's offline
+tests and installation plan, replaces only the reviewed installed artifacts, and then directs
+you to the same read-only smoke test. Specify `level-2` when adding the specialized operations
+layer; use `level-1` to upgrade only the core guard.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/FULL_COMMIT_SHA/install-from-github.sh \
+  | sh -s -- --ref FULL_COMMIT_SHA --host school.instructure.com --profile level-2 --upgrade
+```
+
+The visible Terminal window asks only for the macOS administrator password. It does not prompt
+for, display, read, or replace the Canvas token.
+
 ### Copy/paste installation from a reviewed checkout (macOS and Linux)
 
 This alternative runs entirely in the terminal where it is pasted. Both the administrator

@@ -10,6 +10,10 @@ root-owned Level 2 program that calls the Level 1 guard for every Canvas read; n
 curl, Python HTTP code, a browser, or a source-tree copy.
 
 ```sh
+/usr/local/libexec/canvas_api_operations.py current-courses
+/usr/local/libexec/canvas_api_operations.py roster-count --course-id 123
+/usr/local/libexec/canvas_api_operations.py find-student --course-id 123 --query "Jordan Lee"
+/usr/local/libexec/canvas_api_operations.py needs-grading --course-id 123
 /usr/local/libexec/canvas_api_operations.py course-health --course-id 123
 /usr/local/libexec/canvas_api_operations.py assignment-performance --course-id 123
 /usr/local/libexec/canvas_api_operations.py student-attention --course-id 123 --limit 20

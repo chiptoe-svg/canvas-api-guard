@@ -10,6 +10,8 @@ OPEN_BIN=/usr/bin/open
 TERMINAL_APP=/System/Applications/Utilities/Terminal.app
 CANVAS_HOST=
 SOURCE_REF=
+PROFILE=level-1
+UPGRADE=no
 
 die() {
     printf 'canvas-api-guard bootstrap: %s\n' "$1" >&2
@@ -18,11 +20,14 @@ die() {
 
 usage() {
     cat <<'EOF'
-usage: install-from-github.sh --ref FULL_COMMIT_SHA --host school.instructure.com
+usage: install-from-github.sh --ref FULL_COMMIT_SHA --host school.instructure.com [--profile level-1|level-2] [--upgrade]
 
 Downloads exactly FULL_COMMIT_SHA, creates a private self-deleting .command launcher, and
 opens it in macOS Terminal. Terminal prompts for the Mac administrator password and then the
 Canvas API token. Neither secret is passed to this bootstrap or stored in the launcher.
+
+--upgrade preserves the existing Keychain/Secret Service token and skips token entry. Use it
+only on a machine where canvas-api-guard is already installed and has a working token.
 
 When Codex runs this bootstrap, the command must be granted host/GUI execution permission;
 macOS applications cannot be launched from the normal Codex filesystem sandbox.
@@ -33,11 +38,18 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --ref) shift; [ "$#" -gt 0 ] || die "--ref needs a value"; SOURCE_REF=$1 ;;
         --host) shift; [ "$#" -gt 0 ] || die "--host needs a value"; CANVAS_HOST=$1 ;;
+        --profile) shift; [ "$#" -gt 0 ] || die "--profile needs a value"; PROFILE=$1 ;;
+        --upgrade) UPGRADE=yes ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown option: $1" ;;
     esac
     shift
 done
+
+case "$PROFILE" in
+    level-1|level-2) ;;
+    *) die "--profile must be level-1 or level-2" ;;
+esac
 
 case "$SOURCE_REF" in
     *[!0-9a-f]*|"") die "--ref must be a full lowercase hexadecimal commit SHA" ;;
@@ -99,15 +111,20 @@ python3 -m py_compile canvas_api_guard.py test_canvas_api_guard.py
 python3 -m unittest
 sh -n install.sh
 git diff --check
-./install.sh --plan --host "$CANVAS_HOST"
+./install.sh --plan --profile "$PROFILE" --host "$CANVAS_HOST"
 
 printf '\nThe next prompt is for your Mac administrator password.\n'
 printf 'Nothing will appear while you type it.\n\n'
-/usr/bin/sudo "$CHECKOUT/install.sh" --host "$CANVAS_HOST"
 
+/usr/bin/sudo "$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST"
+
+if [ "$UPGRADE" = no ]; then
 printf '\nThe next prompt is for your Canvas API token.\n'
 printf 'Paste the token and press Return; it will not appear on screen.\n\n'
 /usr/local/libexec/canvas_api_guard.py --set-token
+else
+printf '\nUpgrade mode: the existing Canvas API token was not read, changed, or re-entered.\n'
+fi
 
 printf '\nInstalled version:\n'
 /usr/local/libexec/canvas_api_guard.py --version
