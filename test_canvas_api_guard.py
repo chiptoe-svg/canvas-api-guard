@@ -1433,6 +1433,26 @@ class TestSkillDocuments(unittest.TestCase):
                      "create-announcement"):
             self.assertNotIn(gone, text)
 
+    def test_the_level_1_skill_stays_short_enough_to_be_read(self):
+        with open(self.GUARD_SKILL) as handle:
+            self.assertLess(len(handle.read().splitlines()), 90)
+
+    def test_the_level_1_skill_shows_only_verbs_the_guard_has(self):
+        known = set(subcommand_names(guard.build_parser()))
+        shown = self.shown(self.GUARD_SKILL, "canvas_api_guard.py")
+        self.assertEqual(shown - known, set(), "the skill shows a verb the guard does not have")
+        self.assertEqual({"get", "post", "put", "patch", "delete"} - shown, set())
+
+    def test_the_level_1_skill_points_at_the_documentation_not_at_recipes(self):
+        with open(self.GUARD_SKILL) as handle:
+            text = handle.read()
+        self.assertIn("Every endpoint in the Canvas REST API documentation works here", text)
+        self.assertIn("--all-pages", text)
+        self.assertIn("--fields", text)
+        self.assertIn("WRITE STATUS UNCERTAIN", text)
+        self.assertNotIn("Fast read paths", text)
+        self.assertNotIn("canvas_api_guard.py count", text)
+
 
 class TestGuardHeader(unittest.TestCase):
     """The header is the map a reviewer reads first; it must describe the file that exists."""
