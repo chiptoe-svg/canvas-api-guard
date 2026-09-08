@@ -7,12 +7,15 @@
 set -eu
 
 usage() {
-    destination=${1:-2}
-    if [ "$destination" = 1 ]; then
-        echo "usage: $0 [--plan] [--allow-dirty] [--profile api-only|specialized-functions] --host school.instructure.com"
+    text="usage: $0 [--plan] [--allow-dirty] [--profile api-only|specialized-functions] --host school.instructure.com
+  --plan compares every installed file with the reviewed source (SHA-256; owner and mode for
+  root-owned files) and changes nothing.
+  It exits 0 when installing would change a file and 3 when nothing needs to change."
+    if [ "${1:-2}" = 1 ]; then
+        echo "$text"
         exit 0
     fi
-    echo "usage: $0 [--plan] [--allow-dirty] [--profile api-only|specialized-functions] --host school.instructure.com" >&2
+    echo "$text" >&2
     exit 2
 }
 
@@ -78,6 +81,7 @@ case "$(uname -s)" in
         IMMUTABLE="chflags schg"
         APPEND_ONLY="chflags sappnd"
         hash_file() { shasum -a 256 "$1" | awk '{print $1}'; }
+        hash_stdin() { shasum -a 256 | awk '{print $1}'; }
         stat_uid() { stat -f '%u' "$1"; }
         stat_owner() { stat -f '%Su' "$1"; }
         stat_perm() { stat -f '%Sp' "$1"; }
@@ -87,6 +91,7 @@ case "$(uname -s)" in
         IMMUTABLE="chattr +i"
         APPEND_ONLY="chattr +a"
         hash_file() { sha256sum "$1" | awk '{print $1}'; }
+        hash_stdin() { sha256sum | awk '{print $1}'; }
         stat_uid() { stat -c '%u' "$1"; }
         stat_owner() { stat -c '%U' "$1"; }
         stat_perm() { stat -c '%A' "$1"; }
@@ -179,6 +184,40 @@ SKILL_DEST="$CODEX_DIR/skills/canvas-api-guard/SKILL.md"
 LEVEL2_DEST="$DEST_DIR/canvas_api_operations.py"
 LEVEL2_SKILL_DEST="$CODEX_DIR/skills/canvas-api-operations/SKILL.md"
 
+root_owned_and_private() {              # what the guard's own provenance check demands
+    [ "$(stat_uid "$1")" = 0 ] || return 1
+    case "$(stat_perm "$1")" in ?????w????|????????w?) return 1 ;; esac
+}
+
+# Whether an installed file already matches the reviewed source: same, differs, missing, link,
+# or perms. [same] compares SHA-256 and, for root-owned destinations, owner and mode too, so
+# it means "installed correctly". A link is refused, not replaced, by the privileged step.
+file_state() {
+    if [ -L "$1" ]; then echo link
+    elif [ ! -f "$1" ]; then echo missing
+    elif [ "$(hash_file "$1")" != "$2" ]; then echo differs
+    elif [ "$3" = root ] && ! root_owned_and_private "$1"; then echo perms
+    else echo same
+    fi
+}
+
+CONFIG_TEXT=$(printf '{"host":"%s","profile":"%s"}' "$CANVAS_HOST" "$PROFILE")
+CONFIG_SHA=$(printf '%s\n' "$CONFIG_TEXT" | hash_stdin)
+DEST_STATE=$(file_state "$DEST" "$SOURCE_SHA" root)
+CONFIG_STATE=$(file_state "$CONFIG" "$CONFIG_SHA" root)
+RULES_STATE=$(file_state "$RULE_DEST" "$RULES_SHA" user)
+SKILL_STATE=$(file_state "$SKILL_DEST" "$SKILL_SHA" user)
+STATES="$DEST_STATE $CONFIG_STATE $RULES_STATE $SKILL_STATE"
+if [ "$PROFILE" = level-2 ]; then
+    LEVEL2_STATE=$(file_state "$LEVEL2_DEST" "$LEVEL2_SCRIPT_SHA" root)
+    LEVEL2_SKILL_STATE=$(file_state "$LEVEL2_SKILL_DEST" "$LEVEL2_SKILL_SHA" user)
+    STATES="$STATES $LEVEL2_STATE $LEVEL2_SKILL_STATE"
+fi
+UP_TO_DATE=yes
+for state in $STATES; do
+    [ "$state" = same ] || UP_TO_DATE=no
+done
+
 SOURCE_STATE="release archive or non-git source"
 if command -v git >/dev/null 2>&1 && git -C "$SRC_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     REVISION=$(git -C "$SRC_DIR" rev-parse HEAD)
@@ -209,22 +248,29 @@ canvas-api-guard installation plan (no changes made)
                   $CONFIG_DIR are root-owned, not links, not group/other-writable;
                   missing components will be created root-owned
   Canvas host:  $CANVAS_HOST
-  executable:   $DEST (root:$ROOT_GROUP, 0555)
-  config:       $CONFIG (root:$ROOT_GROUP, 0644; profile $PROFILE_LABEL; compatibility key $PROFILE)
-  audit log:    $LOG ($USER_NAME, 0600; containing confidential education records)
-  Codex rules:  $RULE_DEST ($USER_NAME, 0644)
-  Codex skill:  $SKILL_DEST ($USER_NAME, 0644)
+  executable:   $DEST (root:$ROOT_GROUP, 0555) [$DEST_STATE]
+  config:       $CONFIG (root:$ROOT_GROUP, 0644; profile $PROFILE_LABEL; compatibility key $PROFILE) [$CONFIG_STATE]
+  audit log:    $LOG ($USER_NAME, 0600; containing confidential education records; kept)
+  Codex rules:  $RULE_DEST ($USER_NAME, 0644) [$RULES_STATE]
+  Codex skill:  $SKILL_DEST ($USER_NAME, 0644) [$SKILL_STATE]
 EOP
     if [ "$PROFILE" = level-2 ]; then
         cat <<EOP
-  Specialized Functions executable: $LEVEL2_DEST (root:$ROOT_GROUP, 0555)
-  Specialized Functions skill:      $LEVEL2_SKILL_DEST ($USER_NAME, 0644)
+  Specialized Functions executable: $LEVEL2_DEST (root:$ROOT_GROUP, 0555) [$LEVEL2_STATE]
+  Specialized Functions skill:      $LEVEL2_SKILL_DEST ($USER_NAME, 0644) [$LEVEL2_SKILL_STATE]
   Specialized Functions sha:        $LEVEL2_SCRIPT_SHA
   Specialized Functions skill sha:  $LEVEL2_SKILL_SHA
 EOP
     fi
+    if [ "$UP_TO_DATE" = yes ]; then
+        echo
+        echo "Nothing to do: every installed file already matches this source (exit status 3)."
+        exit 3
+    fi
     cat <<EOP
 
+[state] compares the installed file's SHA-256 with the reviewed source, plus owner and mode for
+root-owned files; only files that are not [same] will be replaced, and a [link] is refused.
 The installer performs no Canvas request and does not read or store a token.
 Run the same command through sudo without --plan only after reviewing this plan.
 EOP
@@ -279,7 +325,7 @@ install -d -o root -g "$ROOT_GROUP" -m 0755 "$DEST_DIR" "$CONFIG_DIR"
 backup_if_different "$SCRIPT" "$DEST"
 install -o root -g "$ROOT_GROUP" -m 0555 "$SCRIPT" "$DEST"
 CONFIG_TEMP="$CONFIG_DIR/config.json.tmp.$$"
-printf '{"host":"%s","profile":"%s"}\n' "$CANVAS_HOST" "$PROFILE" > "$CONFIG_TEMP"
+printf '%s\n' "$CONFIG_TEXT" > "$CONFIG_TEMP"
 chown root:"$ROOT_GROUP" "$CONFIG_TEMP"
 chmod 0644 "$CONFIG_TEMP"
 if [ -f "$CONFIG" ] && ! cmp -s "$CONFIG_TEMP" "$CONFIG"; then

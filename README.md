@@ -74,7 +74,10 @@ First, inspect a no-change plan:
 ./install.sh --plan --host school.instructure.com
 ```
 
-After reviewing the source revision, SHA-256 hashes, destinations, ownership, and modes:
+The plan marks each installed file `[same]`, `[differs]`, `[missing]`, `[link]`, or `[perms]`
+by SHA-256 against the checkout, plus owner and mode for root-owned files, and exits with
+status 3 when nothing needs to change. After reviewing
+the source revision, hashes, states, destinations, ownership, and modes:
 
 ```sh
 sudo ./install.sh --host school.instructure.com
@@ -113,11 +116,12 @@ the token while it is being entered. On Linux, it writes the token to Secret Ser
 The stored item is read back for verification and the token is never accepted through argv, a file,
 or an environment variable.
 
-### One-command macOS installation from GitHub
+### One-command macOS installation or upgrade from GitHub
 
-For a new Mac, Codex can run the immutable bootstrap URL supplied with a reviewed commit. The
-bootstrap downloads that exact commit and opens a private, self-deleting `.command` in macOS
-Terminal. The user enters both the administrator password and Canvas token in Terminal; neither
+Codex can run the immutable bootstrap URL supplied with a reviewed commit. The same command
+serves a new Mac, an older installation, and an up-to-date one. The bootstrap downloads that
+exact commit and opens a private, self-deleting `.command` in macOS Terminal. The user enters
+the administrator password and, when none is stored, the Canvas token in Terminal; neither
 secret passes through Codex or appears in the launcher.
 
 The bootstrap addresses Terminal by its fixed macOS system path,
@@ -135,10 +139,16 @@ curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/FULL_C
   | sh -s -- --ref FULL_COMMIT_SHA --host school.instructure.com
 ```
 
-The Terminal workflow compiles and tests the downloaded source, prints the installation plan,
-pauses for Return before running it, installs the root-owned files with `sudo`, stores the
-token, reports the installed version, and waits for Return before closing. It makes no Canvas
-API request. If Terminal cannot be opened, the bootstrap reports failure rather than claiming a
+The Terminal workflow compiles and tests the downloaded source and prints the installation
+plan, which marks every installed file `[same]`, `[differs]`, `[missing]`, `[link]`, or
+`[perms]` by comparing its SHA-256 with the downloaded commit, plus owner and mode for the
+root-owned files. When every file is `[same]` the plan exits
+with status 3 and the workflow skips the privileged step, so no administrator password is asked
+for. Otherwise it pauses for Return, installs the root-owned files with `sudo`, and replaces
+only the files that differ. It then stores a token only if the Keychain holds none, found by an
+attribute lookup that never reads the secret; an existing token is kept unchanged. Finally it
+reports the installed version and waits for Return before closing. It makes no Canvas API
+request. If Terminal cannot be opened, the bootstrap reports failure rather than claiming a
 prompt is visible and tells a Codex user that host/GUI execution permission is required.
 
 The final Terminal message directs the user back to Codex with: `In Canvas, what are my current
@@ -146,22 +156,12 @@ classes?` That separate, read-only request is the live smoke test: it proves the
 pinned host, audit path, execution rule, and skill work together without making installation
 itself contact Canvas.
 
-### Clean macOS upgrade
+### Upgrading
 
-Use the same immutable bootstrap with `--upgrade` on a machine that already has a working
-canvas-api-guard token. It retains the existing Keychain item, runs the new checkout's offline
-tests and installation plan, replaces only the reviewed installed artifacts, and then directs
-you to the same read-only smoke test. Specify `specialized-functions` when adding operations;
-use `api-only` to upgrade only the core guard. Legacy `level-1` and `level-2` flags remain
-accepted for existing installations.
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/FULL_COMMIT_SHA/install-from-github.sh \
-  | sh -s -- --ref FULL_COMMIT_SHA --host school.instructure.com --profile specialized-functions --upgrade
-```
-
-The visible Terminal window asks only for the macOS administrator password. It does not prompt
-for, display, read, or replace the Canvas token.
+Run the same bootstrap with the new commit. Specify `specialized-functions` when adding
+operations; `api-only` upgrades only the core guard. Legacy `level-1` and `level-2` flags
+remain accepted for existing installations. To replace a stored token, run the guard's
+`--set-token` afterward in a visible terminal.
 
 ### Copy/paste installation from a reviewed checkout (macOS and Linux)
 

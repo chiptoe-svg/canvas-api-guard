@@ -169,8 +169,14 @@ Those remain deployment controls.
 - source Git revision and whether tracked files differ;
 - SHA-256 of the exact guard, Codex rule, and skill sources;
 - Canvas host;
-- every destination, owner, and mode;
+- every destination, owner, and mode, each marked `[same]`, `[differs]`, `[missing]`,
+  `[link]`, or `[perms]`: `[same]` means the installed file's SHA-256 matches the reviewed
+  source (the generated config included) and, for root-owned files, that it is root-owned and
+  not group/other-writable; `[perms]` is matching content with wrong owner or mode;
 - an explicit statement that it performs no Canvas or credential operation.
+
+It exits 0 when an installation would change a file and 3 when every file is already
+`[same]`; the macOS bootstrap uses that status to skip the privileged step entirely.
 
 Actual installation:
 

@@ -1785,6 +1785,7 @@ class TestInstallerPlan(unittest.TestCase):
         proc = self.run_installer("--help")
         self.assertEqual(proc.returncode, 0)
         self.assertIn("--plan", proc.stdout)
+        self.assertIn("exits 0 when installing would change a file and 3 when", proc.stdout)
 
     def test_plan_lists_every_reviewed_hash_and_destination(self):
         proc = self.run_installer("--plan", "--host", HOST)
@@ -1795,6 +1796,125 @@ class TestInstallerPlan(unittest.TestCase):
             self.assertIn(label, proc.stdout)
         self.assertIn("no changes made", proc.stdout)
         self.assertIn("does not read or store a token", proc.stdout)
+        # HOST is never a real installation's host, so the generated config always differs and
+        # the plan exits 0 on any machine; each installed-file line still carries its state.
+        states = re.findall(r"\) \[(same|differs|missing|link)\]$", proc.stdout, re.M)
+        self.assertEqual(len(states), 4, proc.stdout)
+        self.assertNotIn("Nothing to do", proc.stdout)
+
+    def redirected_installer(self):
+        """A copy of install.sh whose destinations point into a private temp tree, with the
+        ancestor-ownership check (exercised separately) stubbed out, so the plan's up-to-date
+        decision can be driven through every state without root or /usr/local."""
+        root = tempfile.mkdtemp(prefix="cag-plan-tree-")
+        self.addCleanup(shutil.rmtree, root, True)
+        with open(self.INSTALLER) as handle:
+            script = handle.read()
+        edits = (
+            ('SRC_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)', "SRC_DIR=%s" % shlex.quote(self.ROOT)),
+            ("DEST_DIR=/usr/local/libexec", "DEST_DIR=%s/libexec" % root),
+            ("CONFIG_DIR=/usr/local/etc/canvas-api-guard", "CONFIG_DIR=%s/etc" % root),
+            ('LOG_DIR="$USER_DIR/.canvas-api-guard"', 'LOG_DIR="%s/log"' % root),
+            ('CODEX_DIR="$USER_DIR/.codex"', 'CODEX_DIR="%s/codex"' % root),
+            ('check_ancestor_ownership "$DEST_DIR"', "CHECKED=1"),
+            ('check_ancestor_ownership "$CONFIG_DIR"', ":"),
+            # the temp tree is user-owned; the owner/mode rule is covered by the file_state test
+            ("CONFIG_TEXT=$(printf", "root_owned_and_private() { :; }\nCONFIG_TEXT=$(printf"),
+        )
+        for old, replacement in edits:
+            self.assertEqual(script.count(old), 1, old)
+            script = script.replace(old, replacement)
+        copy = os.path.join(root, "install.sh")
+        with open(copy, "w") as handle:
+            handle.write(script)
+        os.chmod(copy, 0o755)
+        return root, copy
+
+    def test_plan_exits_3_only_when_every_installed_file_matches(self):
+        import subprocess
+        root, copy = self.redirected_installer()
+
+        def plan():
+            return subprocess.run([copy, "--plan", "--host", HOST], cwd=self.ROOT,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  universal_newlines=True)
+
+        proc = plan()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.count("[missing]"), 4)
+
+        installed = {
+            "libexec/canvas_api_guard.py": os.path.join(self.ROOT, "canvas_api_guard.py"),
+            "codex/rules/canvas-api-guard.rules": os.path.join(self.ROOT, "codex", "canvas-api-guard.rules"),
+            "codex/skills/canvas-api-guard/SKILL.md": os.path.join(
+                self.ROOT, "codex", "skills", "canvas-api-guard", "SKILL.md"),
+        }
+        for relative, source in installed.items():
+            os.makedirs(os.path.dirname(os.path.join(root, relative)), exist_ok=True)
+            shutil.copyfile(source, os.path.join(root, relative))
+        os.makedirs(os.path.join(root, "etc"))
+        with open(os.path.join(root, "etc", "config.json"), "w") as handle:
+            handle.write('{"host":"%s","profile":"level-1"}\n' % HOST)
+        proc = plan()
+        self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
+        self.assertEqual(proc.stdout.count("[same]"), 4)
+        self.assertIn("Nothing to do", proc.stdout)
+        self.assertNotIn("Run the same command through sudo", proc.stdout)
+
+        with open(os.path.join(root, "codex/skills/canvas-api-guard/SKILL.md"), "a") as handle:
+            handle.write("# older\n")
+        proc = plan()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("SKILL.md (", proc.stdout)
+        self.assertEqual(proc.stdout.count("[differs]"), 1)
+        self.assertNotIn("Nothing to do", proc.stdout)
+
+    def extracted_file_state(self):
+        """install.sh's SHA-256 state check, alone, cut out with sed like the ancestor check."""
+        import subprocess
+        platform = os.uname().sysname
+        if platform not in ("Darwin", "Linux"):
+            self.skipTest("install.sh supports macOS and Linux only")
+        helpers = subprocess.run(
+            "sed -n '/^    %s)$/,/^        ;;$/p' %s | sed '1d;$d'"
+            % (platform, shlex.quote(self.INSTALLER)), shell=True,
+            stdout=subprocess.PIPE, universal_newlines=True).stdout
+        function = subprocess.run(
+            ["sed", "-n", "/^root_owned_and_private() {/,/^}$/p;/^file_state() {$/,/^}$/p",
+             self.INSTALLER], stdout=subprocess.PIPE, universal_newlines=True).stdout
+        self.assertIn("hash_file()", helpers)
+        self.assertIn("echo link", function)
+        self.assertIn("echo perms", function)
+        return helpers + function + '\nfile_state "$1" "$2" "$3"\n'
+
+    def test_file_state_is_same_only_for_an_identical_regular_file(self):
+        import hashlib
+        import subprocess
+        directory = tempfile.mkdtemp(prefix="cag-file-state-")
+        self.addCleanup(shutil.rmtree, directory, True)
+        script = os.path.join(directory, "state.sh")
+        with open(script, "w") as handle:
+            handle.write(self.extracted_file_state())
+        same = os.path.join(directory, "same")
+        with open(same, "w") as handle:
+            handle.write("reviewed\n")
+        digest = hashlib.sha256(b"reviewed\n").hexdigest()
+        differs = os.path.join(directory, "differs")
+        with open(differs, "w") as handle:
+            handle.write("older\n")
+        link = os.path.join(directory, "link")
+        os.symlink(same, link)
+        # Every file here is user-owned, so a root-owned destination with matching content is
+        # [perms]: content alone never earns [same] for the files the guard's provenance check
+        # inspects.
+        for path, owner, expected in ((same, "user", "same"), (same, "root", "perms"),
+                                      (differs, "user", "differs"),
+                                      (os.path.join(directory, "absent"), "root", "missing"),
+                                      (link, "user", "link")):
+            with self.subTest(expected=expected):
+                proc = subprocess.run(["sh", script, path, digest, owner], stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, universal_newlines=True)
+                self.assertEqual(proc.stdout.strip(), expected, proc.stderr)
 
     def test_plan_runs_the_ancestor_ownership_check(self):
         """The installer refuses to leave the guard's own provenance check unsatisfiable, so
@@ -1919,11 +2039,20 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertIn('written before Terminal waits for Return', script)
         self.assertIn('Do not use a fixed polling loop', script)
 
-    def test_github_bootstrap_upgrade_preserves_the_existing_token(self):
+    def test_github_bootstrap_installs_or_upgrades_from_one_command(self):
+        """One pinned command serves a new Mac, an older install, and an up-to-date one: the
+        plan's exit status 3 skips sudo, and token entry happens only when the Keychain holds
+        no item -- detected by attribute lookup, never by reading the secret."""
         with open(self.BOOTSTRAP) as handle:
             script = handle.read()
-        self.assertIn("--upgrade preserves the existing Keychain/Secret Service token", script)
-        self.assertIn('if [ "$UPGRADE" = no ]; then', script)
+        self.assertNotIn("upgrade", script.lower())
+        self.assertIn('if [ "\\$plan_status" -eq 3 ]; then', script)
+        self.assertLess(script.index("plan_status=0"), script.index('/usr/bin/sudo "$CHECKOUT/install.sh"'))
+        lookup = [line for line in script.splitlines() if "find-generic-password" in line]
+        self.assertEqual(len(lookup), 1, lookup)
+        self.assertIn('-s canvas-api-guard -a "\\$(id -un)"', lookup[0])
+        self.assertNotIn(" -w", lookup[0])
+        self.assertNotIn(" -g", lookup[0])
         self.assertIn('"$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST"', script)
 
     def test_github_bootstrap_pauses_for_review_before_sudo(self):
