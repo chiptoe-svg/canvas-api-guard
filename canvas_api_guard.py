@@ -283,10 +283,24 @@ class RefuseRedirects(urllib.request.HTTPRedirectHandler):
         raise GuardError("refusing to follow a redirect (%s) to %r: the token is sent only to "
                          "the pinned URL" % (code, newurl))
 
-urllib.request.install_opener(urllib.request.build_opener(RefuseRedirects))
 
-def open_request(request):
-    """The only urlopen call; callers must construct an authenticated pinned or credential-free request."""
+class CredentialFreeRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow Canvas-issued attachment redirects only after stripping every sensitive header."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parsed = urllib.parse.urlsplit(newurl)
+        if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+            raise GuardError("refusing a non-HTTPS or malformed attachment redirect")
+        clean_headers = dict((name, value) for name, value in req.header_items()
+                             if name.lower() not in ("authorization", "cookie", "proxy-authorization"))
+        return urllib.request.Request(newurl, headers=clean_headers, method="GET")
+
+urllib.request.install_opener(urllib.request.build_opener(RefuseRedirects))
+_CREDENTIAL_FREE_OPENER = urllib.request.build_opener(CredentialFreeRedirects)
+
+def open_request(request, credential_free_redirects=False):
+    """Open a pinned authenticated request, or a Canvas-issued credential-free attachment URL."""
+    if credential_free_redirects:
+        return _CREDENTIAL_FREE_OPENER.open(request, timeout=TIMEOUT)
     return urllib.request.urlopen(request, timeout=TIMEOUT)
 
 def send_request(cfg, method, path, body=None):
@@ -565,7 +579,7 @@ def do_download_submission_file(cfg, file_id, submission_id, suffix):
         log_event(cfg.log_path, {"event": "download", "kind": "read", "file_id": file_id,
                                  "submission_id": submission_id, "confirmation": None})
         request = urllib.request.Request(public_url, headers={"User-Agent": USER_AGENT}, method="GET")
-        raw = open_request(request)  # deliberately credential-free; redirects are refused globally
+        raw = open_request(request, credential_free_redirects=True)
         with os.fdopen(fd, "wb") as handle:
             fd = None
             while True:
@@ -586,7 +600,8 @@ def do_download_submission_file(cfg, file_id, submission_id, suffix):
         except OSError: pass
         log_event(cfg.log_path, {"event": "download-response", "kind": "read", "file_id": file_id,
                                  "submission_id": submission_id, "ok": False, "error": type(err).__name__})
-        raise GuardError("submission PDF download failed: %s" % err)
+        # Network exceptions can embed an expiring signed URL. Preserve only the exception class.
+        raise GuardError("submission attachment download failed (%s)" % type(err).__name__)
     log_event(cfg.log_path, {"event": "download-response", "kind": "read", "file_id": file_id,
                              "submission_id": submission_id, "ok": True, "bytes": total,
                              "sha256": digest.hexdigest()})

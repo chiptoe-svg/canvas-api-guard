@@ -571,6 +571,20 @@ class TestRedirectsAreRefused(unittest.TestCase):
         self.assertTrue(any(isinstance(handler, guard.RefuseRedirects)
                             for handler in opener.handlers))
 
+    def test_attachment_redirect_requires_https_and_strips_credentials(self):
+        request = urllib.request.Request("https://%s/signed" % HOST, headers={
+            "Authorization": "Bearer should-not-leave-canvas", "Cookie": "not-forwarded",
+            "User-Agent": "canvas-api-guard-test"})
+        redirected = guard.CredentialFreeRedirects().redirect_request(
+            request, None, 302, "Found", {}, "https://cdn.example.edu/file")
+        headers = dict((key.lower(), value) for key, value in redirected.header_items())
+        self.assertNotIn("authorization", headers)
+        self.assertNotIn("cookie", headers)
+        self.assertEqual(headers["user-agent"], "canvas-api-guard-test")
+        with self.assertRaises(guard.GuardError):
+            guard.CredentialFreeRedirects().redirect_request(
+                request, None, 302, "Found", {}, "http://cdn.example.edu/file")
+
 
 class FakeProc(object):
     def __init__(self, returncode=0, stdout=b""):
