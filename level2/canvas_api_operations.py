@@ -200,24 +200,6 @@ def create_rubric(args):
                 raise GuardUncertain("WRITE STATUS UNCERTAIN: rubric criterion did not read back")
 
 
-def attach_rubric(args):
-    rubric_path = "courses/%s/rubrics/%s" % (args.course_id, args.rubric_id)
-    assignment_path = "courses/%s/assignments/%s" % (args.course_id, args.assignment_id)
-    guard_get(rubric_path)
-    guard_get(assignment_path)
-    value = exact_object(definition_file(args.definition), (), ("use_for_grading", "purpose"))
-    purpose = value.get("purpose", "grading")
-    if purpose not in ("grading", "bookmark"):
-        raise OperationError("rubric association purpose must be grading or bookmark")
-    body = {"rubric_association": {"rubric_id": int(args.rubric_id),
-                                    "association_id": int(args.assignment_id),
-                                    "association_type": "Assignment", "purpose": purpose,
-                                    "use_for_grading": bool(value.get("use_for_grading", True))}}
-    path = "courses/%s/rubric_associations" % args.course_id
-    write_plan("attach-rubric", args, assignment_path, body)
-    guard_write("post", path, body, operation_phase(args))
-
-
 def live_rubric(args):
     assignment = guard_get("courses/%s/assignments/%s" % (args.course_id, args.assignment_id)).get("object") or {}
     settings = assignment.get("rubric_settings") or {}
@@ -457,8 +439,7 @@ def student_attention(args):
 
 # Each of these computes across several Canvas calls or validates structured input. An
 # operation that is one API call belongs in API Only, with the Canvas documentation.
-OPERATIONS = {"create-rubric": create_rubric, "attach-rubric": attach_rubric,
-              "grade-with-rubric": grade_with_rubric,
+OPERATIONS = {"create-rubric": create_rubric, "grade-with-rubric": grade_with_rubric,
               "bulk-grade-with-rubric": bulk_grade_with_rubric,
               "prepare-submission-review": prepare_submission_review,
               "download-assignment-submissions": download_assignment_submissions,
@@ -486,9 +467,6 @@ def parser():
     phase.add_argument("--dry-run", action="store_true", help="read and show the exact write; send nothing")
     phase.add_argument("--yes", action="store_true", help="perform the previously reviewed write")
     subs.add_parser("create-rubric", parents=[write])
-    attach = subs.add_parser("attach-rubric", parents=[write])
-    attach.add_argument("--rubric-id", type=lambda value: canvas_id(value, "rubric ID"), required=True)
-    attach.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)
     for name in ("grade-with-rubric", "bulk-grade-with-rubric"):
         grade = subs.add_parser(name, parents=[write])
         grade.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)

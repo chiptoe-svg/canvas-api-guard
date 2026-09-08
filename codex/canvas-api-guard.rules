@@ -18,8 +18,7 @@ WRITES = ["post", "put", "patch", "delete"]
 DOWNLOADS = ["download-submission-file"]
 OPERATION_READS = ["student-attention"]
 OPERATION_PROMPTS = ["prepare-submission-review", "download-assignment-submissions",
-                     "create-rubric", "attach-rubric", "grade-with-rubric",
-                     "bulk-grade-with-rubric"]
+                     "create-rubric", "grade-with-rubric", "bulk-grade-with-rubric"]
 
 prefix_rule(
     pattern = [GUARD, READS],

@@ -1622,21 +1622,24 @@ class TestSkillDocuments(unittest.TestCase):
         self.assertNotIn("Fast read paths", text)
         self.assertNotIn("canvas_api_guard.py count", text)
 
-    def test_the_level_1_skill_commands_parse_with_only_real_flags(self):
+    def test_every_skill_guard_command_parses_with_only_real_flags(self):
         """A typo'd flag (--al-pages) would silently teach the agent a dead path; catch it
-        by actually parsing every command line against the real parser, not just the verb."""
+        by actually parsing every command line against the real parser, not just the verb.
+        Both skills are read: the Level 2 skill shows guard calls for what it does not do."""
         parser = guard.build_parser()
-        with open(self.GUARD_SKILL) as handle:
-            text = handle.read()
-        lines = re.findall(r"^/usr/local/libexec/canvas_api_guard\.py .+$", text, re.M)
-        self.assertTrue(lines, "no guard command lines found in the skill")
-        for line in lines:
-            tokens = shlex.split(line)[1:]
-            with mock.patch("sys.stderr", io.StringIO()) as stderr:
-                try:
-                    parser.parse_args(tokens)
-                except SystemExit:
-                    self.fail("skill command failed to parse: %r\n%s" % (line, stderr.getvalue()))
+        for skill in (self.GUARD_SKILL, self.OPERATIONS_SKILL):
+            with open(skill) as handle:
+                text = handle.read()
+            lines = re.findall(r"^/usr/local/libexec/canvas_api_guard\.py .+$", text, re.M)
+            self.assertTrue(lines, "no guard command lines found in %s" % skill)
+            for line in lines:
+                tokens = shlex.split(line)[1:]
+                with mock.patch("sys.stderr", io.StringIO()) as stderr:
+                    try:
+                        parser.parse_args(tokens)
+                    except SystemExit:
+                        self.fail("skill command failed to parse: %r\n%s"
+                                  % (line, stderr.getvalue()))
 
 
 class TestGuardHeader(unittest.TestCase):

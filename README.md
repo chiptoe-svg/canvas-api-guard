@@ -24,10 +24,10 @@ one Codex rules file, two Codex skills, the optional Specialized Functions progr
   separate, token-free request, described under "Optional Specialized Functions" below.
 
 **Specialized Functions** are an additive layer, not a second transport, an allow-list, or a
-more privileged token. They leave API Only available for all general API work and add the seven
+more privileged token. They leave API Only available for all general API work and add the six
 operations that compute across several Canvas calls or validate structured input: participation
 and activity analysis, submission-file review for one student or a whole assignment, and rubric
-creation, attachment and grading. An operation that would be a single documented API call is
+creation and grading. An operation that would be a single documented API call is
 deliberately absent - API Only does those, with the Canvas documentation. These writes use the
 same dry-run, explicit approval, and verified read-back as API Only.
 
