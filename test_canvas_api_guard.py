@@ -439,7 +439,7 @@ class TestEvidence(GuardTestCase):
             code, output = self.run_main(
                 ["post", "courses/1/assignments", "--yes",
                  "-d", '{"assignment": {"name": "Lab 4"}}'])
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 3)
         self.assertIn("neither an id nor a usable Location header", output)
         self.assertIn("WRITE STATUS UNCERTAIN", output)
 
@@ -476,7 +476,7 @@ class TestEvidence(GuardTestCase):
             code, output = self.run_main(
                 ["post", "courses/1/assignments", "--yes",
                  "-d", '{"assignment": {"name": "Lab 4"}}'])
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 3)
         self.assertIn("WRITE STATUS UNCERTAIN", output)
         self.assertIn("created object did not match requested field", output)
 
@@ -519,7 +519,7 @@ class TestEvidence(GuardTestCase):
             code, output = self.run_main(
                 ["put", "courses/1/assignments/2/submissions/3", "--yes",
                  "-d", '{"submission": {"posted_grade": 95}}'])
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 3)
         self.assertIn("WRITE STATUS UNCERTAIN", output)
         self.assertIn("read-back failed", output)
 
@@ -531,7 +531,7 @@ class TestEvidence(GuardTestCase):
             code, output = self.run_main(
                 ["put", "courses/1/assignments/2/submissions/3", "--yes",
                  "-d", '{"submission": {"posted_grade": 95}}'])
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 3)
         self.assertIn("did not match", output)
 
     def test_delete_transport_failure_is_not_reported_as_gone(self):
@@ -540,7 +540,7 @@ class TestEvidence(GuardTestCase):
                      OSError("network unavailable")]
         with mock.patch("urllib.request.urlopen", side_effect=responses):
             code, output = self.run_main(["delete", "courses/1/assignments/2", "--yes"])
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 3)
         self.assertIn("WRITE STATUS UNCERTAIN", output)
         self.assertNotIn("404 gone", output)
 
@@ -860,6 +860,85 @@ class TestLinuxTokenNeverExposed(GuardTestCase):
         self.assertNotIn(TOKEN, self.log_text())
         self.assertNotIn(TOKEN, output)
         self.assertEqual(urlopen.call_args[0][0].get_header("Authorization"), "Bearer " + TOKEN)
+
+
+class TestProvenance(GuardTestCase):
+    """The guard proves it is the installed, root-owned program before it reads the token."""
+
+    @staticmethod
+    def rooted(mode):
+        """A stat result for a root-owned, non-group/world-writable path."""
+        return os.stat_result((mode, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+
+    def fake_stat(self, directory_mode):
+        def stat_path(path):
+            return self.rooted(0o100555 if path.endswith(".py") else directory_mode)
+        return stat_path
+
+    def test_a_file_under_a_user_owned_symlinked_directory_is_refused(self):
+        real = os.path.join(self.state_dir, "libexec")
+        os.mkdir(real, 0o755)
+        target = os.path.join(real, "canvas_api_guard.py")
+        with open(target, "w") as handle:
+            handle.write("#!/usr/bin/env python3\n")
+        link = os.path.join(self.state_dir, "link")
+        os.symlink(real, link)
+        with self.assertRaises(guard.GuardError) as caught:
+            guard.trusted_path(os.path.join(link, "canvas_api_guard.py"),
+                               "the guard executable")
+        self.assertIn("owned by root", str(caught.exception))
+        self.assertIn(os.path.realpath(target), str(caught.exception))
+
+    def test_a_root_owned_real_path_and_every_ancestor_pass(self):
+        installed = "/usr/local/libexec/canvas_api_guard.py"
+        with mock.patch.object(guard.os, "stat", self.fake_stat(0o040755)):
+            self.assertEqual(guard.trusted_path(installed, "the guard executable"),
+                             os.path.realpath(installed))
+
+    def test_a_group_writable_ancestor_is_refused_and_named(self):
+        installed = "/usr/local/libexec/canvas_api_guard.py"
+        with mock.patch.object(guard.os, "stat", self.fake_stat(0o040775)):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.trusted_path(installed, "the guard executable")
+        self.assertIn("libexec", str(caught.exception))
+        self.assertIn("writable by group", str(caught.exception))
+
+    def test_the_config_seam_is_the_only_thing_that_skips_the_check(self):
+        guard.check_provenance()                 # setUp pinned a private config: skipped
+        source_tree = os.path.abspath(guard.__file__)
+        if os.stat(source_tree).st_uid == 0:
+            self.skipTest("this checkout is root-owned, so it is indistinguishable from an install")
+        with mock.patch.object(guard, "CONFIG_PATH", guard.INSTALLED_CONFIG_PATH), \
+                mock.patch.object(guard, "installed_guard_file", return_value=source_tree):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.check_provenance()
+        self.assertIn("the guard executable", str(caught.exception))
+
+    def test_a_live_request_refuses_before_the_token_and_before_the_network(self):
+        def no_keychain():
+            raise AssertionError("the credential store was touched before the provenance check")
+
+        with mock.patch.object(guard, "check_provenance", side_effect=guard.GuardError(
+                    "the guard executable is not trustworthy: /tmp/x must be owned by root")), \
+                mock.patch.object(guard, "read_token", no_keychain), \
+                mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "courses/1"])
+        self.assertEqual(code, 2)
+        self.assertIn("not trustworthy", self.last_stderr)
+        urlopen.assert_not_called()
+
+    def test_an_unverifiable_write_exits_3_while_a_refusal_exits_2(self):
+        responses = [FakeResponse(payload={"id": 3, "grade": "60"}),
+                     FakeResponse(payload={"id": 3, "grade": "95"}),
+                     OSError("network unavailable")]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, output = self.run_main(
+                ["put", "courses/1/assignments/2/submissions/3", "--yes",
+                 "-d", '{"submission": {"grade": 95}}'])
+        self.assertEqual(code, 3)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+        code, _ = self.run_main(["get", "https://evil.example.com/api/v1/courses/1"])
+        self.assertEqual(code, 2)
 
 
 class TestSourceField(GuardTestCase):

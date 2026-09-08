@@ -51,6 +51,10 @@ DEFAULT_DIR = os.path.join(pwd.getpwuid(os.getuid()).pw_dir, ".canvas-api-guard"
 DEFAULT_LOG = os.path.join(DEFAULT_DIR, "audit.jsonl")
 REVIEW_DIR = os.path.join(DEFAULT_DIR, "submission-reviews")
 CONFIG_PATH = "/usr/local/etc/canvas-api-guard/config.json"  # root/admin-owned; not a secret
+INSTALLED_CONFIG_PATH = CONFIG_PATH          # the offline-test seam: the suite patches
+                                             # CONFIG_PATH to a throwaway file and the
+                                             # provenance check below stands down. The
+                                             # installed guard never does that.
 WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 TIMEOUT = 30
 REDACTED = "Bearer <redacted>"
@@ -70,6 +74,51 @@ class RequestFailure(GuardError):
 
 class VerificationFailure(GuardError):
     """The write returned, but the required read-back did not prove the outcome."""
+
+# -------------------------------------------------------------------------------- provenance
+# Before the token is read, the guard proves it is the installed program: its own real path,
+# the fixed configuration, and every directory above them must be owned by root and not
+# writable by group or others. A source-tree copy can still show --version, a dry run and
+# every refusal - none of those read a credential - but it cannot make a live request, which
+# is exactly what the shipped Codex rules already assume. The one exception is the test seam:
+# when CONFIG_PATH has been pointed at a throwaway config the check stands down, so the suite
+# stays offline and root-free.
+def trusted_path(path, label):
+    """Refuse unless the resolved path and every ancestor are root-owned and not group- or
+    world-writable. The message names the first component that failed."""
+    real = os.path.realpath(path)
+    components, current = [real], real
+    while True:
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        components.append(parent)
+        current = parent
+    for component in components:
+        try:
+            info = os.stat(component)
+        except OSError as err:
+            raise GuardError("cannot verify %s at %s: %s" % (label, component, err))
+        if component == real and not stat.S_ISREG(info.st_mode):
+            raise GuardError("%s must be a regular file: %s" % (label, real))
+        if component != real and not stat.S_ISDIR(info.st_mode):
+            raise GuardError("%s must live under directories only; %s is not one"
+                             % (label, component))
+        if info.st_uid != 0 or (info.st_mode & 0o022):
+            raise GuardError("%s is not trustworthy: %s must be owned by root and not "
+                             "writable by group or others" % (label, component))
+    return real
+
+def installed_guard_file():
+    """The real path of the program that is actually running."""
+    candidate = sys.argv[0] if sys.argv and os.path.isfile(sys.argv[0] or "") else __file__
+    return os.path.realpath(candidate)
+
+def check_provenance():
+    """Prove the running guard is the installed, root-owned one before any credential use."""
+    if CONFIG_PATH != INSTALLED_CONFIG_PATH:
+        return                       # test seam: a throwaway config is never an installation
+    trusted_path(installed_guard_file(), "the guard executable")
 
 # ------------------------------------------------------------------------------------- token
 # read_token() is the only credential reader. Its value is used only to make an Authorization
@@ -404,6 +453,7 @@ def send_request(cfg, method, path, body=None):
         print("  body     %s" % (json.dumps(body) if body is not None else "(none)"))
         return None
     credential_started = time.monotonic()
+    check_provenance()                          # before the keychain, before the network
     headers["Authorization"] = "Bearer " + read_token()                   # the only use
     credential_ms = elapsed_ms(credential_started)
     request = urllib.request.Request(url, data=payload, headers=headers, method=method)
@@ -912,6 +962,8 @@ def read_config():
     if info.st_uid not in (0, os.getuid()) or (info.st_mode & 0o022):
         raise GuardError("Canvas configuration must be owned by root or the current user and "
                          "not writable by group or others: %s" % CONFIG_PATH)
+    if CONFIG_PATH == INSTALLED_CONFIG_PATH:    # the installed path: prove the whole chain
+        trusted_path(CONFIG_PATH, "the Canvas configuration")
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -992,6 +1044,9 @@ def main(argv=None):
         refuse_unconfirmed_write(cfg, args.verb, args.path)
         VERBS[args.verb](cfg, args.path, body)
         return 0
+    except VerificationFailure as err:           # the write was sent and could not be proved
+        sys.stderr.write("canvas-api-guard: %s\n" % err)
+        return 3
     except (GuardError, ValueError) as err:      # ValueError: an unparseable -d body
         sys.stderr.write("canvas-api-guard: %s\n" % err)
         return 2
