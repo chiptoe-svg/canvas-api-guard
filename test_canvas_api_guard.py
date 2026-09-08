@@ -585,6 +585,15 @@ class TestRedirectsAreRefused(unittest.TestCase):
             guard.CredentialFreeRedirects().redirect_request(
                 request, None, 302, "Found", {}, "http://cdn.example.edu/file")
 
+    def test_attachment_download_error_records_status_not_signed_url(self):
+        signed_url = "https://cdn.example.edu/file?X-Amz-Signature=do-not-log"
+        error = urllib.error.HTTPError(signed_url, 403, "Forbidden", {}, None)
+        failure = guard.safe_download_failure(error)
+        error.close()
+        self.assertEqual(failure, {"error": "HTTPError", "http_status": 403})
+        self.assertNotIn("cdn.example.edu", json.dumps(failure))
+        self.assertIsNone(guard.safe_download_failure(OSError("unavailable"))["http_status"])
+
 
 class FakeProc(object):
     def __init__(self, returncode=0, stdout=b""):

@@ -303,6 +303,18 @@ def open_request(request, credential_free_redirects=False):
         return _CREDENTIAL_FREE_OPENER.open(request, timeout=TIMEOUT)
     return urllib.request.urlopen(request, timeout=TIMEOUT)
 
+
+def safe_download_failure(err):
+    """Return non-secret evidence for an attachment-fetch failure.
+
+    HTTPError.__str__, reason text, and headers can include a time-limited signed
+    download URL.  Keep the useful HTTP status, but never serialize that detail.
+    """
+    status = getattr(err, "code", None)
+    if not isinstance(status, int) or status < 100 or status > 599:
+        status = None
+    return {"error": type(err).__name__, "http_status": status}
+
 def send_request(cfg, method, path, body=None):
     """Perform an authenticated request to the pinned Canvas host and log before it does."""
     started = time.monotonic()
@@ -598,10 +610,13 @@ def do_download_submission_file(cfg, file_id, submission_id, suffix):
             os.close(fd)
         try: os.unlink(output)
         except OSError: pass
+        failure = safe_download_failure(err)
         log_event(cfg.log_path, {"event": "download-response", "kind": "read", "file_id": file_id,
-                                 "submission_id": submission_id, "ok": False, "error": type(err).__name__})
+                                 "submission_id": submission_id, "ok": False, **failure})
         # Network exceptions can embed an expiring signed URL. Preserve only the exception class.
-        raise GuardError("submission attachment download failed (%s)" % type(err).__name__)
+        status = (" HTTP %s" % failure["http_status"]) if failure["http_status"] else ""
+        raise GuardError("submission attachment download failed (%s%s)" %
+                         (failure["error"], status))
     log_event(cfg.log_path, {"event": "download-response", "kind": "read", "file_id": file_id,
                              "submission_id": submission_id, "ok": True, "bytes": total,
                              "sha256": digest.hexdigest()})
