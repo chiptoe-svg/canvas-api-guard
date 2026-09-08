@@ -359,9 +359,7 @@ class AttachmentRedirects(urllib.request.HTTPRedirectHandler):
         self.host, self.trace = host, trace
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        parsed = urllib.parse.urlsplit(newurl)
-        if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
-            raise GuardError("refusing a non-HTTPS or malformed attachment redirect")
+        parsed = https_parts(newurl, "refusing a non-HTTPS or malformed attachment redirect")
         # Keep only status + hostname: never retain the access-bearing URL, its query, or body.
         self.trace.append({"status": int(code), "host": safe_url_host(newurl),
                            "scope": "pinned" if parsed.netloc == self.host else "external"})
@@ -401,6 +399,15 @@ def safe_download_failure(err):
         status = None
     return {"error": type(err).__name__, "http_status": status,
             "response_host": safe_url_host(getattr(err, "url", ""))}
+
+
+def https_parts(url, refusal):
+    """Split a URL that must be absolute HTTPS with a host and no embedded credentials; every
+    off-host hop this file will open is admitted through here, and nothing else is."""
+    parsed = urllib.parse.urlsplit(url or "")
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+        raise GuardError(refusal)
+    return parsed
 
 
 def safe_url_host(url):
@@ -766,25 +773,12 @@ def safe_download_suffix(value):
     return value.lower()
 
 
-def submission_file_url(cfg, file_id):
-    """Resolve Canvas's File.url through the authenticated, pinned API request path."""
-    file_id = numeric_id(file_id, "file ID")
-    response = send_request(cfg, "GET", "files/%s" % file_id)
-    file_url = (response.get("data") or {}).get("url")
-    parsed = urllib.parse.urlsplit(file_url or "")
-    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
-        raise GuardError("Canvas did not return a usable HTTPS submission download URL")
-    return file_url
-
-
-def submission_public_url(cfg, file_id, submission_id):
-    """Resolve Canvas's submission-authorized temporary URL after File.url delivery fails."""
-    file_id, submission_id = numeric_id(file_id, "file ID"), numeric_id(submission_id, "submission ID")
-    response = send_request(cfg, "GET", "files/%s/public_url?submission_id=%s" % (file_id, submission_id))
-    file_url = (response.get("data") or {}).get("public_url")
-    parsed = urllib.parse.urlsplit(file_url or "")
-    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
-        raise GuardError("Canvas did not return a usable HTTPS submission public URL")
+def submission_download_url(cfg, path, field, kind):
+    """Resolve a Canvas-issued file URL through the authenticated, pinned API request path:
+    File.url, or the submission-authorized temporary URL after File.url delivery fails."""
+    response = send_request(cfg, "GET", path)
+    file_url = (response.get("data") or {}).get(field)
+    https_parts(file_url, "Canvas did not return a usable HTTPS submission %s URL" % kind)
     return file_url
 
 
@@ -797,9 +791,12 @@ def do_download_submission_file(cfg, course_id, file_id, submission_id, suffix):
     # bearer-free GET. Only after that delivery chain returns a 5xx twice, try Canvas's
     # submission-authorized public_url once. URLs are never printed or logged.
     directory = secure_review_dir()
-    attempts = (("file-url", lambda: submission_file_url(cfg, file_id), 1),
-                ("file-url", lambda: submission_file_url(cfg, file_id), 2),
-                ("submission-public-url", lambda: submission_public_url(cfg, file_id, submission_id), 1))
+    file_path = "files/%s" % file_id
+    public_path = "files/%s/public_url?submission_id=%s" % (file_id, submission_id)
+    attempts = (("file-url", lambda: submission_download_url(cfg, file_path, "url", "download"), 1),
+                ("file-url", lambda: submission_download_url(cfg, file_path, "url", "download"), 2),
+                ("submission-public-url",
+                 lambda: submission_download_url(cfg, public_path, "public_url", "public"), 1))
     for index, (route, resolve_url, attempt) in enumerate(attempts):
         fd, output = tempfile.mkstemp(prefix="canvas-submission-", suffix=suffix, dir=directory)
         digest, total, raw = hashlib.sha256(), 0, None
