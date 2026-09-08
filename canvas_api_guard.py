@@ -36,11 +36,11 @@
 # is recorded beside the change it authorised, or refused. Two invariants above all:
 # THE TOKEN IS ONLY EVER SENT TO THE HOST RECORDED IN THE FIXED SYSTEM CONFIGURATION, and it is
 # not read at all unless this file, its configuration and every directory above them are
-# root-owned and not writable by group or others (provenance, below).
+# root-owned and not writable by group or others.
 #
 # READ TOP TO BOTTOM: constants, provenance, token, logging, host pinning,
 # the one request function, attachment downloads, confirmation, evidence helpers, verbs,
-# argparse, main.
+# argparse.
 
 import argparse, datetime, getpass, hashlib, json, os, pty, pwd, re, stat, subprocess, sys, tempfile
 import urllib.error, urllib.parse, urllib.request

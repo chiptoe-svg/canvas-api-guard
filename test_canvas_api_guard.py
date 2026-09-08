@@ -8,6 +8,7 @@ never reaches the network. Two tests prove that directly.
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -1329,23 +1330,20 @@ class TestGuardHeader(unittest.TestCase):
     def test_the_version_is_1_14_0(self):
         self.assertEqual(guard.USER_AGENT, "canvas-api-guard/1.14.0")
 
-    def test_every_section_the_header_promises_has_a_banner(self):
+    def test_the_header_reading_order_matches_the_files_banners_exactly(self):
+        """The map must be derived truth, not a copy that can silently go stale."""
         source = self.source()
-        header = source.split("# READ TOP TO BOTTOM:")[1].split("import argparse")[0]
-        for name in ("constants", "provenance", "token", "logging",
-                     "host pinning", "the one request function", "attachment downloads",
-                     "confirmation", "evidence", "verbs", "argparse"):
-            with self.subTest(section=name):
-                self.assertIn(name, header)
-                self.assertIn("--- %s" % name, source)
+        banners = re.findall(r"^# -+ (.+?)\s*$", source, re.M)
+        order_text = source.split("READ TOP TO BOTTOM:")[1].split(".")[0]
+        order_text = re.sub(r"\n#\s*", " ", order_text)
+        sections = [part.strip() for part in order_text.split(",")]
+        self.assertEqual(sections, banners)
 
     def test_the_header_states_the_provenance_and_token_invariants(self):
         header = self.source().split("import argparse")[0]
         self.assertIn("THE TOKEN IS ONLY EVER SENT TO THE HOST RECORDED IN THE FIXED SYSTEM "
                       "CONFIGURATION", header)
         self.assertIn("root-owned", header)
-        self.assertIn("attachment", header)
-        self.assertIn("provenance", header)
 
 
 class TestInstallerPlan(unittest.TestCase):
