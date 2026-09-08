@@ -424,13 +424,31 @@ class TestEvidence(GuardTestCase):
                 ["put", "courses/1/assignments/2/submissions/3", "--yes",
                  "-d", '{"submission": {"posted_grade": 95}}'])
         self.assertEqual(code, 0)
-        self.assertIn("posted_grade", output)
+        self.assertIn("posted_grade (read entered_score)", output)
         self.assertIn("60.0 -> 95.0", output)
         self.assertIn("match: True", output)
         self.assertIn("Student Example", output)
         evidence = [line for line in self.log_lines() if line["event"] == "evidence"][-1]
         self.assertEqual(evidence["target"], {"student_name": "Student Example", "user_id": 3})
         self.assertEqual(evidence["verification"], "passed")
+
+    def test_pass_fail_grades_match_canvas_complete_incomplete(self):
+        """Canvas records posted_grade "pass"/"fail" as entered_grade "complete"/"incomplete"."""
+        self.assertTrue(guard.compare_fields({"submission": {"posted_grade": "pass"}}, {},
+                                             {"entered_grade": "complete"})[0]["match"])
+        self.assertTrue(guard.compare_fields({"submission": {"posted_grade": "fail"}}, {},
+                                             {"entered_grade": "incomplete"})[0]["match"])
+        self.assertFalse(guard.compare_fields({"submission": {"posted_grade": "pass"}}, {},
+                                              {"entered_grade": "incomplete"})[0]["match"])
+
+    def test_before_and_after_are_read_from_the_same_field(self):
+        """The before object may lack the field the after object proved the grade with;
+        honestly report no before value rather than one read from a different field."""
+        rows = guard.compare_fields({"submission": {"posted_grade": 95}},
+                                    {"score": 60.0},
+                                    {"entered_score": 95.0, "score": 95.0})
+        self.assertEqual(rows[0]["read_field"], "entered_score")
+        self.assertIsNone(rows[0]["before"])
 
     def test_a_numeric_posted_grade_is_proved_by_the_score_canvas_recorded(self):
         """Canvas rounds a score to two decimals; canvas-cli's verifyGradeReadBack allows it."""

@@ -530,43 +530,44 @@ def number_or_none(value):
     except (TypeError, ValueError):
         return None
 
-def readback(leaf, requested, obj):
-    """The response field that can prove this requested write parameter, and its value.
-
-    Canvas does not return the parameter it accepted: submission[excuse] comes back as
-    "excused", and a grade comes back in several fields at once. A numeric posted_grade is
+def read_field_for(leaf, requested):
+    """The response field name(s), in priority order, that can prove this requested write
+    parameter. Canvas does not return the parameter it accepted: submission[excuse] comes back
+    as "excused", and a grade comes back in several fields at once. A numeric posted_grade is
     proved by the score Canvas entered, a letter or complete/incomplete grade by the grade
     string. (The same choice canvas-cli makes in commands/submissions_readback.go.)"""
     if leaf == "excuse":
-        names = ("excused",)
-    elif leaf == "posted_grade":
-        names = (("entered_score", "score") if number_or_none(requested) is not None
-                 else ("entered_grade", "grade"))
-    else:
-        names = (leaf,)
-    for name in names:
-        if isinstance(obj, dict) and name in obj:
-            return name, obj[name]
-    return names[-1], None
+        return ("excused",)
+    if leaf == "posted_grade":
+        return (("entered_score", "score") if number_or_none(requested) is not None
+                else ("entered_grade", "grade"))
+    return (leaf,)
 
 def matches(requested, got):
     """Whether a read-back value proves the requested one: numbers within Canvas's rounding,
-    everything else by case-insensitive string equality."""
+    letters case-insensitively, with posted_grade pass/fail read back as complete/incomplete."""
     want, have = number_or_none(requested), number_or_none(got)
     if want is not None and have is not None:
         return abs(have - want) <= SCORE_TOLERANCE
-    return str(got).strip().lower() == str(requested).strip().lower()
+    aliases = {"pass": "complete", "fail": "incomplete"}
+    norm = lambda v: aliases.get(str(v).strip().lower(), str(v).strip().lower())
+    return norm(got) == norm(requested)
 
 def compare_fields(body, before, after):
     """Canvas wraps a write body in a resource key ({"submission": {...}}) while the read-back
-    object does not, so each requested leaf is compared with the field that proves it."""
+    object does not, so each requested leaf is compared with the field that proves it. Before
+    and after are read from that one field, chosen from the after object, so a single name
+    labels both."""
     rows, flat = [], flatten_leaves(body or {})
+    after_obj = after if isinstance(after, dict) else {}
     for dotted in sorted(flat):
         leaf, requested = dotted.split(".")[-1], flat[dotted]
-        name, got_after = readback(leaf, requested, after)
+        names = read_field_for(leaf, requested)
+        name = next((n for n in names if n in after_obj), names[-1])
+        got_after = after_obj.get(name)
         rows.append({"field": leaf, "read_field": name, "requested": requested,
-                     "before": readback(leaf, requested, before)[1], "after": got_after,
-                     "match": None if not isinstance(after, dict)
+                     "before": before.get(name) if isinstance(before, dict) else None,
+                     "after": got_after, "match": None if not isinstance(after, dict)
                      else matches(requested, got_after)})
     return rows
 
@@ -642,8 +643,11 @@ def emit(cfg, ev):
     if ev.get("target"):
         print("%-14s %s" % ("target:", json.dumps(ev["target"], sort_keys=True)))
     for row in ev.get("changes") or []:
+        label = row["field"]
+        if row.get("read_field") and row["read_field"] != row["field"]:
+            label += " (read %s)" % row["read_field"]
         print("  %-22s %s -> %s   (requested %s, match: %s)"
-              % (row["field"], json.dumps(row["before"], default=str),
+              % (label, json.dumps(row["before"], default=str),
                  json.dumps(row["after"], default=str),
                  json.dumps(row["requested"], default=str), row["match"]))
     if ev.get("body") is not None:
