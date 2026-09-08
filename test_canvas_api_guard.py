@@ -1401,6 +1401,39 @@ class TestRulesCoverage(unittest.TestCase):
             self.assertIn(name, lists["OPERATION_PROMPTS"])
 
 
+class TestSkillDocuments(unittest.TestCase):
+    """A skill that shows a command the program does not have teaches the agent a dead path."""
+
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+    GUARD_SKILL = os.path.join(ROOT, "codex", "skills", "canvas-api-guard", "SKILL.md")
+    OPERATIONS_SKILL = os.path.join(ROOT, "level2", "SKILL.md")
+
+    def shown(self, path, program):
+        """Every command a skill's examples actually run, taken from the start of a line."""
+        with open(path) as handle:
+            text = handle.read()
+        return set(re.findall(r"^/usr/local/libexec/%s\s+([a-z][a-z-]*)" % re.escape(program),
+                              text, re.M))
+
+    def test_the_level_2_skill_documents_every_operation_and_invents_none(self):
+        known = set(subcommand_names(load_operations().parser()))
+        shown = self.shown(self.OPERATIONS_SKILL, "canvas_api_operations.py")
+        self.assertEqual(shown - known, set(), "the skill shows operations that do not exist")
+        self.assertEqual(known - shown, set(), "an operation is undocumented")
+
+    def test_the_level_2_readme_lists_the_same_operations(self):
+        with open(os.path.join(self.ROOT, "level2", "README.md")) as handle:
+            text = handle.read()
+        for name in subcommand_names(load_operations().parser()):
+            self.assertIn("`%s`" % name, text)
+        for gone in ("current-courses", "roster-count", "find-student", "needs-grading",
+                     "course-health", "assignment-performance", "student-trajectory",
+                     "set-assignment-dates", "excuse-submission", "excuse-attendance",
+                     "create-assignment", "update-assignment", "create-or-update-page",
+                     "create-announcement"):
+            self.assertNotIn(gone, text)
+
+
 class TestGuardHeader(unittest.TestCase):
     """The header is the map a reviewer reads first; it must describe the file that exists."""
 
