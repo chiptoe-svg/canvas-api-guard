@@ -2,6 +2,7 @@
 """Offline behavior tests for the optional Level 2 analysis program."""
 
 import importlib.util
+import io
 import os
 import unittest
 from unittest import mock
@@ -47,60 +48,10 @@ class TestLevel2Operations(unittest.TestCase):
         self.assertNotIn("courses/12/users?per_page=100", get.call_args_list[1][0][0])
         self.assertIn("not a risk score", report["definition"])
 
-    def test_current_courses_uses_the_server_side_teacher_and_term_filters(self):
-        with mock.patch.object(operations, "all_items", return_value=[
-                {"id": 12, "course_code": "GC1010", "name": "Orientation",
-                 "term": {"id": 8, "name": "Fall", "start_at": "2026-08-01", "end_at": "2026-12-01"}},
-        ]) as read:
-            report = operations.current_courses(Args())
-        self.assertEqual(report["courses"][0]["course_code"], "GC1010")
-        self.assertIn("enrollment_type=teacher", read.call_args[0][0])
-        self.assertIn("include[]=term", read.call_args[0][0])
-
-    def test_roster_count_deduplicates_users_in_multiple_sections(self):
-        with mock.patch.object(operations, "all_items", return_value=[{"id": 1}, {"id": 1}, {"id": 2}]):
-            report = operations.roster_count(Args())
-        self.assertEqual(report["active_student_count"], 2)
-
-    def test_find_student_escapes_query_and_returns_only_matching_identity_fields(self):
-        with mock.patch.object(operations, "all_items", return_value=[
-                {"id": 2, "name": "Jordan Lee", "sortable_name": "Lee, Jordan", "sis_user_id": "C123"},
-        ]) as read:
-            args = Args()
-            args.query = "Jordan & Lee"
-            report = operations.find_student(args)
-        self.assertIn("Jordan%20%26%20Lee", read.call_args[0][0])
-        self.assertEqual(report["matches"][0]["student_id"], 2)
-
-    def test_needs_grading_returns_compact_assignment_queue(self):
-        with mock.patch.object(operations, "all_items", return_value=[
-                {"id": 1, "name": "Done", "needs_grading_count": 0},
-                {"id": 2, "name": "Lab", "due_at": "2026-09-01", "needs_grading_count": 3},
-        ]):
-            report = operations.needs_grading(Args())
-        self.assertEqual(report["total_needing_grading"], 3)
-        self.assertEqual(report["assignments"], [{"assignment_id": 2, "title": "Lab",
-                                                    "due_at": "2026-09-01", "needs_grading_count": 3}])
-
-    def test_assignment_performance_uses_missing_then_late_rates(self):
-        with mock.patch.object(operations, "all_items", return_value=[
-                {"assignment_id": 3, "title": "Later", "tardiness_breakdown": {"missing": .1, "late": .8}},
-                {"assignment_id": 2, "title": "Missing", "tardiness_breakdown": {"missing": .3, "late": .1}},
-        ]):
-            report = operations.assignment_performance(Args())
-        self.assertEqual([row["assignment_id"] for row in report["assignments"]], [2, 3])
-
     def test_ids_are_numeric_and_positive(self):
         for invalid in ("0", "-1", "course-12"):
             with self.assertRaises(operations.OperationError):
                 operations.canvas_id(invalid, "course ID")
-
-    def test_specialized_assignment_definition_has_an_allowlist(self):
-        body = operations.assignment_body({"name": "Lab", "points_possible": 20,
-                                            "published": False}, True)
-        self.assertEqual(body["assignment"]["name"], "Lab")
-        with self.assertRaises(operations.OperationError):
-            operations.assignment_body({"name": "Lab", "admin_only": True}, True)
 
     def test_rubric_definition_is_converted_to_the_canvas_indexed_shape(self):
         body = operations.rubric_body({"title": "Lab rubric", "criteria": [{
@@ -199,52 +150,72 @@ class TestLevel2Operations(unittest.TestCase):
         self.assertEqual(result["no_attachment_submission_count"], 1)
         self.assertNotIn("do not return this", str(result))
 
-    def test_date_helper_rejects_invalid_or_new_quiz_dates_before_a_write(self):
-        args = Args()
-        args.assignment_id = "22"
-        args.definition = "unused"
-        args.dry_run = True
-        args.yes = False
-        definition = {"available_at": "2026-09-10T10:00:00-04:00",
-                      "due_at": "2026-09-09T10:00:00-04:00"}
-        with mock.patch.object(operations, "definition_file", return_value=definition), \
-                mock.patch.object(operations, "guard_get", return_value={"object": {}}), \
-                mock.patch.object(operations, "guard_write") as write:
-            with self.assertRaises(operations.OperationError):
-                operations.set_assignment_dates(args)
-        write.assert_not_called()
-        with mock.patch.object(operations, "definition_file", return_value={"due_at": "2026-09-09T10:00:00-04:00"}), \
-                mock.patch.object(operations, "guard_get", return_value={"object": {"is_quiz_assignment": True}}), \
-                mock.patch.object(operations, "guard_write") as write:
-            with self.assertRaises(operations.OperationError):
-                operations.set_assignment_dates(args)
-        write.assert_not_called()
-
-    def test_excuse_uses_canvas_excuse_request_and_named_submission(self):
-        args = Args()
-        args.assignment_id = "22"
-        args.definition = "unused"
-        args.dry_run = True
-        args.yes = False
-        responses = [{"object": {"id": 22, "name": "Roll Call Attendance"}},
-                     {"object": {"user_id": 34, "excused": False,
-                                  "user": {"name": "Jordan Lee"}}},
-                     {"object": {"id": 12}}]
-        with mock.patch.object(operations, "definition_file", return_value={"student_id": 34}), \
-                mock.patch.object(operations, "guard_get", side_effect=responses), \
-                mock.patch.object(operations, "guard_write") as write:
-            operations.excuse_attendance(args)
-        self.assertEqual(write.call_args[0][0:3], ("put", "courses/12/assignments/22/submissions/34?include[]=user",
-                                                     {"submission": {"excuse": True}}))
-
     def test_level2_write_delegates_to_the_fixed_guard_with_a_phase(self):
         completed = mock.Mock()
         completed.return_value = mock.Mock(returncode=0,
                                            stdout='{"verification": "not-run"}\n', stderr="")
-        with mock.patch.object(operations.subprocess, "run", completed):
+        with mock.patch.object(operations.subprocess, "run", completed), \
+                mock.patch("sys.stdout", io.StringIO()):
             operations.guard_write("post", "courses/12/assignments", {"assignment": {"name": "Lab"}},
                                    "dry-run")
         command = completed.call_args[0][0]
         self.assertEqual(command[:3], [operations.GUARD, "post", "courses/12/assignments"])
         self.assertIn("--dry-run", command)
         self.assertNotIn("--yes", command)
+
+    def test_only_the_eight_computing_operations_remain(self):
+        self.assertEqual(sorted(operations.OPERATIONS), [
+            "attach-rubric", "attendance-summary", "bulk-grade-with-rubric", "create-rubric",
+            "download-assignment-submissions", "grade-with-rubric",
+            "prepare-submission-review", "student-attention"])
+        with open(SOURCE) as handle:
+            source = handle.read()
+        for gone in ("def current_courses", "def roster_count", "def find_student",
+                     "def needs_grading", "def course_health", "def assignment_performance",
+                     "def student_trajectory", "def set_assignment_dates",
+                     "def excuse_submission", "def create_assignment",
+                     "def create_or_update_page", "def create_announcement",
+                     "def quote_query", "def compact_course", "def assignment_rows",
+                     "def iso_time", "def page_body", "def announcement_body"):
+            self.assertNotIn(gone, source, "%s should have moved to Level 1" % gone)
+
+    def test_a_missing_guard_prints_one_line_and_never_a_traceback(self):
+        with mock.patch.object(operations.subprocess, "run",
+                               side_effect=FileNotFoundError(2, "No such file or directory")), \
+                mock.patch("sys.stderr", io.StringIO()) as err:
+            code = operations.main(["student-attention", "--course-id", "12"])
+        self.assertEqual(code, 2)
+        self.assertEqual(len(err.getvalue().strip().splitlines()), 1)
+        self.assertIn("canvas-api-operations: cannot run", err.getvalue())
+
+    def test_an_uncertain_guard_write_is_raised_not_retried(self):
+        refused = mock.Mock(returncode=3, stdout='{"verification": "failed"}\n',
+                            stderr="canvas-api-guard: WRITE STATUS UNCERTAIN: read-back failed")
+        with mock.patch.object(operations.subprocess, "run",
+                               return_value=refused) as run, \
+                mock.patch("sys.stdout", io.StringIO()) as out:
+            with self.assertRaises(operations.GuardUncertain):
+                operations.guard_write("put", "courses/12/assignments/22/submissions/34",
+                                       {"submission": {"posted_grade": 9}}, "yes")
+        self.assertEqual(run.call_count, 1)
+        self.assertIn("verification", out.getvalue())     # the evidence is still shown
+
+    def test_main_maps_an_uncertain_write_to_exit_3(self):
+        def uncertain(args):
+            raise operations.GuardUncertain("the write was sent and could not be verified")
+
+        with mock.patch.dict(operations.OPERATIONS, {"student-attention": uncertain}), \
+                mock.patch("sys.stderr", io.StringIO()) as err:
+            code = operations.main(["student-attention", "--course-id", "12"])
+        self.assertEqual(code, 3)
+        self.assertIn("could not be verified", err.getvalue())
+
+    def test_an_operation_that_prints_its_own_evidence_adds_no_trailing_null(self):
+        def prints(args):
+            print('{"result": "printed once"}')
+
+        with mock.patch.dict(operations.OPERATIONS, {"student-attention": prints}), \
+                mock.patch("sys.stdout", io.StringIO()) as out:
+            code = operations.main(["student-attention", "--course-id", "12"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("null", out.getvalue())
