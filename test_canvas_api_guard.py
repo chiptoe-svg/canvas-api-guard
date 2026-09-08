@@ -1178,6 +1178,16 @@ class TestNextPage(GuardTestCase):
         self.assertEqual(code, 2)
         self.assertIn("pagination loop", self.last_stderr)
 
+    def test_all_pages_refuses_a_link_that_leaves_the_pinned_host(self):
+        evil = '<https://evil.example.com/api/v1/courses?page=2>; rel="next"'
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(headers={"Link": evil}, payload=[{"id": 1}])
+            code, output = self.run_main(["get", "courses?per_page=2", "--all-pages"])
+        self.assertEqual(code, 2)
+        self.assertIn("evil.example.com", self.last_stderr)
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertEqual(output, "")
+
     def test_all_pages_stops_at_the_page_cap(self):
         responses = [self.page(number, [{"id": number}]) for number in range(1, 6)]
         with mock.patch.object(guard, "PAGE_CAP", 2), \
@@ -1185,6 +1195,7 @@ class TestNextPage(GuardTestCase):
             code, _ = self.run_main(["get", "courses?per_page=2", "--all-pages"])
         self.assertEqual(code, 2)
         self.assertIn("2 pages", self.last_stderr)
+        self.assertIn("page=3", self.last_stderr)          # the runaway link, not the first page
         self.assertEqual(urlopen.call_count, 2)
 
     def test_all_pages_refuses_a_response_that_is_not_a_list(self):
@@ -1225,6 +1236,7 @@ class TestFieldsAndOutputDefault(GuardTestCase):
             code, _ = self.run_main(["get", "courses", "--fields", " , "])
         self.assertEqual(code, 2)
         self.assertIn("--fields", self.last_stderr)
+        self.assertEqual(urlopen.call_count, 0)
 
     def test_json_is_the_default_when_stdout_is_not_a_terminal(self):
         with mock.patch("urllib.request.urlopen") as urlopen:

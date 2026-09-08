@@ -640,10 +640,10 @@ def emit(cfg, ev):
     if ev.get("body") is not None:
         print("%-14s %s" % ("body:", json.dumps(ev["body"], sort_keys=True)))
     for item in ev.get("items") or []:
-        print("  " + json.dumps(item, sort_keys=True, default=str)[:200])
+        print("  " + json.dumps(item, default=str)[:200])
     if ev.get("object") is not None:
         print("object:")
-        for key in sorted(ev["object"]):
+        for key in ev["object"]:
             print("  %-22s %s" % (key, json.dumps(ev["object"][key], default=str)[:120]))
 
 # ------------------------------------------------------------------------------------- verbs
@@ -656,18 +656,26 @@ def field_value(obj, dotted):
         value = value.get(part)
     return value
 
-def project(data, fields):
-    """Project a Canvas list or object to the requested dot-paths, in the order asked for.
-    A field Canvas did not return is present and null, never dropped."""
-    if not fields:
-        return data
-    wanted = [name.strip() for name in fields.split(",") if name.strip()]
+def parse_fields(raw):
+    """Validate --fields once, before any request. Absent (None) means no projection at all; an
+    explicitly given empty or blank list is an agent's string-join mistake, not "no projection",
+    so it is refused just like a garbled one."""
+    if raw is None:
+        return None
+    wanted = [name.strip() for name in raw.split(",") if name.strip()]
     if not wanted:
         raise GuardError("--fields was empty; name at least one field, for example --fields id")
+    return wanted
+
+def project(data, fields):
+    """Project a Canvas list or object to the parsed dot-paths, in the order asked for.
+    A field Canvas did not return is present and null, never dropped."""
+    if fields is None:
+        return data
     if isinstance(data, list):
-        return [dict((name, field_value(item, name)) for name in wanted) for item in data]
+        return [dict((name, field_value(item, name)) for name in fields) for item in data]
     if isinstance(data, dict):
-        return dict((name, field_value(data, name)) for name in wanted)
+        return dict((name, field_value(data, name)) for name in fields)
     return data
 
 def do_get(cfg, path, body):
@@ -705,8 +713,9 @@ def do_get_all_pages(cfg, path):
             raise GuardError("pagination loop detected at %s" % normalised)
         seen.add(normalised)
         if pages >= PAGE_CAP:
-            raise GuardError("refusing to follow more than %d pages of %s; narrow the query "
-                             "with per_page or a filter" % (PAGE_CAP, first))
+            raise GuardError("refusing to follow more than %d pages of %s; stopped before %s; "
+                             "narrow the query with per_page or a filter"
+                             % (PAGE_CAP, first, normalised))
         resp = send_request(cfg, "GET", current)
         if not isinstance(resp["data"], list):
             raise GuardError("--all-pages needs a Canvas list response at %s" % normalised)
@@ -993,12 +1002,13 @@ def default_output():
     return "text" if sys.stdout.isatty() else "json"
 
 def make_config(args):
-    """What send_request needs. confirmation is set by confirm() before any write."""
+    """What send_request needs. confirmation is set by confirm() before any write. --fields is
+    parsed and validated here, before any request is made."""
     configured = read_config()
     return argparse.Namespace(host=configured["host"], profile=configured["profile"],
                               out=args.output or default_output(), log_path=DEFAULT_LOG,
                               dry_run=args.dry_run, all_pages=args.all_pages,
-                              fields=args.fields, yes=args.yes, confirmation=None,
+                              fields=parse_fields(args.fields), yes=args.yes, confirmation=None,
                               post_readback=args.post_readback,
                               post_readback_field=args.post_readback_field,
                               post_verify_field=args.post_verify_field,
