@@ -332,25 +332,20 @@ class RefuseRedirects(urllib.request.HTTPRedirectHandler):
                          "the pinned URL" % (code, newurl))
 
 
-class CredentialFreeRedirects(urllib.request.HTTPRedirectHandler):
-    """Follow Canvas-issued attachment redirects only after stripping every sensitive header."""
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        parsed = urllib.parse.urlsplit(newurl)
-        if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
-            raise GuardError("refusing a non-HTTPS or malformed attachment redirect")
-        clean_headers = dict((name, value) for name, value in req.headers.items()
-                             if name.lower() not in ("authorization", "cookie", "host",
-                                                     "proxy-authorization"))
-        return urllib.request.Request(newurl, headers=clean_headers, method="GET")
-
 urllib.request.install_opener(urllib.request.build_opener(RefuseRedirects))
-_CREDENTIAL_FREE_OPENER = urllib.request.build_opener(CredentialFreeRedirects)
 
 
-class PinnedAttachmentRedirects(urllib.request.HTTPRedirectHandler):
-    """Keep credentials only for same-host attachment redirects; strip them everywhere else."""
+class AttachmentRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow a Canvas attachment redirect over HTTPS only, carrying no credential.
+
+    The first hop is already bearer-free, so no hop may reintroduce one: Authorization and
+    Cookie are dropped, and Host and Proxy-Authorization are dropped so the client derives
+    them for the new destination. Only the status, hostname and scope of a hop are recorded.
+    """
+    STRIPPED = ("authorization", "cookie", "host", "proxy-authorization")
+
     def __init__(self, host, trace):
-        super(PinnedAttachmentRedirects, self).__init__()
+        super(AttachmentRedirects, self).__init__()
         self.host, self.trace = host, trace
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -361,20 +356,15 @@ class PinnedAttachmentRedirects(urllib.request.HTTPRedirectHandler):
         self.trace.append({"status": int(code), "host": safe_url_host(newurl),
                            "scope": "pinned" if parsed.netloc == self.host else "external"})
         forwarded = dict((name, value) for name, value in req.headers.items()
-                         if name.lower() not in ("host", "proxy-authorization"))
-        if parsed.netloc != self.host:
-            forwarded = dict((name, value) for name, value in forwarded.items()
-                             if name.lower() not in ("authorization", "cookie"))
+                         if name.lower() not in self.STRIPPED)
         return urllib.request.Request(newurl, headers=forwarded, method="GET")
 
-def open_request(request, credential_free_redirects=False):
-    """Open a pinned authenticated request, or a Canvas-issued credential-free attachment URL."""
-    if credential_free_redirects:
-        return _CREDENTIAL_FREE_OPENER.open(request, timeout=TIMEOUT)
+def open_request(request):
+    """The one authenticated request. The installed opener refuses every redirect."""
     return urllib.request.urlopen(request, timeout=TIMEOUT)
 
 
-def open_pinned_attachment_request(request, host, trace):
+def open_attachment_request(request, host, trace):
     """Open a bearer-free Canvas file URL directly, never through a system proxy.
 
     canvas-cli's Go transport uses only explicit environment proxy settings. urllib on macOS can
@@ -383,7 +373,7 @@ def open_pinned_attachment_request(request, host, trace):
     no proxy at all; ordinary pinned API calls retain their existing network behavior.
     """
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
-                                         PinnedAttachmentRedirects(host, trace))
+                                         AttachmentRedirects(host, trace))
     return opener.open(request, timeout=TIMEOUT)
 
 
@@ -761,9 +751,9 @@ def do_download_submission_file(cfg, course_id, file_id, submission_id, suffix):
     attempts = (("file-url", lambda: submission_file_url(cfg, file_id), 1),
                 ("file-url", lambda: submission_file_url(cfg, file_id), 2),
                 ("submission-public-url", lambda: submission_public_url(cfg, file_id, submission_id), 1))
-    for route, resolve_url, attempt in attempts:
+    for index, (route, resolve_url, attempt) in enumerate(attempts):
         fd, output = tempfile.mkstemp(prefix="canvas-submission-", suffix=suffix, dir=directory)
-        digest, total = hashlib.sha256(), 0
+        digest, total, raw = hashlib.sha256(), 0, None
         redirect_trace = []
         try:
             file_url = resolve_url()
@@ -771,7 +761,7 @@ def do_download_submission_file(cfg, course_id, file_id, submission_id, suffix):
                                      "file_id": file_id, "submission_id": submission_id, "attempt": attempt,
                                      "download_route": route, "confirmation": None})
             request = urllib.request.Request(file_url, method="GET")
-            raw = open_pinned_attachment_request(request, cfg.host, redirect_trace)
+            raw = open_attachment_request(request, cfg.host, redirect_trace)
             final_hop = safe_response_hop(raw)
             with os.fdopen(fd, "wb") as handle:
                 fd = None
@@ -785,7 +775,6 @@ def do_download_submission_file(cfg, course_id, file_id, submission_id, suffix):
                     digest.update(chunk)
                     handle.write(chunk)
                 handle.flush(); os.fsync(handle.fileno())
-            raw.close()
         except Exception as err:
             if fd is not None:
                 os.close(fd)
@@ -793,15 +782,13 @@ def do_download_submission_file(cfg, course_id, file_id, submission_id, suffix):
             except OSError: pass
             failure = safe_download_failure(err)
             transient = failure["http_status"] in (500, 502, 503, 504)
-            retryable = transient and route == "file-url" and attempt == 1
-            fallback = transient and route == "file-url" and attempt == 2
+            # One retry of the file URL, then Canvas's submission-authorized public URL.
+            next_route = attempts[index + 1][0] if transient and index + 1 < len(attempts) else None
             log_event(cfg.log_path, {"event": "download-response", "kind": "read", "course_id": course_id,
                                      "file_id": file_id, "submission_id": submission_id, "attempt": attempt, "ok": False,
                                      "download_route": route, "redirect_hops": redirect_trace,
-                                     "will_retry": retryable, "will_try_submission_public_url": fallback, **failure})
-            if retryable:
-                continue
-            if fallback:
+                                     "will_retry": next_route is not None, "next_route": next_route, **failure})
+            if next_route:
                 continue
             # Network exceptions can embed an expiring signed URL. Preserve only the exception class.
             status = (" HTTP %s" % failure["http_status"]) if failure["http_status"] else ""
@@ -809,6 +796,9 @@ def do_download_submission_file(cfg, course_id, file_id, submission_id, suffix):
                                                      redirect_stage(redirect_trace))
             raise GuardError("submission attachment download failed (%s%s%s)" %
                              (failure["error"], status, stage))
+        finally:
+            if raw is not None:
+                raw.close()
         log_event(cfg.log_path, {"event": "download-response", "kind": "read", "course_id": course_id,
                                  "file_id": file_id, "submission_id": submission_id, "attempt": attempt, "ok": True,
                                  "download_route": route, "redirect_hops": redirect_trace, "final_hop": final_hop,

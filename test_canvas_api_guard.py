@@ -642,66 +642,53 @@ class TestRedirectsAreRefused(unittest.TestCase):
         self.assertTrue(any(isinstance(handler, guard.RefuseRedirects)
                             for handler in opener.handlers))
 
-    def test_attachment_redirect_requires_https_and_strips_credentials(self):
-        request = urllib.request.Request("https://%s/signed" % HOST, headers={
-            "Authorization": "Bearer should-not-leave-canvas", "Cookie": "not-forwarded",
-            "User-Agent": "canvas-api-guard-test"})
-        redirected = guard.CredentialFreeRedirects().redirect_request(
-            request, None, 302, "Found", {}, "https://cdn.example.edu/file")
-        headers = dict((key.lower(), value) for key, value in redirected.header_items())
-        self.assertNotIn("authorization", headers)
-        self.assertNotIn("cookie", headers)
-        self.assertEqual(headers["user-agent"], "canvas-api-guard-test")
-        with self.assertRaises(guard.GuardError):
-            guard.CredentialFreeRedirects().redirect_request(
-                request, None, 302, "Found", {}, "http://cdn.example.edu/file")
-
-    def test_credential_free_redirect_does_not_forward_urllib_host(self):
-        request = self.urllib_prepared(urllib.request.Request("https://%s/signed" % HOST))
-        self.assertIn("host", {name.lower() for name, _ in request.header_items()})
-        redirected = guard.CredentialFreeRedirects().redirect_request(
-            request, None, 302, "Found", {}, "https://cdn.example.edu/file")
-        self.assertNotIn("host", {name.lower() for name, _ in redirected.header_items()})
-
-    def test_pinned_attachment_redirect_keeps_token_only_on_canvas_host(self):
-        request = urllib.request.Request("https://%s/files/9/download" % HOST, headers={
-            "Authorization": "Bearer pinned-only", "User-Agent": "canvas-api-guard-test"})
-        handler = guard.PinnedAttachmentRedirects(HOST, [])
-        same_host = handler.redirect_request(request, None, 302, "Found", {},
-                                             "https://%s/files/9/again" % HOST)
-        external = handler.redirect_request(request, None, 302, "Found", {}, "https://cdn.example.edu/file")
-        self.assertIn("authorization", {key.lower() for key, _ in same_host.header_items()})
-        self.assertNotIn("authorization", {key.lower() for key, _ in external.header_items()})
-
-    def test_attachment_redirect_does_not_forward_urllib_host_on_any_hop(self):
-        request = self.urllib_prepared(
+    def test_no_attachment_hop_carries_a_credential_or_a_stale_host(self):
+        """The first hop carries none of these, so no hop may reintroduce one."""
+        handler = guard.AttachmentRedirects(HOST, [])
+        prepared = self.urllib_prepared(
             urllib.request.Request("https://%s/files/9/download" % HOST))
-        handler = guard.PinnedAttachmentRedirects(HOST, [])
-        for destination in ("https://%s/files/9/again" % HOST,
-                            "https://cdn.example.edu/file"):
-            with self.subTest(destination=destination):
-                redirected = handler.redirect_request(
-                    request, None, 302, "Found", {}, destination)
-                self.assertNotIn("host", {name.lower() for name, _ in redirected.header_items()})
+        self.assertIn("host", {name.lower() for name, _ in prepared.header_items()})
+        supplied = urllib.request.Request("https://%s/files/9/download" % HOST, headers={
+            "Authorization": "Bearer must-not-leave-canvas", "Cookie": "not-forwarded",
+            "Host": "stale.example.edu", "Proxy-Authorization": "Basic not-forwarded",
+            "User-Agent": "canvas-api-guard-test"})
+        for request in (prepared, supplied):
+            for destination in ("https://%s/files/9/again" % HOST,
+                                "https://cdn.example.edu/file"):
+                with self.subTest(destination=destination):
+                    redirected = handler.redirect_request(
+                        request, None, 302, "Found", {}, destination)
+                    sent = {name.lower() for name, _ in redirected.header_items()}
+                    self.assertEqual(sent & {"authorization", "cookie", "host",
+                                             "proxy-authorization"}, set())
+        self.assertEqual(dict(supplied.header_items()).get("User-agent"),
+                         "canvas-api-guard-test")
 
-    def test_caller_supplied_host_is_dropped_by_both_attachment_handlers(self):
-        request = urllib.request.Request("https://%s/files/9/download" % HOST,
-                                         headers={"Host": "stale.example.edu"})
-        handlers = (guard.CredentialFreeRedirects(), guard.PinnedAttachmentRedirects(HOST, []))
-        for handler in handlers:
-            with self.subTest(handler=type(handler).__name__):
-                redirected = handler.redirect_request(
-                    request, None, 302, "Found", {}, "https://cdn.example.edu/file")
-                self.assertNotIn("host", {name.lower() for name, _ in redirected.header_items()})
+    def test_a_non_https_attachment_redirect_is_refused(self):
+        request = urllib.request.Request("https://%s/files/9/download" % HOST)
+        with self.assertRaises(guard.GuardError):
+            guard.AttachmentRedirects(HOST, []).redirect_request(
+                request, None, 302, "Found", {}, "http://cdn.example.edu/file")
 
     def test_attachment_redirect_trace_has_only_status_hostname_and_scope(self):
         trace = []
         request = urllib.request.Request("https://%s/files/9/download" % HOST)
-        guard.PinnedAttachmentRedirects(HOST, trace).redirect_request(
+        guard.AttachmentRedirects(HOST, trace).redirect_request(
             request, None, 307, "Temporary Redirect", {},
             "https://cdn.example.edu/file?signature=do-not-log")
-        self.assertEqual(trace, [{"status": 307, "host": "cdn.example.edu", "scope": "external"}])
+        self.assertEqual(trace, [{"status": 307, "host": "cdn.example.edu",
+                                  "scope": "external"}])
         self.assertNotIn("signature", json.dumps(trace))
+
+    def test_the_guard_keeps_exactly_one_credential_free_opener(self):
+        """The dead credential-free opener and its parameter are gone."""
+        self.assertFalse(hasattr(guard, "CredentialFreeRedirects"))
+        self.assertFalse(hasattr(guard, "_CREDENTIAL_FREE_OPENER"))
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "canvas_api_guard.py")) as handle:
+            source = handle.read()
+        self.assertEqual(source.count("urllib.request.urlopen("), 1)
+        self.assertNotIn("credential_free_redirects", source)
 
     def test_attachment_download_error_records_status_not_signed_url(self):
         signed_url = "https://cdn.example.edu/file?X-Amz-Signature=do-not-log"
@@ -726,7 +713,7 @@ class TestAttachmentDownload(GuardTestCase):
                 return io.BytesIO(b"")
 
         with mock.patch("urllib.request.build_opener", return_value=Opener()) as build:
-            guard.open_pinned_attachment_request(request, HOST, trace)
+            guard.open_attachment_request(request, HOST, trace)
         handlers = build.call_args[0]
         proxy = next(handler for handler in handlers if isinstance(handler, urllib.request.ProxyHandler))
         self.assertEqual(proxy.proxies, {})
@@ -738,7 +725,7 @@ class TestAttachmentDownload(GuardTestCase):
         file_url = "https://%s/files/9/download?verifier=not-for-output" % HOST
         with mock.patch.object(guard, "send_request", return_value={"data": {"url": file_url}}) as send, \
                 mock.patch.object(guard, "secure_review_dir", return_value=self.state_dir), \
-                mock.patch.object(guard, "open_pinned_attachment_request", return_value=io.BytesIO(b"student work")) as open_it, \
+                mock.patch.object(guard, "open_attachment_request", return_value=io.BytesIO(b"student work")) as open_it, \
                 mock.patch("sys.stdout", io.StringIO()):
             guard.do_download_submission_file(cfg, "7", "9", "12", ".pdf")
         self.assertEqual(send.call_args[0][1:], ("GET", "files/9"))
@@ -754,7 +741,7 @@ class TestAttachmentDownload(GuardTestCase):
         transient = urllib.error.HTTPError(file_url, 500, "Server Error", {}, None)
         with mock.patch.object(guard, "send_request", return_value={"data": {"url": file_url}}) as send, \
                 mock.patch.object(guard, "secure_review_dir", return_value=self.state_dir), \
-                mock.patch.object(guard, "open_pinned_attachment_request", side_effect=[transient, io.BytesIO(b"student work")]) as open_it, \
+                mock.patch.object(guard, "open_attachment_request", side_effect=[transient, io.BytesIO(b"student work")]) as open_it, \
                 mock.patch("sys.stdout", io.StringIO()):
             guard.do_download_submission_file(cfg, "7", "9", "12", ".pdf")
         transient.close()
@@ -762,6 +749,7 @@ class TestAttachmentDownload(GuardTestCase):
         self.assertEqual(open_it.call_count, 2)
         responses = [line for line in self.log_lines() if line["event"] == "download-response"]
         self.assertTrue(responses[0]["will_retry"])
+        self.assertEqual(responses[0]["next_route"], "file-url")
         self.assertEqual(responses[-1]["attempt"], 2)
         self.assertTrue(responses[-1]["ok"])
 
@@ -775,7 +763,7 @@ class TestAttachmentDownload(GuardTestCase):
                      {"data": {"public_url": public_url}}]
         with mock.patch.object(guard, "send_request", side_effect=responses) as send, \
                 mock.patch.object(guard, "secure_review_dir", return_value=self.state_dir), \
-                mock.patch.object(guard, "open_pinned_attachment_request",
+                mock.patch.object(guard, "open_attachment_request",
                                   side_effect=[first, second, io.BytesIO(b"student work")]) as open_it, \
                 mock.patch("sys.stdout", io.StringIO()):
             guard.do_download_submission_file(cfg, "7", "9", "12", ".pdf")
@@ -783,8 +771,27 @@ class TestAttachmentDownload(GuardTestCase):
         self.assertEqual(send.call_args_list[-1][0][1:], ("GET", "files/9/public_url?submission_id=12"))
         self.assertEqual(open_it.call_args_list[-1][0][0].full_url, public_url)
         logged = [line for line in self.log_lines() if line["event"] == "download-response"]
-        self.assertTrue(logged[1]["will_try_submission_public_url"])
+        self.assertEqual(logged[1]["next_route"], "submission-public-url")
         self.assertEqual(logged[-1]["download_route"], "submission-public-url")
+
+    def test_every_download_attempt_closes_its_response(self):
+        cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST})()
+        file_url = "https://%s/files/9/download?verifier=not-for-output" % HOST
+        closed = []
+
+        class Body(io.BytesIO):
+            def close(self):
+                closed.append(True)
+                io.BytesIO.close(self)
+
+        with mock.patch.object(guard, "send_request",
+                               return_value={"data": {"url": file_url}}), \
+                mock.patch.object(guard, "secure_review_dir", return_value=self.state_dir), \
+                mock.patch.object(guard, "open_attachment_request",
+                                  return_value=Body(b"student work")), \
+                mock.patch("sys.stdout", io.StringIO()):
+            guard.do_download_submission_file(cfg, "7", "9", "12", ".pdf")
+        self.assertEqual(closed, [True])
 
 
 class FakeProc(object):
