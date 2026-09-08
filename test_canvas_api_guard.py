@@ -92,12 +92,14 @@ class GuardTestCase(unittest.TestCase):
         self.token_patcher.start()
         self.addCleanup(self.token_patcher.stop)
 
-    def temp_config(self, host=None, profile="level-1"):
+    def temp_config(self, host=None, profile="level-1", **extra):
         """A private throwaway system config; never the real installed config."""
         path = os.path.join(self.state_dir, "config-%d.json" % len(os.listdir(self.state_dir)))
         if host is not None:
+            document = {"host": host, "profile": profile}
+            document.update(extra)
             with open(path, "w") as handle:
-                json.dump({"host": host, "profile": profile}, handle)
+                json.dump(document, handle)
             os.chmod(path, 0o600)
         return path
 
@@ -2370,3 +2372,97 @@ class TestDocumentClaims(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoSecretsMixin:
+    """Assert the credential store and the network are never touched before a refusal."""
+
+    def no_keychain(self):
+        def explode():
+            raise AssertionError("the credential store was touched")
+        return mock.patch.object(guard, "read_token", explode)
+
+    def no_network(self):
+        def explode(*args, **kwargs):
+            raise AssertionError("a request was made")
+        return mock.patch("urllib.request.urlopen", explode)
+
+
+class TestGatewayCredentialSource(NoSecretsMixin, GuardTestCase):
+    """token_source "gateway": the guard attaches no bearer and reads no token."""
+
+    def test_gateway_sends_no_authorization_and_never_reads_a_token(self):
+        self.pin_config(self.temp_config(HOST, token_source="gateway"))
+        with self.no_keychain(), mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            code, _ = self.run_argv(["get", "courses/1"])
+        self.assertEqual(code, 0)
+        sent = urlopen.call_args[0][0]
+        self.assertIsNone(sent.get_header("Authorization"))
+
+    def test_the_default_still_attaches_a_bearer(self):
+        """The regression this pair exists to prevent: gateway mode must not leak into keyring."""
+        self.pin_config(self.temp_config(HOST))
+        with mock.patch.object(guard, "read_token", lambda: "tok"), \
+                mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            code, _ = self.run_argv(["get", "courses/1"])
+        self.assertEqual(code, 0)
+        self.assertEqual(urlopen.call_args[0][0].get_header("Authorization"), "Bearer tok")
+
+    def test_the_credential_source_is_recorded_on_the_read(self):
+        self.pin_config(self.temp_config(HOST, token_source="gateway"))
+        with self.no_keychain(), mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            self.run_argv(["get", "courses/1"])
+        self.assertEqual([e.get("token_source") for e in self.log_lines() if e["event"] == "read"],
+                         ["gateway"])
+
+    def test_an_unknown_token_source_is_refused(self):
+        self.pin_config(self.temp_config(HOST, token_source="environment"))
+        with self.no_keychain(), self.no_network():
+            code, _ = self.run_argv(["get", "courses"])
+        self.assertEqual(code, 2)
+        self.assertIn("unsupported token_source", self.last_stderr)
+
+
+class TestExternalConfirmation(NoSecretsMixin, GuardTestCase):
+    """A configured external approver may confirm a write; the flag alone may not."""
+
+    def test_the_flag_alone_is_refused_when_no_approver_is_configured(self):
+        self.pin_config(self.temp_config(HOST))
+        with self.no_keychain(), self.no_network():
+            code, _ = self.run_argv(["put", "courses/1", "-d", "{}", "--confirmed-by", "appr-1"])
+        self.assertEqual(code, 2)
+        self.assertIn("no external_confirmation approver is configured", self.last_stderr)
+        self.assertEqual([e["confirmation"] for e in self.log_lines() if e["event"] == "refusal"],
+                         ["refused-external-not-configured"])
+
+    def test_a_configured_approver_with_a_receipt_confirms_the_write(self):
+        self.pin_config(self.temp_config(HOST, token_source="gateway",
+                                         external_confirmation="nanoclaw"))
+        with self.no_keychain(), mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            self.run_argv(["put", "courses/1", "-d", "{}", "--confirmed-by", "appr-1788"])
+        # The write was confirmed and actually sent. Whether the read-back could VERIFY it is a
+        # separate concern with its own tests; what matters here is that an external approver
+        # got past the no-TTY refusal and that the receipt is recorded beside the request.
+        self.assertIn("PUT", [c[0][0].get_method() for c in urlopen.call_args_list])
+        request = [e for e in self.log_lines() if e["event"] == "request"][0]
+        self.assertEqual(request["confirmation"], "external:nanoclaw")
+        self.assertEqual(request["approval_receipt"], "appr-1788")
+
+    def test_a_configured_approver_without_a_receipt_is_still_refused(self):
+        self.pin_config(self.temp_config(HOST, external_confirmation="nanoclaw"))
+        with self.no_keychain(), self.no_network():
+            code, _ = self.run_argv(["put", "courses/1", "-d", "{}"])
+        self.assertEqual(code, 2)
+        self.assertEqual([e["confirmation"] for e in self.log_lines() if e["event"] == "refusal"],
+                         ["refused-no-tty"])
+
+    def test_an_unusable_approver_label_is_refused(self):
+        self.pin_config(self.temp_config(HOST, external_confirmation="not a label!"))
+        with self.no_keychain(), self.no_network():
+            code, _ = self.run_argv(["get", "courses"])
+        self.assertEqual(code, 2)
+        self.assertIn("external_confirmation must be a short label", self.last_stderr)

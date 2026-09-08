@@ -445,14 +445,18 @@ def send_request(cfg, method, path, body=None):
     if is_write:
         log_event(cfg.log_path, {
             "event": "request", "verb": method, "path": npath, "url": url, "kind": "write",
-            "dry_run": cfg.dry_run, "confirmation": cfg.confirmation, "request_body": body})
+            "dry_run": cfg.dry_run, "confirmation": cfg.confirmation,
+            "token_source": cfg.token_source, "approval_receipt": cfg.confirmed_by,
+            "request_body": body})
     headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
     payload = None
     if body is not None:
         headers["Content-Type"] = "application/json"
         payload = json.dumps(body).encode("utf-8")
     if cfg.dry_run:                          # show the exact request and send nothing
-        shown = dict(headers, Authorization=REDACTED)
+        # Show exactly what would leave: under "gateway" no bearer is attached here at all, so
+        # displaying a redacted one would misrepresent the request.
+        shown = dict(headers, Authorization=REDACTED) if cfg.token_source == "keyring" else dict(headers)
         cfg.dry_run_request = {"dry_run": True, "method": method, "url": url,
                                "headers": shown, "body": body}
         if cfg.out == "json":                # stdout is machine-read: emit() prints the one
@@ -466,7 +470,11 @@ def send_request(cfg, method, path, body=None):
         os.close(secure_log_fd(cfg.log_path))  # a read logs nothing yet, but must still be
                                                 # gated on a secure log before the network call
     check_provenance()                       # before the keychain, before the network
-    headers["Authorization"] = "Bearer " + read_token()                   # the only use
+    if cfg.token_source == "keyring":
+        headers["Authorization"] = "Bearer " + read_token()               # the only use
+    # Under "gateway" the request leaves bearer-free and the proxy attaches the credential at
+    # the TLS boundary. That is the same property follow_redirect() preserves by stripping
+    # authorization on every hop: nothing here ever holds the token.
     request = urllib.request.Request(url, data=payload, headers=headers, method=method)
     event = "response" if is_write else "read"
     try:
@@ -480,7 +488,7 @@ def send_request(cfg, method, path, body=None):
         raise RequestFailure("%s %s failed: %s: %s"
                              % (method, url, type(err).__name__, err), status=status)
     log_event(cfg.log_path, {"event": event, "verb": method, "path": npath, "status": status,
-                             "ok": True, "bytes": len(text)})
+                             "ok": True, "bytes": len(text), "token_source": cfg.token_source})
     try:
         data = json.loads(text.decode("utf-8")) if text else None
     except ValueError:
@@ -496,10 +504,28 @@ def refuse_unconfirmed_write(cfg, verb, path):
     before any network call - so the refusal can be demonstrated with no token at all."""
     if verb.upper() not in WRITE_METHODS or cfg.dry_run or cfg.yes or sys.stdin.isatty():
         return
+    if external_confirmation(cfg):
+        return
+    if cfg.confirmed_by and not cfg.external_confirmation:
+        log_event(cfg.log_path, {"event": "refusal", "verb": verb.upper(), "kind": "write",
+                                 "path": normalise_path(path),
+                                 "confirmation": "refused-external-not-configured"})
+        raise GuardError("refusing to write: --confirmed-by was passed but no "
+                         "external_confirmation approver is configured in %s" % CONFIG_PATH)
     log_event(cfg.log_path, {"event": "refusal", "verb": verb.upper(), "kind": "write",
                              "path": normalise_path(path), "confirmation": "refused-no-tty"})
     raise GuardError("refusing to write without confirmation: stdin is not a terminal; pass "
                      "--yes to confirm non-interactively, which will be recorded in the log")
+
+def external_confirmation(cfg):
+    """The confirmation label when a configured external approver supplied a receipt.
+
+    Both halves are required and they come from different places: the approver label is declared
+    in the root-owned config, which the caller cannot write, and the receipt is supplied per
+    invocation. A caller that can set only the flag gets nothing."""
+    if not cfg.external_confirmation or not cfg.confirmed_by:
+        return None
+    return "external:" + cfg.external_confirmation
 
 def confirm(cfg, lines):
     """Show the change and record how it was confirmed. Under -o json stdout is machine-read -
@@ -510,6 +536,13 @@ def confirm(cfg, lines):
     shown = sys.stderr if cfg.out == "json" else sys.stdout
     for line in lines:
         print(line, file=shown)
+    external = external_confirmation(cfg)
+    if external:
+        # Better evidence than a TTY, not weaker: a named approver outside this process, with a
+        # receipt recorded beside the request, rather than "somebody was at a terminal".
+        print("confirmation: approved by %s (receipt %s)"
+              % (cfg.external_confirmation, cfg.confirmed_by), file=shown)
+        return external
     if cfg.yes:
         print("confirmation: --yes was passed explicitly", file=shown)
         return "yes-flag"
@@ -1024,6 +1057,9 @@ def make_config(args):
                               dry_run=args.dry_run, all_pages=args.all_pages,
                               fields=parse_fields(args.fields), yes=args.yes, confirmation=None,
                               created_id=getattr(args, "created_id", None),
+                              token_source=configured["token_source"],
+                              external_confirmation=configured["external_confirmation"],
+                              confirmed_by=getattr(args, "confirmed_by", None),
                               dry_run_request=None)
 
 def read_config():
@@ -1068,7 +1104,23 @@ def read_config():
     profile = configured.get("profile", "level-1")
     if profile not in ("level-1", "level-2"):
         raise GuardError("unsupported policy profile %r" % profile)
-    return {"host": host, "profile": profile}
+    # Where the bearer comes from. "keyring" is the default and the historical behaviour.
+    # "gateway" means this host sits behind a credential proxy that terminates TLS and injects
+    # Authorization itself: the guard then reads no token and attaches no bearer, and the
+    # request leaves here bearer-free. Both are recorded on every logged request.
+    source = configured.get("token_source", "keyring")
+    if source not in ("keyring", "gateway"):
+        raise GuardError("unsupported token_source %r: expected \"keyring\" or \"gateway\"" % source)
+    # The label of an external approver permitted to confirm writes, or absent for none. This
+    # lives in the ROOT-OWNED config on purpose: --confirmed-by is worthless as evidence if the
+    # caller can also decide that external confirmation is allowed.
+    approver = configured.get("external_confirmation")
+    if approver is not None and not (isinstance(approver, str)
+                                     and re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$", approver)):
+        raise GuardError("external_confirmation must be a short label of letters, digits, "
+                         "'.', '_' or '-'")
+    return {"host": host, "profile": profile, "token_source": source,
+            "external_confirmation": approver}
 
 def build_parser():
     parser = argparse.ArgumentParser(prog="canvas_api_guard.py", description=(
@@ -1081,6 +1133,9 @@ def build_parser():
     common.add_argument("-d", "--data", help="JSON object to send as the request body")
     common.add_argument("--dry-run", action="store_true", help="print the request, send nothing")
     common.add_argument("--yes", action="store_true", help="confirm a write non-interactively")
+    common.add_argument("--confirmed-by", metavar="RECEIPT",
+                        help="receipt from the configured external approver, recorded with the "
+                             "write; refused unless external_confirmation is set in the config")
     common.add_argument("--all-pages", action="store_true",
                         help="get: follow every rel=\"next\" page on the pinned Canvas host")
     common.add_argument("--fields", metavar="FIELD[,FIELD...]",
