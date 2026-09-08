@@ -43,7 +43,7 @@ import argparse, datetime, getpass, hashlib, json, os, pty, pwd, re, stat, subpr
 import urllib.error, urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
-USER_AGENT = "canvas-api-guard/1.11.0"
+USER_AGENT = "canvas-api-guard/1.12.0"
 KEYCHAIN_SERVICE = "canvas-api-guard"
 SECURITY_BIN = "/usr/bin/security"
 SECRET_TOOL_PATHS = ("/usr/bin/secret-tool", "/usr/local/bin/secret-tool")
@@ -650,26 +650,38 @@ def submission_file_url(cfg, file_id):
     return file_url
 
 
+def submission_public_url(cfg, file_id, submission_id):
+    """Resolve Canvas's submission-authorized temporary URL after File.url delivery fails."""
+    file_id, submission_id = numeric_id(file_id, "file ID"), numeric_id(submission_id, "submission ID")
+    response = send_request(cfg, "GET", "files/%s/public_url?submission_id=%s" % (file_id, submission_id))
+    file_url = (response.get("data") or {}).get("public_url")
+    parsed = urllib.parse.urlsplit(file_url or "")
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+        raise GuardError("Canvas did not return a usable HTTPS submission public URL")
+    return file_url
+
+
 def do_download_submission_file(cfg, course_id, file_id, submission_id, suffix):
     """Download one Canvas-authorized submission attachment, never forwarding the token."""
     course_id = numeric_id(course_id, "course ID")
     file_id, submission_id = numeric_id(file_id, "file ID"), numeric_id(submission_id, "submission ID")
     suffix = safe_download_suffix(suffix)
-    # Match canvas-cli's successful download shape: use a pinned authenticated API request to
-    # resolve File.url, then make a separate bearer-free GET of that URL. The URL is never
-    # printed or logged. No credential is present on the download request or its redirects.
+    # First match canvas-cli: resolve File.url through Canvas's pinned API, then make a separate
+    # bearer-free GET. Only after that delivery chain returns a 5xx twice, try Canvas's
+    # submission-authorized public_url once. URLs are never printed or logged.
     directory = secure_review_dir()
-    for attempt in (1, 2):
+    attempts = (("file-url", lambda: submission_file_url(cfg, file_id), 1),
+                ("file-url", lambda: submission_file_url(cfg, file_id), 2),
+                ("submission-public-url", lambda: submission_public_url(cfg, file_id, submission_id), 1))
+    for route, resolve_url, attempt in attempts:
         fd, output = tempfile.mkstemp(prefix="canvas-submission-", suffix=suffix, dir=directory)
         digest, total = hashlib.sha256(), 0
         redirect_trace = []
         try:
-            # A 5xx from Canvas's file service can be transient. Resolve a fresh File.url and
-            # retry this read once; never retry other failures or any write.
-            file_url = submission_file_url(cfg, file_id)
+            file_url = resolve_url()
             log_event(cfg.log_path, {"event": "download", "kind": "read", "course_id": course_id,
                                      "file_id": file_id, "submission_id": submission_id, "attempt": attempt,
-                                     "confirmation": None})
+                                     "download_route": route, "confirmation": None})
             request = urllib.request.Request(file_url, method="GET")
             raw = open_pinned_attachment_request(request, cfg.host, redirect_trace)
             final_hop = safe_response_hop(raw)
@@ -692,11 +704,16 @@ def do_download_submission_file(cfg, course_id, file_id, submission_id, suffix):
             try: os.unlink(output)
             except OSError: pass
             failure = safe_download_failure(err)
-            retryable = failure["http_status"] in (500, 502, 503, 504) and attempt == 1
+            transient = failure["http_status"] in (500, 502, 503, 504)
+            retryable = transient and route == "file-url" and attempt == 1
+            fallback = transient and route == "file-url" and attempt == 2
             log_event(cfg.log_path, {"event": "download-response", "kind": "read", "course_id": course_id,
                                      "file_id": file_id, "submission_id": submission_id, "attempt": attempt, "ok": False,
-                                     "redirect_hops": redirect_trace, "will_retry": retryable, **failure})
+                                     "download_route": route, "redirect_hops": redirect_trace,
+                                     "will_retry": retryable, "will_try_submission_public_url": fallback, **failure})
             if retryable:
+                continue
+            if fallback:
                 continue
             # Network exceptions can embed an expiring signed URL. Preserve only the exception class.
             status = (" HTTP %s" % failure["http_status"]) if failure["http_status"] else ""
@@ -706,7 +723,7 @@ def do_download_submission_file(cfg, course_id, file_id, submission_id, suffix):
                              (failure["error"], status, stage))
         log_event(cfg.log_path, {"event": "download-response", "kind": "read", "course_id": course_id,
                                  "file_id": file_id, "submission_id": submission_id, "attempt": attempt, "ok": True,
-                                 "redirect_hops": redirect_trace, "final_hop": final_hop,
+                                 "download_route": route, "redirect_hops": redirect_trace, "final_hop": final_hop,
                                  "bytes": total, "sha256": digest.hexdigest()})
         emit(cfg, {"verb": "DOWNLOAD", "path": "/api/v1/files/%s" % file_id,
                    "note": "submitted attachment saved for local review", "object": {"path": output,

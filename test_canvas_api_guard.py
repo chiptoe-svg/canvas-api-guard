@@ -666,6 +666,27 @@ class TestAttachmentDownload(GuardTestCase):
         self.assertEqual(responses[-1]["attempt"], 2)
         self.assertTrue(responses[-1]["ok"])
 
+    def test_download_uses_submission_public_url_only_after_two_file_url_5xx_failures(self):
+        cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST})()
+        file_url = "https://%s/files/9/download?verifier=not-for-output" % HOST
+        public_url = "https://cdn.example.edu/submission-file?signature=not-for-output"
+        first = urllib.error.HTTPError(file_url, 500, "Server Error", {}, None)
+        second = urllib.error.HTTPError(file_url, 500, "Server Error", {}, None)
+        responses = [{"data": {"url": file_url}}, {"data": {"url": file_url}},
+                     {"data": {"public_url": public_url}}]
+        with mock.patch.object(guard, "send_request", side_effect=responses) as send, \
+                mock.patch.object(guard, "secure_review_dir", return_value=self.state_dir), \
+                mock.patch.object(guard, "open_pinned_attachment_request",
+                                  side_effect=[first, second, io.BytesIO(b"student work")]) as open_it, \
+                mock.patch("sys.stdout", io.StringIO()):
+            guard.do_download_submission_file(cfg, "7", "9", "12", ".pdf")
+        first.close(); second.close()
+        self.assertEqual(send.call_args_list[-1][0][1:], ("GET", "files/9/public_url?submission_id=12"))
+        self.assertEqual(open_it.call_args_list[-1][0][0].full_url, public_url)
+        logged = [line for line in self.log_lines() if line["event"] == "download-response"]
+        self.assertTrue(logged[1]["will_try_submission_public_url"])
+        self.assertEqual(logged[-1]["download_route"], "submission-public-url")
+
 
 class FakeProc(object):
     def __init__(self, returncode=0, stdout=b""):
