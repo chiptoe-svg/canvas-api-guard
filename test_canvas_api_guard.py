@@ -312,6 +312,35 @@ class TestConfirmation(GuardTestCase):
             code, _ = self.run_main(["get", "courses/1"])
         self.assertEqual(code, 0)
 
+    def test_json_output_keeps_the_confirmation_preamble_off_stdout(self):
+        """Under -o json stdout is machine-read: the preamble a person needs goes to stderr."""
+        graded = {"id": 3, "grade": "95", "entered_grade": "95", "score": 95.0,
+                  "entered_score": 95.0}
+        responses = [FakeResponse(payload=dict(graded, grade="60", entered_grade="60",
+                                               score=60.0, entered_score=60.0)),
+                     FakeResponse(payload=graded), FakeResponse(payload=graded)]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, output = self.run_main(
+                ["put", "courses/1/assignments/2/submissions/3", "--yes", "-o", "json",
+                 "-d", '{"submission": {"posted_grade": 95}}'])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output)["verification"], "passed")
+        self.assertIn("about to PUT", self.last_stderr)
+        self.assertIn("requested changes", self.last_stderr)
+        self.assertIn("confirmation: --yes was passed explicitly", self.last_stderr)
+
+    def test_text_output_still_shows_the_preamble_on_stdout(self):
+        graded = {"id": 3, "grade": "95", "entered_grade": "95", "score": 95.0,
+                  "entered_score": 95.0}
+        with mock.patch("urllib.request.urlopen",
+                        side_effect=[FakeResponse(payload=graded)] * 3):
+            code, output = self.run_main(
+                ["put", "courses/1/assignments/2/submissions/3", "--yes", "-o", "text",
+                 "-d", '{"submission": {"posted_grade": 95}}'])
+        self.assertEqual(code, 0)
+        self.assertIn("about to PUT", output)
+        self.assertIn("confirmation: --yes was passed explicitly", output)
+
 
 class TestLogBeforeRequest(GuardTestCase):
     def test_the_write_request_line_is_on_disk_before_urlopen_is_called(self):

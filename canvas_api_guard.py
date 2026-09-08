@@ -494,16 +494,21 @@ def refuse_unconfirmed_write(cfg, verb, path):
                      "--yes to confirm non-interactively, which will be recorded in the log")
 
 def confirm(cfg, lines):
+    """Show the change and record how it was confirmed. Under -o json stdout is machine-read -
+    Specialized Functions parse it - so the preamble goes to stderr, where a person still sees
+    it and stdout carries only the evidence object."""
     if cfg.dry_run:
         return "dry-run"
+    shown = sys.stderr if cfg.out == "json" else sys.stdout
     for line in lines:
-        print(line)
+        print(line, file=shown)
     if cfg.yes:
-        print("confirmation: --yes was passed explicitly")
+        print("confirmation: --yes was passed explicitly", file=shown)
         return "yes-flag"
     if not sys.stdin.isatty():          # unreachable from the CLI: main() refuses earlier
         raise GuardError("refusing to write without confirmation: stdin is not a terminal")
-    if input("Type 'yes' to proceed: ").strip().lower() != "yes":
+    print("Type 'yes' to proceed: ", end="", flush=True, file=shown)
+    if input().strip().lower() != "yes":
         raise GuardError("not confirmed; nothing was sent")
     return "human-tty"
 

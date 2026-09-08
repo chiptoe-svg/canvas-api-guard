@@ -3,9 +3,12 @@
 
 import importlib.util
 import io
+import json
 import os
 import unittest
 from unittest import mock
+
+from test_canvas_api_guard import HOST, FakeResponse, GuardTestCase
 
 
 SOURCE = os.path.join(os.path.dirname(__file__), "level2", "canvas_api_operations.py")
@@ -219,3 +222,29 @@ class TestLevel2Operations(unittest.TestCase):
             code = operations.main(["student-attention", "--course-id", "12"])
         self.assertEqual(code, 0)
         self.assertNotIn("null", out.getvalue())
+
+
+class TestGuardWriteContract(GuardTestCase):
+    """The one contract between the layers: what the real guard prints for a `-o json` write
+    is exactly what guard_write parses. Mocked stdout shapes cannot prove this."""
+
+    def test_guard_write_parses_the_real_guards_json_write_output(self):
+        path = "courses/12/assignments/22/submissions/34"
+        body = {"submission": {"posted_grade": 95}}
+        graded = {"id": 34, "user_id": 34, "grade": "95", "entered_grade": "95",
+                  "score": 95.0, "entered_score": 95.0}
+        responses = [FakeResponse(payload=dict(graded, grade="60", entered_grade="60",
+                                               score=60.0, entered_score=60.0)),
+                     FakeResponse(payload=graded), FakeResponse(payload=graded)]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, captured = self.run_main([
+                "put", path, "--yes", "-o", "json", "--verify-fields", "posted_grade",
+                "-d", json.dumps(body)])
+        self.assertEqual(code, 0)
+        completed = mock.Mock(returncode=0, stdout=captured, stderr="")
+        with mock.patch.object(operations.subprocess, "run", return_value=completed), \
+                mock.patch("sys.stdout", io.StringIO()):
+            evidence = operations.guard_write("put", path, body, "yes",
+                                              ["--verify-fields", "posted_grade"])
+        self.assertEqual(evidence["verification"], "passed")
+        self.assertEqual(evidence["url"], "https://" + HOST + "/api/v1/" + path)
