@@ -43,7 +43,7 @@ import argparse, datetime, getpass, hashlib, json, os, pty, pwd, re, stat, subpr
 import urllib.error, urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
-USER_AGENT = "canvas-api-guard/1.10.0"
+USER_AGENT = "canvas-api-guard/1.11.0"
 KEYCHAIN_SERVICE = "canvas-api-guard"
 SECURITY_BIN = "/usr/bin/security"
 SECRET_TOOL_PATHS = ("/usr/bin/secret-tool", "/usr/local/bin/secret-tool")
@@ -308,7 +308,9 @@ class PinnedAttachmentRedirects(urllib.request.HTTPRedirectHandler):
         parsed = urllib.parse.urlsplit(newurl)
         if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
             raise GuardError("refusing a non-HTTPS or malformed attachment redirect")
-        self.trace.append("pinned" if parsed.netloc == self.host else "external")
+        # Keep only status + hostname: never retain the access-bearing URL, its query, or body.
+        self.trace.append({"status": int(code), "host": safe_url_host(newurl),
+                           "scope": "pinned" if parsed.netloc == self.host else "external"})
         forwarded = dict((name, value) for name, value in req.header_items()
                          if name.lower() != "proxy-authorization")
         if parsed.netloc != self.host:
@@ -345,7 +347,36 @@ def safe_download_failure(err):
     status = getattr(err, "code", None)
     if not isinstance(status, int) or status < 100 or status > 599:
         status = None
-    return {"error": type(err).__name__, "http_status": status}
+    return {"error": type(err).__name__, "http_status": status,
+            "response_host": safe_url_host(getattr(err, "url", ""))}
+
+
+def safe_url_host(url):
+    """Return only a normalized hostname from a URL; never a path, query, port, or userinfo."""
+    try:
+        host = urllib.parse.urlsplit(url or "").hostname
+    except ValueError:
+        host = None
+    return host.lower() if host and len(host) <= 253 else None
+
+
+def safe_response_hop(response):
+    """Capture safe final response evidence without preserving its URL or headers."""
+    try:
+        url = response.geturl()
+    except (AttributeError, ValueError):
+        url = ""
+    status = getattr(response, "status", None)
+    if not isinstance(status, int):
+        try:
+            status = response.getcode()
+        except AttributeError:
+            status = None
+    return {"status": status if isinstance(status, int) else None, "host": safe_url_host(url)}
+
+
+def redirect_stage(trace):
+    return ",".join(hop["scope"] for hop in trace) or "none"
 
 def send_request(cfg, method, path, body=None):
     """Perform an authenticated request to the pinned Canvas host and log before it does."""
@@ -641,6 +672,7 @@ def do_download_submission_file(cfg, course_id, file_id, submission_id, suffix):
                                      "confirmation": None})
             request = urllib.request.Request(file_url, method="GET")
             raw = open_pinned_attachment_request(request, cfg.host, redirect_trace)
+            final_hop = safe_response_hop(raw)
             with os.fdopen(fd, "wb") as handle:
                 fd = None
                 while True:
@@ -663,18 +695,19 @@ def do_download_submission_file(cfg, course_id, file_id, submission_id, suffix):
             retryable = failure["http_status"] in (500, 502, 503, 504) and attempt == 1
             log_event(cfg.log_path, {"event": "download-response", "kind": "read", "course_id": course_id,
                                      "file_id": file_id, "submission_id": submission_id, "attempt": attempt, "ok": False,
-                                     "redirect_trace": redirect_trace, "will_retry": retryable, **failure})
+                                     "redirect_hops": redirect_trace, "will_retry": retryable, **failure})
             if retryable:
                 continue
             # Network exceptions can embed an expiring signed URL. Preserve only the exception class.
             status = (" HTTP %s" % failure["http_status"]) if failure["http_status"] else ""
             stage = " after %s redirect(s): %s" % (len(redirect_trace),
-                                                     ",".join(redirect_trace) or "none")
+                                                     redirect_stage(redirect_trace))
             raise GuardError("submission attachment download failed (%s%s%s)" %
                              (failure["error"], status, stage))
         log_event(cfg.log_path, {"event": "download-response", "kind": "read", "course_id": course_id,
                                  "file_id": file_id, "submission_id": submission_id, "attempt": attempt, "ok": True,
-                                 "redirect_trace": redirect_trace, "bytes": total, "sha256": digest.hexdigest()})
+                                 "redirect_hops": redirect_trace, "final_hop": final_hop,
+                                 "bytes": total, "sha256": digest.hexdigest()})
         emit(cfg, {"verb": "DOWNLOAD", "path": "/api/v1/files/%s" % file_id,
                    "note": "submitted attachment saved for local review", "object": {"path": output,
                    "bytes": total, "sha256": digest.hexdigest(), "course_id": int(course_id), "file_id": int(file_id),

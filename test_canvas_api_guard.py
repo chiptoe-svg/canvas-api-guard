@@ -595,13 +595,23 @@ class TestRedirectsAreRefused(unittest.TestCase):
         self.assertIn("authorization", {key.lower() for key, _ in same_host.header_items()})
         self.assertNotIn("authorization", {key.lower() for key, _ in external.header_items()})
 
+    def test_attachment_redirect_trace_has_only_status_hostname_and_scope(self):
+        trace = []
+        request = urllib.request.Request("https://%s/files/9/download" % HOST)
+        guard.PinnedAttachmentRedirects(HOST, trace).redirect_request(
+            request, None, 307, "Temporary Redirect", {},
+            "https://cdn.example.edu/file?signature=do-not-log")
+        self.assertEqual(trace, [{"status": 307, "host": "cdn.example.edu", "scope": "external"}])
+        self.assertNotIn("signature", json.dumps(trace))
+
     def test_attachment_download_error_records_status_not_signed_url(self):
         signed_url = "https://cdn.example.edu/file?X-Amz-Signature=do-not-log"
         error = urllib.error.HTTPError(signed_url, 403, "Forbidden", {}, None)
         failure = guard.safe_download_failure(error)
         error.close()
-        self.assertEqual(failure, {"error": "HTTPError", "http_status": 403})
-        self.assertNotIn("cdn.example.edu", json.dumps(failure))
+        self.assertEqual(failure, {"error": "HTTPError", "http_status": 403,
+                                   "response_host": "cdn.example.edu"})
+        self.assertNotIn("X-Amz-Signature", json.dumps(failure))
         self.assertIsNone(guard.safe_download_failure(OSError("unavailable"))["http_status"])
 
 
