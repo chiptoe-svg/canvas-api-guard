@@ -10,7 +10,7 @@ OPEN_BIN=/usr/bin/open
 TERMINAL_APP=/System/Applications/Utilities/Terminal.app
 CANVAS_HOST=
 SOURCE_REF=
-PROFILE=level-1
+PROFILE=level-1                         # stable on-disk compatibility key
 UPGRADE=no
 
 die() {
@@ -20,7 +20,7 @@ die() {
 
 usage() {
     cat <<'EOF'
-usage: install-from-github.sh --ref FULL_COMMIT_SHA --host school.instructure.com [--profile level-1|level-2] [--upgrade]
+usage: install-from-github.sh --ref FULL_COMMIT_SHA --host school.instructure.com [--profile api-only|specialized-functions] [--upgrade]
 
 Downloads exactly FULL_COMMIT_SHA, creates a private self-deleting .command launcher, and
 opens it in macOS Terminal. Terminal prompts for the Mac administrator password and then the
@@ -47,8 +47,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$PROFILE" in
-    level-1|level-2) ;;
-    *) die "--profile must be level-1 or level-2" ;;
+    api-only|level-1) PROFILE=level-1 ;;
+    specialized-functions|level-2) PROFILE=level-2 ;;
+    *) die "--profile must be api-only or specialized-functions" ;;
 esac
 
 case "$SOURCE_REF" in

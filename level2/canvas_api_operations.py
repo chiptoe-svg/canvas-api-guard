@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Specialized, read-only Canvas analysis operations.
+"""Specialized Canvas instructor operations.
 
 This program never reads a Canvas credential and never opens a network connection.  It calls
-the installed Level 1 guard at its fixed path, so every underlying Canvas request keeps the
+the installed API Only guard at its fixed path, so every underlying Canvas request keeps the
 same credential isolation, host pinning, and audit record.
 """
 
 import argparse
+import datetime
 import json
+import os
+import stat
 import subprocess
 import sys
 
 GUARD = "/usr/local/libexec/canvas_api_guard.py"
-USER_AGENT = "canvas-api-operations/0.1.0"
+USER_AGENT = "canvas-api-operations/0.3.0"
 
 
 class OperationError(Exception):
@@ -26,22 +29,401 @@ def canvas_id(value, label):
 
 
 def guard_get(path):
-    """Ask Level 1 for one JSON response; Level 2 has no token or HTTP client."""
+    """Ask API Only for one JSON response; Specialized Functions have no token or HTTP client."""
     result = subprocess.run([GUARD, "get", path, "-o", "json"], text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode:
-        raise OperationError("Level 1 guard failed: %s" % result.stderr.strip())
+        raise OperationError("API Only guard failed: %s" % result.stderr.strip())
     try:
         response = json.loads(result.stdout)
     except ValueError as err:
-        raise OperationError("Level 1 guard did not return JSON: %s" % err)
+        raise OperationError("API Only guard did not return JSON: %s" % err)
     if not isinstance(response, dict):
-        raise OperationError("Level 1 guard returned an unexpected response")
+        raise OperationError("API Only guard returned an unexpected response")
     return response
 
 
+def guard_write(verb, path, body, phase, extra=None):
+    """Delegate a reviewed write to API Only; Specialized Functions never get a token or HTTP client."""
+    command = [GUARD, verb, path, "-d", json.dumps(body, sort_keys=True), "-o", "json"]
+    command.extend(extra or [])
+    command.append("--dry-run" if phase == "dry-run" else "--yes")
+    result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.stdout:
+        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+    if result.returncode:
+        raise OperationError("API Only guard failed: %s" % result.stderr.strip())
+    if phase == "dry-run":
+        return None
+    try:
+        evidence = json.loads(result.stdout)
+    except ValueError as err:
+        raise OperationError("API Only guard did not return write evidence: %s" % err)
+    if evidence.get("verification") != "passed":
+        raise OperationError("API Only guard did not prove the write")
+    return evidence
+
+
+def definition_file(path):
+    """Load one bounded, regular JSON definition. It is content, never executable code."""
+    try:
+        info = os.lstat(path)
+    except OSError as err:
+        raise OperationError("cannot read definition file: %s" % err)
+    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        raise OperationError("definition must be a regular file, not a link")
+    if info.st_size > 1024 * 1024:
+        raise OperationError("definition is larger than 1 MiB")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = json.load(handle)
+    except (OSError, ValueError) as err:
+        raise OperationError("definition is not valid JSON: %s" % err)
+    if not isinstance(value, dict):
+        raise OperationError("definition must be a JSON object")
+    return value
+
+
+def exact_object(value, required, optional=()):
+    if not isinstance(value, dict):
+        raise OperationError("definition section must be a JSON object")
+    unknown = set(value) - set(required) - set(optional)
+    missing = set(required) - set(value)
+    if unknown:
+        raise OperationError("definition has unsupported field(s): %s" % ", ".join(sorted(unknown)))
+    if missing:
+        raise OperationError("definition is missing required field(s): %s" % ", ".join(sorted(missing)))
+    return value
+
+
+def text(value, label):
+    if not isinstance(value, str) or not value.strip():
+        raise OperationError("%s must be a non-empty string" % label)
+    return value
+
+
+def nonnegative(value, label):
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+        raise OperationError("%s must be a non-negative number" % label)
+    return value
+
+
+def operation_phase(args):
+    return "dry-run" if args.dry_run else "yes"
+
+
+def write_plan(operation, args, target, body):
+    """Read the course first, then show the exact specialized write before API Only sends it."""
+    guard_get("courses/%s" % args.course_id)
+    print(json.dumps({"operation": operation, "phase": operation_phase(args),
+                      "course_id": args.course_id, "target": target, "body": body},
+                     indent=2, sort_keys=True))
+
+
+ASSIGNMENT_FIELDS = ("name", "description", "points_possible", "due_at", "unlock_at",
+                     "lock_at", "published", "submission_types", "grading_type",
+                     "assignment_group_id", "allowed_extensions")
+
+
+def assignment_body(value, require_name):
+    required = ("name",) if require_name else ()
+    definition = exact_object(value, required, ASSIGNMENT_FIELDS)
+    if not definition:
+        raise OperationError("assignment definition cannot be empty")
+    if "name" in definition:
+        text(definition["name"], "assignment name")
+    if "points_possible" in definition:
+        nonnegative(definition["points_possible"], "points_possible")
+    if "submission_types" in definition and (not isinstance(definition["submission_types"], list)
+                                             or not all(isinstance(item, str)
+                                                        for item in definition["submission_types"])):
+        raise OperationError("submission_types must be an array of strings")
+    return {"assignment": definition}
+
+
+DATE_FIELDS = {"available_at": "unlock_at", "due_at": "due_at", "closed_at": "lock_at"}
+
+
+def iso_time(value, label):
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise OperationError("%s must be an ISO 8601 timestamp or null" % label)
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise OperationError("%s must be an ISO 8601 timestamp or null" % label)
+    if parsed.tzinfo is None:
+        raise OperationError("%s must include a time zone" % label)
+    return parsed
+
+
+def classic_or_assignment(assignment):
+    """New Quizzes have a different API; this release intentionally supports Classic only."""
+    if assignment.get("is_quiz_assignment") and not assignment.get("quiz_id"):
+        raise OperationError("this appears to be a New Quiz; Specialized Functions currently support Classic Quizzes only")
+
+
+def set_assignment_dates(args):
+    definition = exact_object(definition_file(args.definition), (), tuple(DATE_FIELDS))
+    if not definition:
+        raise OperationError("date definition must set at least one of available_at, due_at, closed_at")
+    path = "courses/%s/assignments/%s" % (args.course_id, args.assignment_id)
+    assignment = guard_get(path).get("object") or {}
+    classic_or_assignment(assignment)
+    if assignment.get("has_overrides"):
+        raise OperationError("assignment has section or student date overrides; use a dedicated override workflow rather than changing its base dates")
+    merged = {target: assignment.get(target) for target in DATE_FIELDS.values()}
+    body_dates = {}
+    for source, target in DATE_FIELDS.items():
+        if source in definition:
+            iso_time(definition[source], source)
+            merged[target] = definition[source]
+            body_dates[target] = definition[source]
+    available, due, closed = (iso_time(merged[key], key) for key in
+                              ("unlock_at", "due_at", "lock_at"))
+    if available and due and available > due:
+        raise OperationError("available_at must be before or equal to due_at")
+    if due and closed and due > closed:
+        raise OperationError("due_at must be before or equal to closed_at")
+    body = {"assignment": body_dates}
+    write_plan("set-assignment-dates", args,
+               {"path": path, "current": {key: assignment.get(key) for key in DATE_FIELDS.values()},
+                "proposed": merged}, body)
+    guard_write("put", path, body, operation_phase(args))
+
+
+def excuse_submission(args, attendance=False):
+    definition = exact_object(definition_file(args.definition), ("student_id",), ())
+    student_id = canvas_id(str(definition["student_id"]), "student ID")
+    path = "courses/%s/assignments/%s" % (args.course_id, args.assignment_id)
+    assignment = guard_get(path).get("object") or {}
+    classic_or_assignment(assignment)
+    submission_path = "courses/%s/assignments/%s/submissions/%s?include[]=user" % (
+        args.course_id, args.assignment_id, student_id)
+    submission = guard_get(submission_path).get("object") or {}
+    if str(submission.get("user_id")) != student_id:
+        raise OperationError("Canvas did not return the requested student's submission")
+    body = {"submission": {"excuse": True}}
+    operation = "excuse-attendance" if attendance else "excuse-submission"
+    write_plan(operation, args, submission_path,
+               {"assignment_id": args.assignment_id, "assignment_title": assignment.get("name"),
+                "student_id": student_id, "student_name": (submission.get("user") or {}).get("name"),
+                "previously_excused": submission.get("excused"), "requested_excused": True})
+    guard_write("put", submission_path, body, operation_phase(args))
+
+
+def excuse_attendance(args):
+    """Excuse the student from the instructor-identified Canvas attendance assignment."""
+    excuse_submission(args, attendance=True)
+
+
+def create_assignment(args):
+    body = assignment_body(definition_file(args.definition), True)
+    path = "courses/%s/assignments" % args.course_id
+    write_plan("create-assignment", args, path, body)
+    guard_write("post", path, body, operation_phase(args))
+
+
+def update_assignment(args):
+    body = assignment_body(definition_file(args.definition), False)
+    path = "courses/%s/assignments/%s" % (args.course_id, args.assignment_id)
+    guard_get(path)
+    write_plan("update-assignment", args, path, body)
+    guard_write("put", path, body, operation_phase(args))
+
+
+PAGE_FIELDS = ("title", "body", "published", "editing_roles", "notify_of_update", "front_page")
+
+
+def page_body(value):
+    definition = exact_object(value, ("title", "body"), PAGE_FIELDS)
+    text(definition["title"], "page title")
+    if not isinstance(definition["body"], str):
+        raise OperationError("page body must be a string")
+    return {"wiki_page": definition}
+
+
+def create_or_update_page(args):
+    body = page_body(definition_file(args.definition))
+    if args.page_url:
+        path = "courses/%s/pages/%s" % (args.course_id, quote_query(args.page_url))
+        guard_get(path)
+        write_plan("create-or-update-page", args, path, body)
+        guard_write("put", path, body, operation_phase(args))
+        return
+    path = "courses/%s/pages" % args.course_id
+    write_plan("create-or-update-page", args, path, body)
+    guard_write("post", path, body, operation_phase(args),
+                ["--post-readback", "courses/%s/pages/{value}" % args.course_id,
+                 "--post-readback-field", "url", "--post-verify-field", "wiki_page",
+                 "--verify-fields", "title,body"])
+
+
+ANNOUNCEMENT_FIELDS = ("title", "message", "published", "is_section_specific",
+                       "specific_sections", "delayed_post_at", "require_initial_post")
+
+
+def announcement_body(value):
+    definition = exact_object(value, ("title", "message"), ANNOUNCEMENT_FIELDS)
+    text(definition["title"], "announcement title")
+    if not isinstance(definition["message"], str):
+        raise OperationError("announcement message must be a string")
+    definition["is_announcement"] = True
+    return definition
+
+
+def create_announcement(args):
+    body = announcement_body(definition_file(args.definition))
+    path = "courses/%s/discussion_topics" % args.course_id
+    write_plan("create-announcement", args, path, body)
+    guard_write("post", path, body, operation_phase(args))
+
+
+def criterion(value, number_key):
+    definition = exact_object(value, ("description", "points", "ratings"), ("long_description",))
+    text(definition["description"], "criterion description")
+    nonnegative(definition["points"], "criterion points")
+    if not isinstance(definition["ratings"], list) or not definition["ratings"]:
+        raise OperationError("criterion ratings must be a non-empty array")
+    ratings = []
+    for rating in definition["ratings"]:
+        rating = exact_object(rating, ("description", "points"), ("long_description",))
+        text(rating["description"], "rating description")
+        nonnegative(rating["points"], "rating points")
+        if rating["points"] > definition["points"]:
+            raise OperationError("rating points cannot exceed criterion points")
+        ratings.append(rating)
+    definition["ratings"] = ratings
+    return definition
+
+
+def rubric_body(value):
+    definition = exact_object(value, ("title", "criteria"), ("free_form_criterion_comments",))
+    text(definition["title"], "rubric title")
+    if not isinstance(definition["criteria"], list) or not definition["criteria"]:
+        raise OperationError("rubric criteria must be a non-empty array")
+    criteria = {str(index): criterion(item, index) for index, item in enumerate(definition["criteria"])}
+    return {"rubric": {"title": definition["title"], "criteria": criteria,
+                        "free_form_criterion_comments": bool(
+                            definition.get("free_form_criterion_comments", False))},
+            "rubric_association": {"association_type": "Course", "purpose": "bookmark"}}
+
+
+def create_rubric(args):
+    body = rubric_body(definition_file(args.definition))
+    body["rubric_association"]["association_id"] = int(args.course_id)
+    path = "courses/%s/rubrics" % args.course_id
+    write_plan("create-rubric", args, path, body)
+    evidence = guard_write("post", path, body, operation_phase(args),
+                           ["--post-readback", "courses/%s/rubrics/{value}" % args.course_id,
+                            "--post-readback-field", "rubric.id", "--post-verify-field", "rubric",
+                            "--verify-fields", "title"])
+    if evidence:
+        rubric_id = (evidence.get("object") or {}).get("id")
+        if rubric_id is None:
+            raise OperationError("Canvas created a rubric but did not return its ID for validation")
+        created = guard_get("courses/%s/rubrics/%s" % (args.course_id, rubric_id)).get("object") or {}
+        actual = created.get("data") or []
+        expected = list(body["rubric"]["criteria"].values())
+        if len(actual) != len(expected):
+            raise OperationError("WRITE STATUS UNCERTAIN: rubric criterion count did not read back")
+        for expected_row, actual_row in zip(expected, actual):
+            if (actual_row.get("description") != expected_row["description"]
+                    or number(actual_row.get("points")) != expected_row["points"]):
+                raise OperationError("WRITE STATUS UNCERTAIN: rubric criterion did not read back")
+
+
+def attach_rubric(args):
+    rubric_path = "courses/%s/rubrics/%s" % (args.course_id, args.rubric_id)
+    assignment_path = "courses/%s/assignments/%s" % (args.course_id, args.assignment_id)
+    guard_get(rubric_path)
+    guard_get(assignment_path)
+    value = exact_object(definition_file(args.definition), (), ("use_for_grading", "purpose"))
+    purpose = value.get("purpose", "grading")
+    if purpose not in ("grading", "bookmark"):
+        raise OperationError("rubric association purpose must be grading or bookmark")
+    body = {"rubric_association": {"rubric_id": int(args.rubric_id),
+                                    "association_id": int(args.assignment_id),
+                                    "association_type": "Assignment", "purpose": purpose,
+                                    "use_for_grading": bool(value.get("use_for_grading", True))}}
+    path = "courses/%s/rubric_associations" % args.course_id
+    write_plan("attach-rubric", args, assignment_path, body)
+    guard_write("post", path, body, operation_phase(args))
+
+
+def live_rubric(args):
+    assignment = guard_get("courses/%s/assignments/%s" % (args.course_id, args.assignment_id)).get("object") or {}
+    settings = assignment.get("rubric_settings") or {}
+    rubric_id = settings.get("id") or assignment.get("rubric_id")
+    association_id = settings.get("rubric_association_id") or assignment.get("rubric_association_id")
+    if rubric_id is None or association_id is None:
+        raise OperationError("assignment has no live Canvas rubric association; attach a rubric first")
+    rubric = guard_get("courses/%s/rubrics/%s?include[]=associations" %
+                       (args.course_id, rubric_id)).get("object") or {}
+    association = next((row for row in rubric.get("associations") or []
+                        if str(row.get("id")) == str(association_id)), None)
+    if association is None or not association.get("use_for_grading"):
+        raise OperationError("assignment's live rubric is not configured for grading")
+    return assignment, rubric, str(association_id)
+
+
+def grade_payload(value, rubric):
+    definition = exact_object(value, ("student_id", "criteria"), ())
+    student_id = canvas_id(str(definition["student_id"]), "student ID")
+    criteria = definition["criteria"]
+    if not isinstance(criteria, dict) or not criteria:
+        raise OperationError("grade criteria must be a non-empty object keyed by live criterion ID")
+    limits = {str(row.get("id")): number(row.get("points")) for row in rubric.get("data") or []}
+    valid = set(limits)
+    if not set(criteria).issubset(valid):
+        raise OperationError("grade references a criterion not present in this assignment's live rubric")
+    normalized, total = {}, 0
+    for criterion_id, score in criteria.items():
+        score = exact_object(score, ("points",), ("comments", "rating_id"))
+        points = nonnegative(score["points"], "rubric points")
+        if points > limits[str(criterion_id)]:
+            raise OperationError("rubric points cannot exceed the live criterion maximum")
+        normalized[str(criterion_id)] = score
+        total += points
+    return student_id, normalized, total
+
+
+def grade_one(args, value):
+    assignment, rubric, association_id = live_rubric(args)
+    student_id, criteria, total = grade_payload(value, rubric)
+    path = "courses/%s/assignments/%s/submissions/%s?include[]=rubric_assessment&include[]=user" % (
+        args.course_id, args.assignment_id, student_id)
+    guard_get(path)
+    body = {"submission": {"posted_grade": total}, "rubric_assessment": criteria}
+    write_plan("grade-with-rubric", args, path, body)
+    guard_write("put", path, body, operation_phase(args), ["--verify-fields", "posted_grade"])
+    return {"student_id": student_id, "rubric_association_id": association_id, "posted_grade": total}
+
+
+def grade_with_rubric(args):
+    print(json.dumps({"result": grade_one(args, definition_file(args.definition))}, indent=2, sort_keys=True))
+
+
+def bulk_grade_with_rubric(args):
+    definition = exact_object(definition_file(args.definition), ("grades",), ())
+    if not isinstance(definition["grades"], list) or not definition["grades"]:
+        raise OperationError("grades must be a non-empty array")
+    if len(definition["grades"]) > 50:
+        raise OperationError("bulk grading is limited to 50 students per reviewed batch")
+    seen, results = set(), []
+    for grade in definition["grades"]:
+        student_id = str(grade.get("student_id")) if isinstance(grade, dict) else ""
+        if student_id in seen:
+            raise OperationError("bulk grading contains duplicate student ID %s" % student_id)
+        seen.add(student_id)
+        results.append(grade_one(args, grade))
+    print(json.dumps({"operation": "bulk-grade-with-rubric", "phase": operation_phase(args),
+                      "results": results}, indent=2, sort_keys=True))
+
+
 def all_items(path):
-    """Follow only the same-host pagination paths already validated by Level 1."""
+    """Follow only the same-host pagination paths already validated by API Only."""
     items, current, seen = [], path, set()
     while current:
         if current in seen:
@@ -61,7 +443,7 @@ def number(value):
 
 
 def quote_query(value):
-    """Percent-encode a query value without adding an HTTP client to Level 2."""
+    """Percent-encode a query value without adding an HTTP client to Specialized Functions."""
     safe = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
     return "".join(chr(byte) if byte in safe else "%%%02X" % byte
                    for byte in value.encode("utf-8"))
@@ -218,11 +600,19 @@ OPERATIONS = {"current-courses": current_courses, "roster-count": roster_count,
               "find-student": find_student, "needs-grading": needs_grading,
               "course-health": course_health, "assignment-performance": assignment_performance,
               "student-attention": student_attention, "student-trajectory": student_trajectory,
-              "attendance-summary": attendance_summary}
+              "attendance-summary": attendance_summary,
+              "create-rubric": create_rubric, "attach-rubric": attach_rubric,
+              "grade-with-rubric": grade_with_rubric,
+              "bulk-grade-with-rubric": bulk_grade_with_rubric,
+              "create-assignment": create_assignment, "update-assignment": update_assignment,
+              "create-or-update-page": create_or_update_page,
+              "create-announcement": create_announcement,
+              "set-assignment-dates": set_assignment_dates,
+              "excuse-submission": excuse_submission, "excuse-attendance": excuse_attendance}
 
 
 def parser():
-    result = argparse.ArgumentParser(description="Specialized read-only Canvas analysis via Level 1")
+    result = argparse.ArgumentParser(description="Specialized Canvas instructor operations via API Only")
     result.add_argument("--version", action="version", version=USER_AGENT)
     subs = result.add_subparsers(dest="operation", required=True)
     subs.add_parser("current-courses")
@@ -237,6 +627,30 @@ def parser():
     trajectory = subs.add_parser("student-trajectory")
     trajectory.add_argument("--course-id", type=lambda value: canvas_id(value, "course ID"), required=True)
     trajectory.add_argument("--student-id", type=lambda value: canvas_id(value, "student ID"), required=True)
+    write = argparse.ArgumentParser(add_help=False)
+    write.add_argument("--course-id", type=lambda value: canvas_id(value, "course ID"), required=True)
+    write.add_argument("--definition", required=True, help="path to a reviewed JSON operation definition")
+    phase = write.add_mutually_exclusive_group(required=True)
+    phase.add_argument("--dry-run", action="store_true", help="read and show the exact write; send nothing")
+    phase.add_argument("--yes", action="store_true", help="perform the previously reviewed write")
+    for name in ("create-rubric", "create-assignment", "create-announcement"):
+        subs.add_parser(name, parents=[write])
+    attach = subs.add_parser("attach-rubric", parents=[write])
+    attach.add_argument("--rubric-id", type=lambda value: canvas_id(value, "rubric ID"), required=True)
+    attach.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)
+    assignment = subs.add_parser("update-assignment", parents=[write])
+    assignment.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)
+    schedule = subs.add_parser("set-assignment-dates", parents=[write])
+    schedule.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)
+    for name in ("excuse-submission", "excuse-attendance"):
+        excuse = subs.add_parser(name, parents=[write])
+        excuse.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True,
+                            help="assignment ID; for attendance, the Canvas attendance assignment ID")
+    page = subs.add_parser("create-or-update-page", parents=[write])
+    page.add_argument("--page-url", help="existing Canvas page URL slug; omit to create a page")
+    for name in ("grade-with-rubric", "bulk-grade-with-rubric"):
+        grade = subs.add_parser(name, parents=[write])
+        grade.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)
     return result
 
 

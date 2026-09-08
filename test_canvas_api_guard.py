@@ -422,6 +422,17 @@ class TestEvidence(GuardTestCase):
         self.assertEqual(evidence["target"], {"student_name": "Student Example", "user_id": 3})
         self.assertEqual(evidence["verification"], "passed")
 
+    def test_submission_excuse_verifies_canvas_excused_response_field(self):
+        responses = [FakeResponse(payload={"id": 3, "user_id": 3, "excused": False}),
+                     FakeResponse(payload={"id": 3, "user_id": 3, "excused": True}),
+                     FakeResponse(payload={"id": 3, "user_id": 3, "excused": True})]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, output = self.run_main(
+                ["put", "courses/1/assignments/2/submissions/3", "--yes",
+                 "-d", '{"submission": {"excuse": true}}'])
+        self.assertEqual(code, 0)
+        self.assertIn("false -> true", output.lower())
+
     def test_post_without_an_id_or_location_is_uncertain_and_nonzero(self):
         with mock.patch("urllib.request.urlopen") as urlopen:
             urlopen.return_value = FakeResponse(status=201, headers={}, payload={"ok": True})
@@ -443,6 +454,20 @@ class TestEvidence(GuardTestCase):
         self.assertIn("Lab 4", output)
         self.assertEqual(urlopen.call_args[0][0].full_url,
                          "https://" + HOST + "/api/v1/courses/1/assignments/42")
+
+    def test_post_can_read_back_a_documented_nested_create_response(self):
+        responses = [FakeResponse(status=201, payload={"rubric": {"id": 42, "title": "Lab"}}),
+                     FakeResponse(payload={"id": 42, "title": "Lab", "data": []})]
+        with mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen:
+            code, output = self.run_main(
+                ["post", "courses/1/rubrics", "--yes",
+                 "--post-readback", "courses/1/rubrics/{value}",
+                 "--post-readback-field", "rubric.id", "--post-verify-field", "rubric",
+                 "--verify-fields", "title", "-d", '{"rubric": {"title": "Lab"}}'])
+        self.assertEqual(code, 0)
+        self.assertIn("verification:  passed", output)
+        self.assertEqual(urlopen.call_args[0][0].full_url,
+                         "https://" + HOST + "/api/v1/courses/1/rubrics/42")
 
     def test_post_readback_mismatch_is_uncertain_and_nonzero(self):
         responses = [FakeResponse(status=201, payload={"id": 42, "name": "Lab 4"}),
@@ -466,6 +491,16 @@ class TestEvidence(GuardTestCase):
             code, output = self.run_main(["get", "courses"])
         self.assertEqual(code, 0)
         self.assertIn("2 items returned", output)
+
+    def test_json_get_preserves_full_object_for_specialized_validation(self):
+        payload = {"id": 2, "name": "Lab", "rubric_settings": {"id": 9,
+                   "rubric_association_id": 10}, "field_1": 1, "field_2": 2,
+                   "field_3": 3, "field_4": 4, "field_5": 5, "field_6": 6,
+                   "field_7": 7, "field_8": 8, "field_9": 9}
+        with mock.patch("urllib.request.urlopen", return_value=FakeResponse(payload=payload)):
+            code, output = self.run_main(["get", "courses/1/assignments/2", "-o", "json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output)["object"]["rubric_settings"]["id"], 9)
 
     def test_delete_reports_that_the_object_is_gone(self):
         responses = [FakeResponse(payload={"id": 2, "name": "Lab 4"}),  # before
@@ -861,12 +896,13 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertIn("no changes made", proc.stdout)
         self.assertIn("does not read or store a token", proc.stdout)
 
-    def test_level_2_plan_lists_its_separate_artifacts(self):
-        proc = self.run_installer("--plan", "--profile", "level-2", "--host", HOST)
+    def test_specialized_functions_plan_lists_its_separate_artifacts(self):
+        proc = self.run_installer("--plan", "--profile", "specialized-functions", "--host", HOST)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("profile level-2", proc.stdout)
-        self.assertIn("Level 2 executable:", proc.stdout)
-        self.assertIn("Level 2 skill:", proc.stdout)
+        self.assertIn("profile Specialized Functions", proc.stdout)
+        self.assertIn("compatibility key level-2", proc.stdout)
+        self.assertIn("Specialized Functions executable:", proc.stdout)
+        self.assertIn("Specialized Functions skill:", proc.stdout)
 
     def test_invalid_host_is_refused(self):
         proc = self.run_installer("--plan", "--host", "https://evil.example/x")

@@ -7,7 +7,7 @@ description: Read and change an instructor's Canvas LMS course - courses, assign
 
 ## What this is
 
-`canvas_api_guard.py` is the Level 1 audited passthrough to the Canvas REST API. It holds
+`canvas_api_guard.py` is the **API Only** audited passthrough to the Canvas REST API. It holds
 the instructor's token so you never see it, logs every call before it is sent,
 requires a person to approve every write, and reads every write back so what
 Canvas actually stored is printed next to what was asked for.

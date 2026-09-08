@@ -35,19 +35,34 @@ prefix_rule(
                  "./canvas_api_guard.py post courses/1/assignments -d {} --yes"],
 )
 
-# Level 2 currently contains only read-only specialized analysis operations. It has no
-# credential or HTTP code; it invokes GUARD above for every underlying Canvas request.
+# Specialized Functions have no credential or HTTP code; they invoke API Only above for every
+# underlying Canvas request. Their analysis operations are read-only.
 prefix_rule(
     pattern = [OPERATIONS, ["current-courses", "roster-count", "find-student", "needs-grading",
                             "course-health", "assignment-performance", "student-attention",
                             "student-trajectory", "attendance-summary"]],
     decision = "allow",
-    justification = "Canvas read-only analysis through the installed Level 2 operations program",
+    justification = "Canvas read-only analysis through installed Specialized Functions",
     match = ["/usr/local/libexec/canvas_api_operations.py current-courses",
              "/usr/local/libexec/canvas_api_operations.py course-health --course-id 1",
              "/usr/local/libexec/canvas_api_operations.py student-attention --course-id 1"],
     not_match = ["./level2/canvas_api_operations.py course-health --course-id 1",
                  "/usr/local/libexec/canvas_api_operations.py create-rubric --course-id 1"],
+)
+
+# These are schema-limited instructor workflows. Codex shows the command to the instructor,
+# including a dry-run; the operation itself makes API Only print a precise plan and read-back
+# evidence for every underlying write.
+prefix_rule(
+    pattern = [OPERATIONS, ["create-rubric", "attach-rubric", "grade-with-rubric",
+                            "bulk-grade-with-rubric", "create-assignment", "update-assignment",
+                            "create-or-update-page", "create-announcement", "set-assignment-dates",
+                            "excuse-submission", "excuse-attendance"]],
+    decision = "prompt",
+    justification = "Canvas specialized WRITE: review the matching dry-run and JSON definition before it is sent",
+    match = ["/usr/local/libexec/canvas_api_operations.py create-rubric --course-id 1 --definition rubric.json --yes",
+             "/usr/local/libexec/canvas_api_operations.py bulk-grade-with-rubric --course-id 1 --assignment-id 2 --definition grades.json --yes"],
+    not_match = ["./level2/canvas_api_operations.py create-rubric --course-id 1 --definition rubric.json --yes"],
 )
 
 # A full path is a different literal token to the matcher, so every path a credential tool

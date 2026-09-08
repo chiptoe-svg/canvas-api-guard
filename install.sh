@@ -9,17 +9,18 @@ set -eu
 usage() {
     destination=${1:-2}
     if [ "$destination" = 1 ]; then
-        echo "usage: $0 [--plan] [--allow-dirty] [--profile level-1|level-2] --host school.instructure.com"
+        echo "usage: $0 [--plan] [--allow-dirty] [--profile api-only|specialized-functions] --host school.instructure.com"
         exit 0
     fi
-    echo "usage: $0 [--plan] [--allow-dirty] [--profile level-1|level-2] --host school.instructure.com" >&2
+    echo "usage: $0 [--plan] [--allow-dirty] [--profile api-only|specialized-functions] --host school.instructure.com" >&2
     exit 2
 }
 
 PLAN=no
 ALLOW_DIRTY=no
 CANVAS_HOST=
-PROFILE=level-1
+PROFILE=level-1                         # stable on-disk compatibility key
+PROFILE_LABEL="API Only"
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --plan) PLAN=yes ;;
@@ -33,8 +34,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$PROFILE" in
-    level-1|level-2) ;;
-    *) echo "invalid profile: $PROFILE (expected level-1 or level-2)" >&2; exit 2 ;;
+    api-only|level-1) PROFILE=level-1; PROFILE_LABEL="API Only" ;;
+    specialized-functions|level-2) PROFILE=level-2; PROFILE_LABEL="Specialized Functions" ;;
+    *) echo "invalid profile: $PROFILE (expected api-only or specialized-functions)" >&2; exit 2 ;;
 esac
 
 case "$CANVAS_HOST" in
@@ -64,7 +66,7 @@ done
 if [ "$PROFILE" = level-2 ]; then
     for required in "$LEVEL2_SCRIPT" "$LEVEL2_SKILL"; do
         if [ ! -f "$required" ]; then
-            echo "cannot find required Level 2 source file: $required" >&2
+            echo "cannot find required Specialized Functions source file: $required" >&2
             exit 1
         fi
     done
@@ -141,17 +143,17 @@ canvas-api-guard installation plan (no changes made)
   skill sha:    $SKILL_SHA
   Canvas host:  $CANVAS_HOST
   executable:   $DEST (root:$ROOT_GROUP, 0555)
-  config:       $CONFIG (root:$ROOT_GROUP, 0644; profile $PROFILE)
+  config:       $CONFIG (root:$ROOT_GROUP, 0644; profile $PROFILE_LABEL; compatibility key $PROFILE)
   audit log:    $LOG ($USER_NAME, 0600; containing confidential education records)
   Codex rules:  $RULE_DEST ($USER_NAME, 0644)
   Codex skill:  $SKILL_DEST ($USER_NAME, 0644)
 EOP
     if [ "$PROFILE" = level-2 ]; then
         cat <<EOP
-  Level 2 executable: $LEVEL2_DEST (root:$ROOT_GROUP, 0555)
-  Level 2 skill:      $LEVEL2_SKILL_DEST ($USER_NAME, 0644)
-  Level 2 guard sha:  $LEVEL2_SCRIPT_SHA
-  Level 2 skill sha:  $LEVEL2_SKILL_SHA
+  Specialized Functions executable: $LEVEL2_DEST (root:$ROOT_GROUP, 0555)
+  Specialized Functions skill:      $LEVEL2_SKILL_DEST ($USER_NAME, 0644)
+  Specialized Functions sha:        $LEVEL2_SCRIPT_SHA
+  Specialized Functions skill sha:  $LEVEL2_SKILL_SHA
 EOP
     fi
     cat <<EOP
@@ -261,11 +263,11 @@ if [ "$INSTALLED_SKILL_SHA" != "$SKILL_SHA" ]; then
 fi
 if [ "$PROFILE" = level-2 ]; then
     if [ "$(hash_file "$LEVEL2_DEST")" != "$LEVEL2_SCRIPT_SHA" ]; then
-        echo "installed Level 2 executable hash does not match the reviewed source" >&2
+        echo "installed Specialized Functions executable hash does not match the reviewed source" >&2
         exit 1
     fi
     if [ "$(hash_file "$LEVEL2_SKILL_DEST")" != "$LEVEL2_SKILL_SHA" ]; then
-        echo "installed Level 2 skill hash does not match the reviewed source" >&2
+        echo "installed Specialized Functions skill hash does not match the reviewed source" >&2
         exit 1
     fi
 fi
@@ -284,8 +286,8 @@ installed canvas-api-guard
 EON
 if [ "$PROFILE" = level-2 ]; then
     cat <<EON
-  Level 2 executable: $LEVEL2_DEST
-  Level 2 skill:      $LEVEL2_SKILL_DEST
+  Specialized Functions executable: $LEVEL2_DEST
+  Specialized Functions skill:      $LEVEL2_SKILL_DEST
 EON
 fi
 cat <<EON

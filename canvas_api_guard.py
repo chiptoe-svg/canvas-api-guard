@@ -43,7 +43,7 @@ import argparse, datetime, getpass, json, os, pty, pwd, re, stat, subprocess, sy
 import urllib.error, urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
-USER_AGENT = "canvas-api-guard/1.2.0"
+USER_AGENT = "canvas-api-guard/1.4.0"
 KEYCHAIN_SERVICE = "canvas-api-guard"
 SECURITY_BIN = "/usr/bin/security"
 SECRET_TOOL_PATHS = ("/usr/bin/secret-tool", "/usr/local/bin/secret-tool")
@@ -383,12 +383,27 @@ def compare_fields(body, before, after):
     rows, flat = [], flatten_leaves(body or {})
     for dotted in sorted(flat):
         leaf = dotted.split(".")[-1]
-        got_after = after.get(leaf) if isinstance(after, dict) else None
+        # Canvas accepts submission[excuse] but returns the state as "excused".
+        response_leaf = "excused" if leaf == "excuse" else leaf
+        got_after = after.get(response_leaf) if isinstance(after, dict) else None
         rows.append({"field": leaf, "requested": flat[dotted], "after": got_after,
-                     "before": before.get(leaf) if isinstance(before, dict) else None,
+                     "before": before.get(response_leaf) if isinstance(before, dict) else None,
                      "match": None if not isinstance(after, dict)
                      else str(got_after) == str(flat[dotted])})
     return rows
+
+
+def selected_changes(changes, fields):
+    """Limit verification only when a reviewed specialized operation names stable fields."""
+    if not fields:
+        return changes
+    wanted = {field.strip() for field in fields.split(",") if field.strip()}
+    if not wanted:
+        raise GuardError("verification field list is empty")
+    selected = [row for row in changes if row["field"] in wanted]
+    if not selected:
+        raise GuardError("none of the requested verification fields occur in the request body")
+    return selected
 
 def summarise(obj, limit=10):
     return dict((k, obj[k]) for k in sorted(obj)[:limit]) if isinstance(obj, dict) else None
@@ -477,7 +492,9 @@ def do_get(cfg, path, body):
         except GuardError as err:
             ev["next"], ev["note"] = None, ev["note"] + "; " + str(err)
     elif resp:
-        ev["object"] = summarise(resp["data"])
+        # Text output stays compact for a human, while a root-owned specialized operation that
+        # asks for JSON can validate fields Canvas places beyond the first display summary.
+        ev["object"] = resp["data"] if cfg.out == "json" else summarise(resp["data"])
     emit(cfg, ev)
 
 def do_count(cfg, path, body):
@@ -530,13 +547,50 @@ def do_update(cfg, method, path, body):
         uncertain(cfg, evidence, "the write returned, but read-back failed: %s" % err)
     after_obj = after["data"]
     evidence["target"] = target_identity(before_obj, resp.get("data"), after_obj)
-    evidence["changes"] = compare_fields(body, before_obj, after_obj)
+    evidence["changes"] = selected_changes(compare_fields(body, before_obj, after_obj),
+                                             cfg.verify_fields)
     mismatches = [row["field"] for row in evidence["changes"] if row["match"] is not True]
     if mismatches:
         uncertain(cfg, evidence, "read-back did not match requested field(s): %s"
                   % ", ".join(mismatches))
     evidence["verification"] = "passed"
     emit(cfg, evidence)
+
+def template_value(data, template):
+    """Resolve a dot-separated response field for an explicit POST read-back template."""
+    value = data
+    for part in template.split("."):
+        if not part or not isinstance(value, dict) or part not in value:
+            raise GuardError("POST read-back template did not resolve %r" % template)
+        value = value[part]
+    if not isinstance(value, (str, int)) or not str(value):
+        raise GuardError("POST read-back template resolved to an invalid path value")
+    return urllib.parse.quote(str(value), safe="-._~")
+
+
+def post_read_path(cfg, path, response, readback_template):
+    """Choose the exact object to verify after a create, never following another host."""
+    if readback_template:
+        if readback_template.count("{value}") != 1:
+            raise GuardError("POST read-back template must contain exactly one {value} placeholder")
+        try:
+            read_path = readback_template.format(
+                value=template_value(response["data"], cfg.post_readback_field))
+        except (KeyError, IndexError, ValueError) as err:
+            raise GuardError("invalid POST read-back template: %s" % err)
+        canvas_url(cfg.host, read_path)
+        return read_path
+    location = response["headers"].get("Location") or response["headers"].get("location")
+    new_id = response["data"].get("id") if isinstance(response["data"], dict) else None
+    if new_id is not None:
+        return normalise_path(path).split("?")[0] + "/" + str(new_id)
+    if location:
+        parsed = urllib.parse.urlsplit(location)
+        if parsed.netloc and parsed.netloc != cfg.host:
+            raise GuardError("Location header points off the pinned host: %s" % parsed.netloc)
+        return parsed.path + (("?" + parsed.query) if parsed.query else "")
+    return None
+
 
 def do_post(cfg, path, body):
     """POST: nothing exists before, so show the body, confirm, write, read the new object."""
@@ -554,17 +608,10 @@ def do_post(cfg, path, body):
         evidence.update({"verification": "not-run", "note": "dry run: nothing was sent"})
         emit(cfg, evidence)
         return
-    location = resp["headers"].get("Location") or resp["headers"].get("location")
-    new_id = resp["data"].get("id") if isinstance(resp["data"], dict) else None
-    read_path = None
-    if new_id is not None:
-        read_path = normalise_path(path).split("?")[0] + "/" + str(new_id)
-    elif location:
-        parsed = urllib.parse.urlsplit(location)
-        if parsed.netloc and parsed.netloc != cfg.host:
-            uncertain(cfg, evidence, "Location header points off the pinned host: %s"
-                      % parsed.netloc)
-        read_path = parsed.path + (("?" + parsed.query) if parsed.query else "")
+    try:
+        read_path = post_read_path(cfg, path, resp, cfg.post_readback)
+    except GuardError as err:
+        uncertain(cfg, evidence, str(err))
     if not read_path:
         uncertain(cfg, evidence, "Canvas returned neither an id nor a usable Location header; "
                   "the created object could not be read back")
@@ -577,8 +624,15 @@ def do_post(cfg, path, body):
     created = summarise(back["data"])
     if created is None:
         uncertain(cfg, evidence, "read-back at %s was not a Canvas object" % read_path)
+    expected = body
+    if cfg.post_verify_field:
+        if not isinstance(body, dict) or not isinstance(body.get(cfg.post_verify_field), dict):
+            raise GuardError("POST verification field is not an object in the request body: %s"
+                             % cfg.post_verify_field)
+        expected = body[cfg.post_verify_field]
     evidence.update({"object": created, "target": target_identity(resp["data"], back["data"]),
-                     "changes": compare_fields(body, None, back["data"])})
+                     "changes": selected_changes(compare_fields(expected, None, back["data"]),
+                                                 cfg.verify_fields)})
     mismatches = [row["field"] for row in evidence["changes"] if row["match"] is not True]
     if mismatches:
         uncertain(cfg, evidence, "created object did not match requested field(s): %s"
@@ -623,7 +677,10 @@ def make_config(args):
     configured = read_config()
     return argparse.Namespace(host=configured["host"], profile=configured["profile"],
                               out=args.output, log_path=DEFAULT_LOG, dry_run=args.dry_run,
-                              yes=args.yes, confirmation=None)
+                              yes=args.yes, confirmation=None, post_readback=args.post_readback,
+                              post_readback_field=args.post_readback_field,
+                              post_verify_field=args.post_verify_field,
+                              verify_fields=args.verify_fields)
 
 def read_config():
     """Read the fixed config after checking that untrusted users cannot modify it."""
@@ -680,6 +737,15 @@ def build_parser():
     common.add_argument("-d", "--data", help="JSON object to send as the request body")
     common.add_argument("--dry-run", action="store_true", help="print the request, send nothing")
     common.add_argument("--yes", action="store_true", help="confirm a write non-interactively")
+    common.add_argument("--post-readback", metavar="PATH{value}",
+                        help="POST only: exact pinned-host read-back path; {value} is filled "
+                             "from the Canvas response field named by --post-readback-field")
+    common.add_argument("--post-readback-field", default="id", metavar="FIELD",
+                        help="POST only: dot-separated Canvas response field for {value} (default: id)")
+    common.add_argument("--post-verify-field", metavar="FIELD",
+                        help="POST only: verify this object inside the request body against read-back")
+    common.add_argument("--verify-fields", metavar="FIELD[,FIELD...]",
+                        help="verify only these requested leaf fields after a write")
     common.add_argument("-o", "--output", choices=("text", "json"), default="text")
     subs = parser.add_subparsers(dest="verb")
     for name in sorted(VERBS):

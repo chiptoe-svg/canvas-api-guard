@@ -1,15 +1,15 @@
 # canvas-api-guard
 
-A small, audited Level 1 transport for using the Canvas REST API from Codex without
+A small, audited **API Only** transport for using the Canvas REST API from Codex without
 putting a Canvas token in `.env`, a repository, a command, or agent-visible output.
 
 The review surface is deliberately small: one Python 3.9+ standard-library program,
 one POSIX system installer, one macOS bootstrap, one Codex rules file, one Codex skill,
 and a stdlib test suite.
 
-## The two-level design
+## The two-profile design
 
-This release implements **Level 1: Safer Raw Canvas API**:
+**API Only** provides safer raw Canvas API access:
 
 - generic Canvas `GET`, `POST`, `PUT`, `PATCH`, and `DELETE` paths;
 - unrestricted reads within the installed Canvas token's own permissions;
@@ -19,12 +19,12 @@ This release implements **Level 1: Safer Raw Canvas API**:
 - dry-run, human approval, pre-read, write, and fail-closed read-back verification;
 - no redirects and no automatic retries.
 
-**Level 2: Specialized Canvas Operations** is an additive layer, not a second transport or a
-more privileged token. It leaves Level 1 available for general API work and adds small,
+**Specialized Functions** are an additive layer, not a second transport or a
+more privileged token. They leave API Only available for general API work and add small,
 reviewable instructor operations that resolve live Canvas objects, validate task-specific data,
-and produce compact evidence. Its first installed slice is read-only course and student
-analytics; rubric, grade, and content writes remain unavailable until their individual
-validation and read-back contracts are implemented.
+and produce compact evidence. It includes read-only course/student analytics plus narrowly
+defined rubric, rubric-grading, assignment, page, and announcement workflows. These writes use
+the same dry-run, explicit approval, and verified read-back as API Only.
 
 ## What this improves
 
@@ -39,7 +39,7 @@ only what the installed token can do.
 
 - It is a selected local path, not a system-wide network chokepoint. A determined user or
   approved process with sufficient access can use Canvas by another route.
-- It does not narrow token scope. Level 1 intentionally leaves reads and writes generic.
+- It does not narrow token scope. API Only intentionally leaves reads and writes generic.
 - Codex rules are part of the Codex execution boundary, not an operating-system mandatory
   access-control system.
 - A process approved to run outside the Codex sandbox as the user may be able to access that
@@ -73,12 +73,12 @@ An actual installation from a Git checkout refuses tracked modifications. `--all
 exists for reviewed development builds and must be explicit. Existing differing executable,
 config, rule, and skill files are backed up before replacement.
 
-The default Level 1 installation creates:
+The default API Only installation creates:
 
 | File | Ownership and purpose |
 |---|---|
 | `/usr/local/libexec/canvas_api_guard.py` | root-owned `0555` executable |
-| `/usr/local/etc/canvas-api-guard/config.json` | root-owned `0644`; fixed host and Level 1 profile |
+| `/usr/local/etc/canvas-api-guard/config.json` | root-owned `0644`; fixed host and API Only profile |
 | `~/.canvas-api-guard/audit.jsonl` | invoking user, `0600`; fixed confidential audit log |
 | `~/.codex/rules/canvas-api-guard.rules` | Codex execution decisions |
 | `~/.codex/skills/canvas-api-guard/SKILL.md` | safe Canvas operating workflow |
@@ -86,8 +86,8 @@ The default Level 1 installation creates:
 Merge the reviewed lines in `codex/config.toml` into the user's existing Codex config. Do
 not replace unrelated settings.
 
-The optional Level 2 profile additionally installs the root-owned specialized analysis executable
-and its separate Codex skill, as shown in its installation plan.
+The optional Specialized Functions profile additionally installs the root-owned operations
+executable and its separate Codex skill, as shown in its installation plan.
 
 Then the user—not Codex—enters the token in a visible terminal with hidden input:
 
@@ -140,12 +140,13 @@ itself contact Canvas.
 Use the same immutable bootstrap with `--upgrade` on a machine that already has a working
 canvas-api-guard token. It retains the existing Keychain item, runs the new checkout's offline
 tests and installation plan, replaces only the reviewed installed artifacts, and then directs
-you to the same read-only smoke test. Specify `level-2` when adding the specialized operations
-layer; use `level-1` to upgrade only the core guard.
+you to the same read-only smoke test. Specify `specialized-functions` when adding operations;
+use `api-only` to upgrade only the core guard. Legacy `level-1` and `level-2` flags remain
+accepted for existing installations.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/FULL_COMMIT_SHA/install-from-github.sh \
-  | sh -s -- --ref FULL_COMMIT_SHA --host school.instructure.com --profile level-2 --upgrade
+  | sh -s -- --ref FULL_COMMIT_SHA --host school.instructure.com --profile specialized-functions --upgrade
 ```
 
 The visible Terminal window asks only for the macOS administrator password. It does not prompt
@@ -211,21 +212,27 @@ Codex's rules prompt the person for every installed-path write, including dry-ru
 records that the explicit Codex approval is being passed to the guard; it is not permission
 for Codex to approve its own request.
 
-### Optional Level 2 specialized analysis
+### Optional Specialized Functions
 
-Level 2 is a separate, additive installation profile. It uses the same Level 1 credential,
+Specialized Functions are a separate, additive installation profile. They use the same API Only credential,
 host, and audit boundary; it neither stores nor retrieves a token itself. Install it only from a
 reviewed immutable checkout:
 
 ```sh
-./install.sh --plan --profile level-2 --host school.instructure.com
-sudo ./install.sh --profile level-2 --host school.instructure.com
+./install.sh --plan --profile specialized-functions --host school.instructure.com
+sudo ./install.sh --profile specialized-functions --host school.instructure.com
 ```
 
-The current operations are read-only: `course-health`, `assignment-performance`,
-`student-attention`, `student-trajectory`, and `attendance-summary`. The last reports Canvas
-activity, not verified attendance. See [level2/README.md](level2/README.md) for the exact
-boundary and planned specialized write operations.
+Read operations include `course-health`, `assignment-performance`, `student-attention`,
+`student-trajectory`, and `attendance-summary`; the last reports Canvas activity, not verified
+attendance. Named write operations include rubric creation/attachment, rubric grading,
+assignment creation/update, pages, and announcements. They accept a reviewed, allowlisted JSON
+definition and require `--dry-run` followed by explicit approval for `--yes`. See
+[level2/README.md](level2/README.md) for the exact boundary.
+
+Specialized Functions also provide base date/time changes for assignments and Classic Quizzes,
+plus verified assignment/attendance-assignment excusal. They stop on New Quizzes, date overrides,
+or an attendance source that is not represented by a Canvas assignment.
 
 ## Fail-closed write evidence
 

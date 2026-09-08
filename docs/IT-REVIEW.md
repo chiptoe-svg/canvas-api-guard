@@ -1,4 +1,4 @@
-# IT review: canvas-api-guard Level 1 and optional Level 2
+# IT review: canvas-api-guard API Only and optional Specialized Functions
 
 ## Decision requested
 
@@ -18,8 +18,8 @@ The runtime and installation boundary consists of:
 | `codex/canvas-api-guard.rules` | installed-path reads allowed; installed-path writes prompt; known credential reads forbidden |
 | `codex/config.toml` | recommended Codex sandbox and human-review settings |
 | `codex/skills/canvas-api-guard/SKILL.md` | operating procedure and data-handling instructions |
-| `test_canvas_api_guard.py` | offline Level 1 security and behavior tests |
-| `level2/` | optional specialized operations, installed only with `--profile level-2` |
+| `test_canvas_api_guard.py` | offline API Only security and behavior tests |
+| `level2/` | optional Specialized Functions, installed with `--profile specialized-functions` |
 
 The documents under `docs/superpowers/` are historical design/implementation records, not
 runtime components.
@@ -182,9 +182,9 @@ working user Secret Service session and the trusted `secret-tool` path enforced 
 The checkout remains in the system temporary directory for review rather than being deleted
 automatically.
 
-## Level 1 versus optional Level 2
+## API Only versus optional Specialized Functions
 
-Level 1 intentionally permits every supported method and path allowed by the Canvas token.
+API Only intentionally permits every supported method and path allowed by the Canvas token.
 Its security improvement over `.env` plus direct API use is credential isolation, destination
 pinning, fixed audit, explicit write approval, and verified evidence.
 
@@ -193,22 +193,31 @@ the same pinned-host validation as `get`, and returns a total without requiring 
 shell pipeline or repeated API tool calls. Codex rules allow these reads while continuing to
 prompt for every write verb.
 
-Level 2 is optional and specialized rather than a replacement for Level 1. Its installed
-program contains no token logic and no HTTP client; it invokes only the installed Level 1 guard,
-so every underlying Canvas request keeps Level 1's host pinning and audit. The first Level 2
-release is read-only analysis: course/assignment patterns, student engagement and submission
-signals, individual trajectories, and clearly labelled non-attendance activity summaries.
+Specialized Functions are optional rather than a replacement for API Only. Their installed
+program contains no token logic and no HTTP client; it invokes only the installed API Only guard,
+so every underlying Canvas request keeps API Only's host pinning and audit. They provide
+course/assignment patterns, student engagement and submission signals, individual trajectories,
+and clearly labelled non-attendance activity summaries.
 
-Future named Level 2 writes—rubrics, rubric grading, assignments, pages, and announcements—must
-be separately reviewed with their own live-object validation and operation-specific read-back.
-They are not present in the installed program or Codex allow rule until that code and its offline
-tests exist.
+It also provides named rubric, rubric-grading, assignment, page, and announcement workflows.
+Each accepts only an allowlisted JSON definition, resolves the live Canvas target before acting,
+requires a reviewed `--dry-run` before `--yes`, and delegates the write/read-back to API Only.
+Rubric creates use an explicit documented response-field read-back; grading rejects stale or
+invented rubric criterion IDs; batches are capped at 50 and are individually audited/read back
+rather than sent through an opaque asynchronous bulk endpoint. Codex rules prompt for each
+Specialized Functions write command.
+
+Date changes are restricted to regular assignments and Classic Quizzes, validate available/due/
+close ordering, and refuse to overwrite Canvas-reported overrides. Excusal uses the documented
+submission excuse field and verifies Canvas's returned `excused` state. Attendance excusal is
+limited to an instructor-identified Canvas attendance assignment; a separate attendance tool is
+not treated as interchangeable with that assignment.
 
 ## Residual risks
 
 - This is not a mandatory network proxy. Users and sufficiently privileged approved processes
   can bypass it with another Canvas client.
-- Level 1 does not reduce the Canvas token's privileges or restrict write endpoints.
+- API Only does not reduce the Canvas token's privileges or restrict write endpoints.
 - Codex rules are prefix decisions and cannot enumerate every possible OS-level bypass.
 - A user-approved process outside the sandbox may be able to access that user's credential
   store.
@@ -218,7 +227,7 @@ tests exist.
 - The local audit can grow without bound until deployment adds rotation and retention.
 - Before/after comparison is generic and compares requested leaf fields to same-named fields
   in the returned Canvas object; unusual endpoints may need endpoint-specific verification in
-  Level 2.
+  Specialized Functions.
 
 ## Reviewer commands
 

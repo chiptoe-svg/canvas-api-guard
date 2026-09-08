@@ -94,3 +94,90 @@ class TestLevel2Operations(unittest.TestCase):
         for invalid in ("0", "-1", "course-12"):
             with self.assertRaises(operations.OperationError):
                 operations.canvas_id(invalid, "course ID")
+
+    def test_specialized_assignment_definition_has_an_allowlist(self):
+        body = operations.assignment_body({"name": "Lab", "points_possible": 20,
+                                            "published": False}, True)
+        self.assertEqual(body["assignment"]["name"], "Lab")
+        with self.assertRaises(operations.OperationError):
+            operations.assignment_body({"name": "Lab", "admin_only": True}, True)
+
+    def test_rubric_definition_is_converted_to_the_canvas_indexed_shape(self):
+        body = operations.rubric_body({"title": "Lab rubric", "criteria": [{
+            "description": "Craft", "points": 10,
+            "ratings": [{"description": "Complete", "points": 10},
+                        {"description": "Incomplete", "points": 0}]}]})
+        self.assertEqual(body["rubric"]["criteria"]["0"]["description"], "Craft")
+        self.assertEqual(body["rubric_association"]["purpose"], "bookmark")
+
+    def test_rubric_grade_uses_only_live_criterion_ids(self):
+        rubric = {"data": [{"id": "criterion_1", "points": 10}]}
+        student, criteria, total = operations.grade_payload(
+            {"student_id": 4, "criteria": {"criterion_1": {"points": 8}}}, rubric)
+        self.assertEqual((student, total), ("4", 8))
+        self.assertEqual(criteria["criterion_1"]["points"], 8)
+        with self.assertRaises(operations.OperationError):
+            operations.grade_payload({"student_id": 4,
+                                      "criteria": {"criterion_404": {"points": 8}}}, rubric)
+
+    def test_live_rubric_requires_the_assignment_association_to_grade(self):
+        args = Args()
+        args.assignment_id = "22"
+        assignment = {"rubric_settings": {"id": 9, "rubric_association_id": 10}}
+        rubric = {"data": [{"id": "criterion_1", "points": 10}],
+                  "associations": [{"id": 10, "use_for_grading": True}]}
+        with mock.patch.object(operations, "guard_get",
+                               side_effect=[{"object": assignment}, {"object": rubric}]):
+            _, resolved, association = operations.live_rubric(args)
+        self.assertEqual(resolved["data"][0]["id"], "criterion_1")
+        self.assertEqual(association, "10")
+
+    def test_date_helper_rejects_invalid_or_new_quiz_dates_before_a_write(self):
+        args = Args()
+        args.assignment_id = "22"
+        args.definition = "unused"
+        args.dry_run = True
+        args.yes = False
+        definition = {"available_at": "2026-09-10T10:00:00-04:00",
+                      "due_at": "2026-09-09T10:00:00-04:00"}
+        with mock.patch.object(operations, "definition_file", return_value=definition), \
+                mock.patch.object(operations, "guard_get", return_value={"object": {}}), \
+                mock.patch.object(operations, "guard_write") as write:
+            with self.assertRaises(operations.OperationError):
+                operations.set_assignment_dates(args)
+        write.assert_not_called()
+        with mock.patch.object(operations, "definition_file", return_value={"due_at": "2026-09-09T10:00:00-04:00"}), \
+                mock.patch.object(operations, "guard_get", return_value={"object": {"is_quiz_assignment": True}}), \
+                mock.patch.object(operations, "guard_write") as write:
+            with self.assertRaises(operations.OperationError):
+                operations.set_assignment_dates(args)
+        write.assert_not_called()
+
+    def test_excuse_uses_canvas_excuse_request_and_named_submission(self):
+        args = Args()
+        args.assignment_id = "22"
+        args.definition = "unused"
+        args.dry_run = True
+        args.yes = False
+        responses = [{"object": {"id": 22, "name": "Roll Call Attendance"}},
+                     {"object": {"user_id": 34, "excused": False,
+                                  "user": {"name": "Jordan Lee"}}},
+                     {"object": {"id": 12}}]
+        with mock.patch.object(operations, "definition_file", return_value={"student_id": 34}), \
+                mock.patch.object(operations, "guard_get", side_effect=responses), \
+                mock.patch.object(operations, "guard_write") as write:
+            operations.excuse_attendance(args)
+        self.assertEqual(write.call_args[0][0:3], ("put", "courses/12/assignments/22/submissions/34?include[]=user",
+                                                     {"submission": {"excuse": True}}))
+
+    def test_level2_write_delegates_to_the_fixed_guard_with_a_phase(self):
+        completed = mock.Mock()
+        completed.return_value = mock.Mock(returncode=0,
+                                           stdout='{"verification": "not-run"}\n', stderr="")
+        with mock.patch.object(operations.subprocess, "run", completed):
+            operations.guard_write("post", "courses/12/assignments", {"assignment": {"name": "Lab"}},
+                                   "dry-run")
+        command = completed.call_args[0][0]
+        self.assertEqual(command[:3], [operations.GUARD, "post", "courses/12/assignments"])
+        self.assertIn("--dry-run", command)
+        self.assertNotIn("--yes", command)
