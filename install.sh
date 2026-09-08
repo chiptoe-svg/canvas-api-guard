@@ -11,8 +11,8 @@ usage() {
   --plan compares every installed file with the reviewed source (SHA-256; owner and mode for
   root-owned files) and changes nothing.
   It exits 0 when a root-owned file would change (rerun with sudo), 4 when only the Codex
-  rules or skills in the user's home would change (rerun without sudo), and 3 when nothing
-  needs to change."
+  rules, skills, or settings in the user's home would change (rerun without sudo), 3 when
+  nothing needs to change, and 5 when nothing needs to change but the Codex settings need a person."
     if [ "${1:-2}" = 1 ]; then
         echo "$text"
         exit 0
@@ -222,6 +222,69 @@ for state in $ROOT_STATES; do [ "$state" = same ] || ROOT_CHANGES=yes; done
 USER_CHANGES=no
 for state in $USER_STATES; do [ "$state" = same ] || USER_CHANGES=yes; done
 
+# The three top-level Codex settings the guard relies on. One awk pass over ~/.codex/config.toml
+# reports each key's top-level value, whether it also appears inside a [table] (a profile's
+# value overrides the top-level one), and whether the file has multi-line values (a
+# triple-quoted string, or a line whose [ ] do not balance): such a file is never edited.
+CODEX_CONFIG="$CODEX_DIR/config.toml"
+CODEX_SETTINGS="sandbox_mode=workspace-write approval_policy=on-request approvals_reviewer=user"
+CODEX_SCAN='/"""/ || /\047\047\047/ { print "complex" }
+{
+    bare = $0; gsub(/"[^"]*"/, "", bare); gsub(/\047[^\047]*\047/, "", bare); sub(/#.*/, "", bare)
+    if (gsub(/\[/, "", bare) != gsub(/\]/, "", bare)) print "complex"
+}
+/^[ \t]*\[/ { table = 1; next }
+/^[ \t]*(sandbox_mode|approval_policy|approvals_reviewer)[ \t]*=/ {
+    key = $0; sub(/^[ \t]*/, "", key); sub(/[ \t]*=.*/, "", key)
+    value = $0; sub(/^[^=]*=[ \t]*/, "", value); sub(/[ \t]*#.*/, "", value); sub(/[ \t]*$/, "", value)
+    sub(/^["\047]/, "", value); sub(/["\047]$/, "", value)
+    print (table ? "table:" : "top:") key "=" value
+}
+'
+SCAN=
+if [ -f "$CODEX_CONFIG" ]; then
+    SCAN=$(tr -d '\r' < "$CODEX_CONFIG" | awk "$CODEX_SCAN")
+fi
+scan_has() { printf '%s\n' "$SCAN" | grep -q "^$1"; }          # one token per line
+SETTINGS_MISSING=
+SETTINGS_KEPT=
+SETTINGS_TABLE=
+SETTINGS_ADD="# canvas-api-guard: Codex runs sandboxed and a person answers every prompt"
+for pair in $CODEX_SETTINGS; do
+    key=${pair%%=*}
+    if scan_has "table:$key="; then SETTINGS_TABLE="$SETTINGS_TABLE $key"; fi
+    if scan_has "top:$key="; then
+        have=$(printf '%s\n' "$SCAN" | sed -n "s/^top:$key=//p" | tail -1)
+        [ "$have" = "${pair#*=}" ] || SETTINGS_KEPT="$SETTINGS_KEPT $key=$have"
+    else                                            # \n is expanded by awk -v, not the shell
+        SETTINGS_MISSING="$SETTINGS_MISSING $key"
+        SETTINGS_ADD="$SETTINGS_ADD\\n$key = \"${pair#*=}\""
+    fi
+done
+if scan_has 'complex$'; then SETTINGS_PLAIN=no; else SETTINGS_PLAIN=yes; fi
+SETTINGS_ATTENTION=no
+if [ -z "$SETTINGS_MISSING" ]; then
+    SETTINGS_STATE="settings same"
+elif [ "$SETTINGS_PLAIN" = no ]; then
+    SETTINGS_STATE="settings missing:$SETTINGS_MISSING; not edited: multi-line values"; SETTINGS_ATTENTION=yes
+elif [ -L "$CODEX_CONFIG" ]; then
+    SETTINGS_STATE="settings link; missing:$SETTINGS_MISSING"; USER_CHANGES=yes
+else
+    SETTINGS_STATE="settings missing:$SETTINGS_MISSING"; USER_CHANGES=yes
+fi
+[ -z "$SETTINGS_KEPT$SETTINGS_TABLE" ] || SETTINGS_ATTENTION=yes
+settings_warning() {
+    [ "$SETTINGS_ATTENTION" = yes ] || return 0
+    echo
+    echo "WARNING: $CODEX_CONFIG needs a person. The guard's review model needs the values in"
+    echo "codex/config.toml, above all approvals_reviewer = \"user\", so that a person, not a"
+    echo "reviewer model, answers every Canvas write prompt."
+    [ -z "$SETTINGS_KEPT" ] || echo "  set differently and left alone:$SETTINGS_KEPT"
+    [ -z "$SETTINGS_TABLE" ] || echo "  also set inside a [table], whose value overrides the top level:$SETTINGS_TABLE"
+    [ "$SETTINGS_PLAIN" = yes ] || [ -z "$SETTINGS_MISSING" ] \
+        || echo "  not edited because the file has multi-line values; add at the top yourself:$SETTINGS_MISSING"
+}
+
 SOURCE_STATE="release archive or non-git source"
 if command -v git >/dev/null 2>&1 && git -C "$SRC_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     REVISION=$(git -C "$SRC_DIR" rev-parse HEAD)
@@ -257,7 +320,9 @@ canvas-api-guard installation plan (no changes made)
   audit log:    $LOG ($USER_NAME, 0600; containing confidential education records; kept)
   Codex rules:  $RULE_DEST ($USER_NAME, 0644) [$RULES_STATE]
   Codex skill:  $SKILL_DEST ($USER_NAME, 0644) [$SKILL_STATE]
+  Codex config: $CODEX_CONFIG ($USER_NAME; three top-level settings) [$SETTINGS_STATE]
 EOP
+    settings_warning
     if [ "$PROFILE" = level-2 ]; then
         cat <<EOP
   Specialized Functions executable: $LEVEL2_DEST (root:$ROOT_GROUP, 0555) [$LEVEL2_STATE]
@@ -268,6 +333,10 @@ EOP
     fi
     if [ "$ROOT_CHANGES" = no ] && [ "$USER_CHANGES" = no ]; then
         echo
+        if [ "$SETTINGS_ATTENTION" = yes ]; then
+            echo "Installed files are current; the Codex settings above need a person (exit status 5)."
+            exit 5
+        fi
         echo "Nothing to do: every installed file already matches this source (exit status 3)."
         exit 3
     fi
@@ -279,8 +348,8 @@ root-owned files. A sudo run rewrites the root-owned files and backs up any that
 The installer performs no Canvas request and does not read or store a token.
 EOP
     if [ "$ROOT_CHANGES" = no ]; then
-        echo "Only the Codex rules or skills in $USER_NAME's home differ: rerun the same command"
-        echo "without --plan and without sudo (exit status 4)."
+        echo "Only the Codex rules, skills, or settings in $USER_NAME's home differ: rerun the same"
+        echo "command without --plan and without sudo (exit status 4)."
         exit 4
     fi
     echo "Run the same command through sudo without --plan only after reviewing this plan."
@@ -295,6 +364,7 @@ if [ "$(id -u)" -ne 0 ] && [ "$ROOT_CHANGES" = yes ]; then
 fi
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+SETTINGS_ADDED=
 backup_if_different() {
     source_file=$1
     destination_file=$2
@@ -328,6 +398,9 @@ ensure_user_dir() {
 for destination in "$DEST" "$CONFIG" "$LOG" "$RULE_DEST" "$SKILL_DEST"; do
     refuse_link "$destination"
 done
+if [ -n "$SETTINGS_MISSING" ] && [ "$SETTINGS_PLAIN" = yes ]; then
+    refuse_link "$CODEX_CONFIG"                  # only when it is about to be edited
+fi
 if [ "$PROFILE" = level-2 ]; then
     refuse_link "$LEVEL2_DEST"
     refuse_link "$LEVEL2_SKILL_DEST"
@@ -374,6 +447,20 @@ if [ "$PROFILE" = level-2 ]; then
     backup_if_different "$LEVEL2_SKILL" "$LEVEL2_SKILL_DEST"
     install -o "$USER_NAME" -m 0644 "$LEVEL2_SKILL" "$LEVEL2_SKILL_DEST"
 fi
+if [ -n "$SETTINGS_MISSING" ] && [ "$SETTINGS_PLAIN" = yes ]; then
+    if [ -f "$CODEX_CONFIG" ]; then
+        cp -p "$CODEX_CONFIG" "$CODEX_CONFIG.bak-$STAMP"
+        echo "backed up $CODEX_CONFIG"
+    else
+        install -o "$USER_NAME" -m 0600 /dev/null "$CODEX_CONFIG"
+    fi
+    merged=$(awk -v add="$SETTINGS_ADD" 'BEGIN { done = 0 }
+        /^[[:space:]]*\[/ && !done { print add; print ""; done = 1 }
+        { print }
+        END { if (!done) { print ""; print add } }' "$CODEX_CONFIG")
+    printf '%s\n' "$merged" > "$CODEX_CONFIG"       # in place: keeps the file's owner and mode
+    SETTINGS_ADDED=$SETTINGS_MISSING
+fi
 
 INSTALLED_SHA=$(hash_file "$DEST")
 INSTALLED_RULES_SHA=$(hash_file "$RULE_DEST")
@@ -412,7 +499,9 @@ installed canvas-api-guard
   audit log:    $LOG
   Codex rules:  $RULE_DEST
   Codex skill:  $SKILL_DEST
+  Codex config: $CODEX_CONFIG (added:${SETTINGS_ADDED:- nothing})
 EON
+settings_warning
 if [ "$PROFILE" = level-2 ]; then
     cat <<EON
   Specialized Functions executable: $LEVEL2_DEST
@@ -425,7 +514,6 @@ No Canvas request was made and no token was read or stored.
 Next, as $USER_NAME, use a visible terminal to run:
   $DEST --set-token
 
-Then merge the reviewed settings in codex/config.toml into $CODEX_DIR/config.toml.
 Optional hardening (not run automatically; each needs an administrative change to undo):
   sudo $IMMUTABLE $DEST
   sudo $APPEND_ONLY $LOG

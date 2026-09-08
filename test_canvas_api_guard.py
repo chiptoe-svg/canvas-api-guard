@@ -1800,6 +1800,8 @@ class TestInstallerPlan(unittest.TestCase):
         # the plan exits 0 on any machine; each installed-file line still carries its state.
         states = re.findall(r"\) \[(same|differs|missing|link)\]$", proc.stdout, re.M)
         self.assertEqual(len(states), 4, proc.stdout)
+        # whatever the developer's own ~/.codex/config.toml holds, this line is never a file state
+        self.assertTrue(re.search(r"^  Codex config: .* \[settings [^\]]*\]$", proc.stdout, re.M), proc.stdout)
         self.assertNotIn("Nothing to do", proc.stdout)
 
     def redirected_installer(self):
@@ -1830,6 +1832,21 @@ class TestInstallerPlan(unittest.TestCase):
         os.chmod(copy, 0o755)
         return root, copy
 
+    def populate_installed(self, root):
+        """Every API Only artifact except the Codex config, byte-identical to the checkout."""
+        installed = {
+            "libexec/canvas_api_guard.py": os.path.join(self.ROOT, "canvas_api_guard.py"),
+            "codex/rules/canvas-api-guard.rules": os.path.join(self.ROOT, "codex", "canvas-api-guard.rules"),
+            "codex/skills/canvas-api-guard/SKILL.md": os.path.join(
+                self.ROOT, "codex", "skills", "canvas-api-guard", "SKILL.md"),
+        }
+        for relative, source in installed.items():
+            os.makedirs(os.path.dirname(os.path.join(root, relative)), exist_ok=True)
+            shutil.copyfile(source, os.path.join(root, relative))
+        os.makedirs(os.path.join(root, "etc"))
+        with open(os.path.join(root, "etc", "config.json"), "w") as handle:
+            handle.write('{"host":"%s","profile":"level-1"}\n' % HOST)
+
     def test_plan_exits_3_only_when_every_installed_file_matches(self):
         import subprocess
         root, copy = self.redirected_installer()
@@ -1843,18 +1860,10 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.count("[missing]"), 4)
 
-        installed = {
-            "libexec/canvas_api_guard.py": os.path.join(self.ROOT, "canvas_api_guard.py"),
-            "codex/rules/canvas-api-guard.rules": os.path.join(self.ROOT, "codex", "canvas-api-guard.rules"),
-            "codex/skills/canvas-api-guard/SKILL.md": os.path.join(
-                self.ROOT, "codex", "skills", "canvas-api-guard", "SKILL.md"),
-        }
-        for relative, source in installed.items():
-            os.makedirs(os.path.dirname(os.path.join(root, relative)), exist_ok=True)
-            shutil.copyfile(source, os.path.join(root, relative))
-        os.makedirs(os.path.join(root, "etc"))
-        with open(os.path.join(root, "etc", "config.json"), "w") as handle:
-            handle.write('{"host":"%s","profile":"level-1"}\n' % HOST)
+        self.populate_installed(root)
+        with open(os.path.join(root, "codex", "config.toml"), "w") as handle:
+            handle.write('sandbox_mode = "workspace-write"\napproval_policy = "on-request"\n'
+                         'approvals_reviewer = "user"\n')
         proc = plan()
         self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
         self.assertEqual(proc.stdout.count("[same]"), 4)
@@ -1892,6 +1901,123 @@ class TestInstallerPlan(unittest.TestCase):
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         self.assertEqual(proc.returncode, 1)
         self.assertIn("requires root ownership", proc.stderr)
+
+    def test_codex_settings_are_added_before_the_first_table_and_never_overwritten(self):
+        """A person, not a reviewer model, must answer every Canvas write prompt, so the
+        installer adds the three settings a config lacks -- as top-level keys, ahead of any
+        [table] -- and reports, but keeps, a value somebody chose differently."""
+        import subprocess
+        root, copy = self.redirected_installer()
+        self.populate_installed(root)
+        config = os.path.join(root, "codex", "config.toml")
+        with open(config, "w") as handle:
+            handle.write('model = "gpt-5"\napprovals_reviewer = "auto_review"  # chosen\n\n'
+                         '[profiles.work]\napproval_policy = "never"\n')
+        os.chmod(config, 0o600)
+
+        def run(*flags):
+            return subprocess.run([copy] + list(flags) + ["--allow-dirty", "--host", HOST],
+                                  cwd=self.ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  universal_newlines=True)
+
+        proc = run("--plan")
+        self.assertEqual(proc.returncode, 4, proc.stdout + proc.stderr)
+        self.assertIn("[settings missing: sandbox_mode approval_policy]", proc.stdout)
+        warning = proc.stdout.split("WARNING")[1]
+        self.assertIn("set differently and left alone: approvals_reviewer=auto_review", warning)
+        self.assertIn("also set inside a [table], whose value overrides the top level: approval_policy", warning)
+        self.assertNotIn("sandbox_mode", warning)
+
+        proc = run()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("backed up %s" % config, proc.stdout)
+        self.assertIn("added: sandbox_mode approval_policy", proc.stdout)
+        self.assertIn("WARNING", proc.stdout)
+        with open(config) as handle:
+            text = handle.read()
+        self.assertEqual(text, 'model = "gpt-5"\napprovals_reviewer = "auto_review"  # chosen\n\n'
+                               '# canvas-api-guard: Codex runs sandboxed and a person answers every prompt\n'
+                               'sandbox_mode = "workspace-write"\napproval_policy = "on-request"\n\n'
+                               '[profiles.work]\napproval_policy = "never"\n')
+        self.assertEqual(os.stat(config).st_mode & 0o777, 0o600)
+        self.assertTrue(any(name.startswith("config.toml.bak-") for name in os.listdir(os.path.dirname(config))))
+        proc = run("--plan")
+        self.assertEqual(proc.returncode, 5, proc.stdout + proc.stderr)
+        self.assertIn("[settings same]", proc.stdout.split("Codex config:")[1].split("\n")[0])
+        self.assertIn("need a person (exit status 5)", proc.stdout)
+
+    def settings_run(self, root, copy, *flags):
+        import subprocess
+        return subprocess.run([copy] + list(flags) + ["--allow-dirty", "--host", HOST], cwd=self.ROOT,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+
+    def test_a_codex_config_with_multi_line_values_is_never_edited(self):
+        """A '[' that opens a multi-line array is not a table header. Inserting there would
+        put the settings inside the value and Codex would refuse to start, so such a file is
+        reported and left byte-identical."""
+        tail = ('sandbox_mode = "workspace-write"\napproval_policy = "on-request"\n'
+                'approvals_reviewer = "user"\n')
+        for original, link in (('profiles = [\n  ["work"],\n]\n' + tail, False),
+                               ('notes = """\n[section]\nmore\n"""\n' + tail, False),
+                               ("notes = '''\n[section]\n'''\n" + tail, False),
+                               ('notes = """\n[section]\n"""\n', True)):
+            with self.subTest(original=original.split("\n")[0], link=link):
+                root, copy = self.redirected_installer()
+                self.populate_installed(root)
+                config = os.path.join(root, "codex", "config.toml")
+                if link:                              # a dotfile-managed config is a link
+                    os.symlink(os.path.join(root, "elsewhere.toml"), config)
+                with open(config, "w") as handle:
+                    handle.write(original)
+                proc = self.settings_run(root, copy, "--plan")
+                self.assertEqual(proc.returncode, 5, proc.stdout + proc.stderr)
+                self.assertIn("not edited: multi-line values]", proc.stdout)
+                self.assertIn("add at the top yourself:", proc.stdout)
+                proc = self.settings_run(root, copy)
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertIn("added: nothing", proc.stdout)
+                with open(config) as handle:
+                    self.assertEqual(handle.read(), original)
+                self.assertEqual([name for name in os.listdir(os.path.dirname(config)) if "bak" in name], [])
+
+    def test_single_quoted_codex_settings_count_as_the_same(self):
+        root, copy = self.redirected_installer()
+        self.populate_installed(root)
+        with open(os.path.join(root, "codex", "config.toml"), "w") as handle:
+            handle.write("sandbox_mode='workspace-write'\napproval_policy = 'on-request'  # note\n"
+                         'approvals_reviewer = "user"\r\nmodel = "complex"\n')
+        proc = self.settings_run(root, copy, "--plan")
+        self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
+        self.assertIn("[settings same]", proc.stdout)
+        self.assertNotIn("WARNING", proc.stdout)
+
+    def test_a_symlinked_codex_config_is_reported_as_a_link_and_refused(self):
+        root, copy = self.redirected_installer()
+        self.populate_installed(root)
+        config = os.path.join(root, "codex", "config.toml")
+        target = os.path.join(root, "elsewhere.toml")
+        os.symlink(target, config)
+        proc = self.settings_run(root, copy, "--plan")
+        self.assertEqual(proc.returncode, 4, proc.stdout + proc.stderr)
+        self.assertIn(") [settings link; missing:", proc.stdout.split("Codex config:")[1].split("\n")[0])
+        proc = self.settings_run(root, copy)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("refusing to replace a symbolic link", proc.stderr)
+        self.assertNotIn("backed up", proc.stdout)
+        # a dotfile-managed config that is already right is a link too, and needs nothing
+        with open(target, "w") as handle:
+            handle.write('sandbox_mode = "workspace-write"\napproval_policy = "on-request"\n'
+                         'approvals_reviewer = "user"\n')
+        proc = self.settings_run(root, copy, "--plan")
+        self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
+        self.assertIn("[settings same]", proc.stdout)
+        skill = os.path.join(root, "codex/skills/canvas-api-guard/SKILL.md")
+        with open(skill, "a") as handle:
+            handle.write("# older\n")
+        proc = self.settings_run(root, copy)          # a needed install is not blocked by the link
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("backed up %s" % skill, proc.stdout)
+        self.assertNotIn("symbolic link", proc.stderr)
 
     def extracted_file_state(self):
         """install.sh's SHA-256 state check, alone, cut out with sed like the ancestor check."""
@@ -2072,6 +2198,11 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertNotIn("upgrade", script.lower())
         self.assertIn('if [ "\\$plan_status" -eq 3 ]; then', script)
         self.assertIn('elif [ "\\$plan_status" -eq 4 ]; then', script)
+        self.assertIn('elif [ "\\$plan_status" -eq 5 ]; then', script)
+        self.assertIn('"codex_settings":"%s"', script)
+        self.assertIn("After an install, the same plan must find nothing left to change.", script)
+        self.assertLess(script.index('/usr/bin/sudo "$CHECKOUT/install.sh"'),
+                        script.index('./install.sh --plan --profile "$PROFILE" --host "$CANVAS_HOST" >/dev/null'))
         user_only = script.index('"$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST"')
         self.assertLess(script.index('-eq 4 ]'), user_only)
         self.assertLess(user_only, script.index('/usr/bin/sudo "$CHECKOUT/install.sh"'))

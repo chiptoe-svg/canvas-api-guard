@@ -76,9 +76,10 @@ First, inspect a no-change plan:
 
 The plan marks each installed file `[same]`, `[differs]`, `[missing]`, `[link]`, or `[perms]`
 by SHA-256 against the checkout, plus owner and mode for root-owned files. It exits with
-status 3 when nothing needs to change and 4 when only the Codex rules or skills in your home
-differ; in that case rerun the same command without `--plan` and without `sudo`, and only
-those files are replaced (a `[link]` is refused, not replaced). After reviewing the source
+status 3 when nothing needs to change, 5 when only the Codex settings need a person, and 4
+when only the Codex rules, skills, or settings in your home differ; in that case rerun the
+same command without `--plan` and without `sudo`, and only those files are replaced (a
+`[link]` is refused, not replaced). After reviewing the source
 revision, hashes, states, destinations, ownership, and modes:
 
 ```sh
@@ -99,8 +100,14 @@ The default API Only installation creates:
 | `~/.codex/rules/canvas-api-guard.rules` | Codex execution decisions |
 | `~/.codex/skills/canvas-api-guard/SKILL.md` | safe Canvas operating workflow |
 
-Merge the reviewed lines in `codex/config.toml` into the user's existing Codex config. Do
-not replace unrelated settings.
+The installer also makes sure the three top-level Codex settings in `codex/config.toml`
+(`sandbox_mode`, `approval_policy`, `approvals_reviewer`) are present in `~/.codex/config.toml`,
+adding any that are missing ahead of the first `[table]` and backing the file up first. It
+edits only a file of single-line values; one with multi-line strings or arrays is left
+byte-identical and the plan lists the lines to add. A setting already present with another
+value, or set again inside a `[table]`, is reported and left alone, and the plan exits with
+status 5 so the bootstrap can say so, because `approvals_reviewer = "user"` is what keeps a
+person, not a reviewer model, on every Canvas write prompt.
 
 The optional Specialized Functions profile additionally installs the root-owned operations
 executable and its separate Codex skill, as shown in its installation plan.
@@ -146,7 +153,7 @@ plan, which marks every installed file `[same]`, `[differs]`, `[missing]`, `[lin
 `[perms]` by comparing its SHA-256 with the downloaded commit, plus owner and mode for the
 root-owned files. When every file is `[same]` the plan exits
 with status 3 and the workflow skips the privileged step, so no administrator password is asked
-for. When only the Codex rules or skills differ, the plan exits with status 4 and the workflow
+for. When only the Codex rules, skills, or settings differ, the plan exits with status 4 and the workflow
 replaces those files as you, again without a password and without a second pause, since the
 plan is already on screen. Otherwise it pauses for Return and installs with `sudo`, which
 rewrites the root-owned files and backs up any file that differed. It then stores a token

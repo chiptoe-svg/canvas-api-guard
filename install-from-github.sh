@@ -25,7 +25,7 @@ Downloads exactly FULL_COMMIT_SHA, creates a private self-deleting .command laun
 opens it in macOS Terminal. The same command serves a new Mac, an older installation, and an
 up-to-date one: the reviewed plan compares every installed file's SHA-256 with the downloaded
 commit, and the administrator password is asked for only when a root-owned file needs to
-change; when only the Codex rules or skills differ they are replaced without one. The
+change; when only the Codex rules, skills, or settings differ they are replaced without one. The
 Canvas API token is asked for only when the Keychain holds none; an existing token is kept and
 never read or displayed. Neither secret is passed to this bootstrap or stored in the launcher.
 A private, non-secret completion-status JSON file is printed after Terminal launches so an
@@ -94,6 +94,7 @@ chmod 0600 "$STATUS_FILE"
 cat > "$LAUNCHER" <<EOF
 #!/bin/sh
 set -eu
+settings=ok
 
 finish() {
     status=\$?
@@ -104,13 +105,14 @@ finish() {
         state=failed
     fi
     status_temp="$STATUS_FILE.\$\$.tmp"
-    (umask 077; printf '{"state":"%s","commit":"%s","profile":"%s","exit_status":%s}\n' \
-        "\$state" "$SOURCE_REF" "$PROFILE" "\$status" > "\$status_temp" && mv -f "\$status_temp" "$STATUS_FILE") \
+    (umask 077; printf '{"state":"%s","commit":"%s","profile":"%s","exit_status":%s,"codex_settings":"%s"}\n' \
+        "\$state" "$SOURCE_REF" "$PROFILE" "\$status" "\$settings" > "\$status_temp" && mv -f "\$status_temp" "$STATUS_FILE") \
         || printf 'Warning: could not update completion-status file.\n' >&2
     rm -f "\$0"
     printf '\n'
     if [ "\$status" -eq 0 ]; then
         printf 'canvas-api-guard is installed at this commit with a stored token.\n'
+        [ "\$settings" = ok ] || printf 'The Codex settings WARNING above still needs your attention.\n'
     else
         printf 'The workflow stopped with exit status %s. Review the output above.\n' "\$status" >&2
     fi
@@ -136,8 +138,11 @@ plan_status=0
 ./install.sh --plan --profile "$PROFILE" --host "$CANVAS_HOST" || plan_status=\$?
 if [ "\$plan_status" -eq 3 ]; then
     printf '\nThis Mac already has this commit installed; no administrator password is needed.\n'
+elif [ "\$plan_status" -eq 5 ]; then
+    printf '\nThis Mac already has this commit installed. The Codex settings WARNING above needs your attention.\n'
+    settings=attention
 elif [ "\$plan_status" -eq 4 ]; then
-    printf '\nOnly the Codex rules or skills differ; updating them needs no administrator password.\n\n'
+    printf '\nOnly the Codex rules, skills, or settings differ; updating them needs no administrator password.\n\n'
     "$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST"
 elif [ "\$plan_status" -ne 0 ]; then
     exit "\$plan_status"
@@ -151,6 +156,17 @@ else
     printf '\nThe next prompt is for your Mac administrator password.\n'
     printf 'Nothing will appear while you type it.\n\n'
     /usr/bin/sudo "$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST"
+fi
+
+# After an install, the same plan must find nothing left to change.
+if [ "\$plan_status" -eq 0 ] || [ "\$plan_status" -eq 4 ]; then
+    after=0
+    ./install.sh --plan --profile "$PROFILE" --host "$CANVAS_HOST" >/dev/null || after=\$?
+    case "\$after" in
+        3) ;;
+        5) settings=attention ;;
+        *) printf '\nAfter installing, the plan still reports changes (exit status %s).\n' "\$after" >&2; exit 1 ;;
+    esac
 fi
 
 # Attribute lookup only (no -w): it reports whether a token item exists and never prints it.

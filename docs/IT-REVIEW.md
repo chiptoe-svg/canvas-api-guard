@@ -175,10 +175,13 @@ Those remain deployment controls.
   not group/other-writable; `[perms]` is matching content with wrong owner or mode;
 - an explicit statement that it performs no Canvas or credential operation.
 
-It exits 0 when a root-owned file would change, 4 when only the user-owned Codex rules or
-skills would change, and 3 when every file is already `[same]`. The macOS bootstrap uses
-those statuses to skip the privileged step: on 4 it reruns the installer as the user, which
-replaces only the user-owned files and refuses if a root-owned file differs.
+It exits 0 when a root-owned file would change, 4 when only the user-owned Codex rules,
+skills, or settings would change, 3 when every file is already `[same]`, and 5 when the files
+are current but the Codex settings need a person (see below). The macOS bootstrap uses those
+statuses to skip the privileged step: on 4 it reruns the installer as the user, which replaces
+only the user-owned files and refuses if a root-owned file differs. After any install it runs
+the plan again and fails unless it reports 3 or 5; a 5 is carried into the completion-status
+file as `"codex_settings":"attention"`.
 
 Actual installation:
 
@@ -187,6 +190,12 @@ Actual installation:
 - refuses a tracked, modified Git checkout unless `--allow-dirty` is explicit;
 - installs the executable and host configuration as root-owned;
 - backs up differing executable, config, Codex rule, and skill files;
+- adds any of the three top-level Codex settings in `codex/config.toml` that
+  `~/.codex/config.toml` lacks, ahead of the first `[table]`, after backing the file up. Only
+  a file of single-line values is edited: one with a triple-quoted string or a multi-line
+  array is reported and left byte-identical, with the lines to add. A setting present with
+  another value, or set again inside a `[table]` (a profile's value overrides the top level),
+  is reported in the plan and the report and never changed;
 - refuses symbolic-link destinations and preserves existing Codex directory modes;
 - verifies the installed guard, rule, and skill hashes against the reviewed sources;
 - creates but never populates the credential store;

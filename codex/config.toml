@@ -1,5 +1,5 @@
-# canvas-api-guard: recommended Codex settings. Merge these three lines into
-# ~/.codex/config.toml (keep everything else you already have there).
+# canvas-api-guard: the three Codex settings the guard relies on. install.sh adds any of
+# them that ~/.codex/config.toml lacks and reports, but keeps, one set differently.
 
 # Commands run in a sandbox with NO network. The shipped rule allows only the absolute,
 # root-owned guard path to leave it for Canvas reads; writes always prompt a person.
