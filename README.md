@@ -6,7 +6,7 @@ putting a Canvas token in `.env`, a repository, a command, or agent-visible outp
 The review surface is deliberately small: one Python 3.9+ standard-library program
 (`canvas_api_guard.py`, about 1,100 lines), one POSIX system installer, one macOS bootstrap,
 one Codex rules file, two Codex skills, the optional Specialized Functions program in
-`level2/`, and two stdlib test suites - 155 offline tests, all run by `python3 -m unittest`.
+`level2/`, and two stdlib test suites - 159 offline tests, all run by `python3 -m unittest`.
 
 ## The two-profile design
 

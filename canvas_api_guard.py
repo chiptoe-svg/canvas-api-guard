@@ -1159,7 +1159,8 @@ def main(argv=None):
     except VerificationFailure as err:           # the write was sent and could not be proved
         sys.stderr.write("canvas-api-guard: %s\n" % err)
         return 3
-    except (GuardError, ValueError) as err:      # ValueError: an unparseable -d body
+    except (GuardError, OSError, ValueError) as err:   # ValueError: an unparseable -d body;
+                                                      # OSError: the filesystem refused
         sys.stderr.write("canvas-api-guard: %s\n" % err)
         return 2
 

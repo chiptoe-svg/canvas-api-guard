@@ -21,7 +21,7 @@ those, with the Canvas documentation, and does them as well.
 | `prepare-submission-review` | resolves one submission, deduplicates files across attempts, downloads each through API Only, reports provenance and SHA-256 |
 | `download-assignment-submissions` | the same across one assignment, up to 500 files, with file/student/attempt provenance and no submission text |
 | `create-rubric` | converts a flat criteria list into Canvas's indexed shape and reads every criterion back |
-| `attach-rubric` | resolves the rubric and the assignment before associating them |
+| `attach-rubric` | reads the rubric and the assignment before associating them; its definition file accepts only the optional `purpose` (default `grading`, or `bookmark`) and `use_for_grading` (default true) |
 | `grade-with-rubric` | reads the live rubric, rejects criterion IDs absent from it, totals the points, writes grade and assessment as one verified write |
 | `bulk-grade-with-rubric` | up to 50 students, duplicates refused, each an individually audited and read-back write |
 

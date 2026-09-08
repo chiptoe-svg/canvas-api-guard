@@ -195,11 +195,11 @@ def create_rubric(args):
         actual = created.get("data") or []
         expected = list(body["rubric"]["criteria"].values())
         if len(actual) != len(expected):
-            raise OperationError("WRITE STATUS UNCERTAIN: rubric criterion count did not read back")
+            raise GuardUncertain("WRITE STATUS UNCERTAIN: rubric criterion count did not read back")
         for expected_row, actual_row in zip(expected, actual):
             if (actual_row.get("description") != expected_row["description"]
                     or number(actual_row.get("points")) != expected_row["points"]):
-                raise OperationError("WRITE STATUS UNCERTAIN: rubric criterion did not read back")
+                raise GuardUncertain("WRITE STATUS UNCERTAIN: rubric criterion did not read back")
 
 
 def attach_rubric(args):
@@ -359,12 +359,21 @@ def bulk_grade_with_rubric(args):
     if len(definition["grades"]) > 50:
         raise OperationError("bulk grading is limited to 50 students per reviewed batch")
     seen, results = set(), []
-    for grade in definition["grades"]:
-        student_id = str(grade.get("student_id")) if isinstance(grade, dict) else ""
-        if student_id in seen:
-            raise OperationError("bulk grading contains duplicate student ID %s" % student_id)
-        seen.add(student_id)
-        results.append(grade_one(args, grade))
+    try:
+        for grade in definition["grades"]:
+            student_id = str(grade.get("student_id")) if isinstance(grade, dict) else ""
+            if student_id in seen:
+                raise OperationError("bulk grading contains duplicate student ID %s" % student_id)
+            seen.add(student_id)
+            results.append(grade_one(args, grade))
+    except GuardUncertain:
+        raise
+    except OperationError as err:
+        if not results or operation_phase(args) == "dry-run":
+            raise                     # nothing was written, so this is an ordinary refusal
+        raise GuardUncertain("bulk grading stopped after %d of %d students; the grades already "
+                             "written stand and are not retried: %s"
+                             % (len(results), len(definition["grades"]), err))
     print(json.dumps({"operation": "bulk-grade-with-rubric", "phase": operation_phase(args),
                       "results": results}, indent=2, sort_keys=True))
 

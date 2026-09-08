@@ -182,6 +182,57 @@ class TestLevel2Operations(unittest.TestCase):
                      "def iso_time", "def page_body", "def announcement_body"):
             self.assertNotIn(gone, source, "%s should have moved to Level 1" % gone)
 
+    def test_a_rubric_whose_criteria_do_not_read_back_is_uncertain_not_a_refusal(self):
+        """The rubric exists in Canvas by then; only a person can resolve what it contains."""
+        args = Args()
+        args.definition, args.dry_run, args.yes = "unused", False, True
+        definition = {"title": "Lab", "criteria": [
+            {"description": "Craft", "points": 10,
+             "ratings": [{"description": "Complete", "points": 10}]}]}
+        with mock.patch.object(operations, "definition_file", return_value=definition), \
+                mock.patch.object(operations, "guard_get",
+                                  side_effect=[{"object": {"id": 12}},
+                                               {"object": {"id": 7, "data": []}}]), \
+                mock.patch.object(operations, "guard_write",
+                                  return_value={"object": {"id": 7}}), \
+                mock.patch("sys.stdout", io.StringIO()):
+            with self.assertRaises(operations.GuardUncertain) as caught:
+                operations.create_rubric(args)
+        self.assertIn("WRITE STATUS UNCERTAIN", str(caught.exception))
+
+    def test_a_bulk_batch_that_stops_after_a_write_is_uncertain(self):
+        args = Args()
+        args.assignment_id, args.definition = "22", "unused"
+        args.dry_run, args.yes = False, True
+        graded = []
+
+        def grade(_, value):
+            if graded:
+                raise operations.OperationError("the live rubric changed mid-batch")
+            graded.append(value)
+            return {"student_id": "1"}
+
+        with mock.patch.object(operations, "definition_file",
+                               return_value={"grades": [{"student_id": 1}, {"student_id": 2}]}), \
+                mock.patch.object(operations, "grade_one", side_effect=grade), \
+                mock.patch("sys.stdout", io.StringIO()):
+            with self.assertRaises(operations.GuardUncertain) as caught:
+                operations.bulk_grade_with_rubric(args)
+        self.assertIn("1 of 2", str(caught.exception))
+
+    def test_a_bulk_batch_that_stops_before_any_write_is_an_ordinary_refusal(self):
+        args = Args()
+        args.assignment_id, args.definition = "22", "unused"
+        args.dry_run, args.yes = False, True
+        with mock.patch.object(operations, "definition_file",
+                               return_value={"grades": [{"student_id": 1}, {"student_id": 2}]}), \
+                mock.patch.object(operations, "grade_one",
+                                  side_effect=operations.OperationError("no live rubric")), \
+                mock.patch("sys.stdout", io.StringIO()):
+            with self.assertRaises(operations.OperationError) as caught:
+                operations.bulk_grade_with_rubric(args)
+        self.assertNotIsInstance(caught.exception, operations.GuardUncertain)
+
     def test_a_missing_guard_prints_one_line_and_never_a_traceback(self):
         with mock.patch.object(operations.subprocess, "run",
                                side_effect=FileNotFoundError(2, "No such file or directory")), \

@@ -942,6 +942,21 @@ class TestAttachmentDownload(GuardTestCase):
         self.assertIn(refusal, str(caught.exception))
         self.assertNotIn("https://", str(caught.exception))
 
+    def test_an_oserror_making_the_review_directory_is_one_line_not_a_traceback(self):
+        missing = os.path.join(self.state_dir, "submission-reviews")
+        with mock.patch.object(guard, "REVIEW_DIR", missing), \
+                mock.patch.object(guard.os, "makedirs",
+                                  side_effect=PermissionError(13, "Permission denied")), \
+                mock.patch("urllib.request.urlopen") as urlopen:
+            code, output = self.run_main(["download-submission-file", "--course-id", "7",
+                                          "--file-id", "9", "--submission-id", "12",
+                                          "--suffix", ".pdf"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+        self.assertEqual(output, "")
+        self.assertEqual(len(self.last_stderr.strip().splitlines()), 1)
+        self.assertIn("canvas-api-guard:", self.last_stderr)
+
     def test_every_download_attempt_closes_its_response(self):
         cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST})()
         file_url = "https://%s/files/9/download?verifier=not-for-output" % HOST

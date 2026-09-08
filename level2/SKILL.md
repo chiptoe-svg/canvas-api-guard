@@ -52,7 +52,9 @@ rubric, then use `grade-with-rubric --dry-run`.
 
 - `create-rubric` turns a flat criteria list into Canvas’s indexed rubric shape and reads every
   criterion back after the create - which one API call cannot prove.
-- `attach-rubric` resolves both the rubric and the assignment before associating them.
+- `attach-rubric` reads both the rubric and the assignment from Canvas before it posts the
+  association. Its definition file accepts only two optional fields: `purpose` (`grading` by
+  default, or `bookmark`) and `use_for_grading` (a boolean, true by default); `{}` is valid.
 - `grade-with-rubric` reads the assignment’s live rubric, refuses any criterion ID that is not
   in it, totals the points, and writes the grade and the assessment as one verified write.
 - `bulk-grade-with-rubric` does that for up to 50 students, refusing duplicates, as
