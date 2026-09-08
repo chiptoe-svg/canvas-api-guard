@@ -16,7 +16,7 @@ import subprocess
 import sys
 
 GUARD = "/usr/local/libexec/canvas_api_guard.py"
-USER_AGENT = "canvas-api-operations/0.11.0"
+USER_AGENT = "canvas-api-operations/0.12.0"
 MAX_REVIEW_ATTACHMENTS = 500
 
 

@@ -43,7 +43,7 @@ import argparse, datetime, getpass, hashlib, json, os, pty, pwd, re, stat, subpr
 import urllib.error, urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
-USER_AGENT = "canvas-api-guard/1.12.0"
+USER_AGENT = "canvas-api-guard/1.13.0"
 KEYCHAIN_SERVICE = "canvas-api-guard"
 SECURITY_BIN = "/usr/bin/security"
 SECRET_TOOL_PATHS = ("/usr/bin/secret-tool", "/usr/local/bin/secret-tool")
@@ -290,8 +290,9 @@ class CredentialFreeRedirects(urllib.request.HTTPRedirectHandler):
         parsed = urllib.parse.urlsplit(newurl)
         if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
             raise GuardError("refusing a non-HTTPS or malformed attachment redirect")
-        clean_headers = dict((name, value) for name, value in req.header_items()
-                             if name.lower() not in ("authorization", "cookie", "proxy-authorization"))
+        clean_headers = dict((name, value) for name, value in req.headers.items()
+                             if name.lower() not in ("authorization", "cookie", "host",
+                                                     "proxy-authorization"))
         return urllib.request.Request(newurl, headers=clean_headers, method="GET")
 
 urllib.request.install_opener(urllib.request.build_opener(RefuseRedirects))
@@ -311,8 +312,8 @@ class PinnedAttachmentRedirects(urllib.request.HTTPRedirectHandler):
         # Keep only status + hostname: never retain the access-bearing URL, its query, or body.
         self.trace.append({"status": int(code), "host": safe_url_host(newurl),
                            "scope": "pinned" if parsed.netloc == self.host else "external"})
-        forwarded = dict((name, value) for name, value in req.header_items()
-                         if name.lower() != "proxy-authorization")
+        forwarded = dict((name, value) for name, value in req.headers.items()
+                         if name.lower() not in ("host", "proxy-authorization"))
         if parsed.netloc != self.host:
             forwarded = dict((name, value) for name, value in forwarded.items()
                              if name.lower() not in ("authorization", "cookie"))

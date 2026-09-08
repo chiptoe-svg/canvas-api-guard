@@ -546,6 +546,14 @@ class TestEvidence(GuardTestCase):
 
 
 class TestRedirectsAreRefused(unittest.TestCase):
+    @staticmethod
+    def urllib_prepared(request):
+        """Run the stdlib step that adds Host as an unredirected header before sending."""
+        opener = urllib.request.build_opener()
+        https = next(handler for handler in opener.handlers
+                     if isinstance(handler, urllib.request.HTTPSHandler))
+        return https.do_request_(request)
+
     """urllib forwards the Authorization header across a redirect, to another host or an
     http:// downgrade included. Every redirect is refused instead, so the URL that carries
     the token is always the one canvas_url() built."""
@@ -585,6 +593,13 @@ class TestRedirectsAreRefused(unittest.TestCase):
             guard.CredentialFreeRedirects().redirect_request(
                 request, None, 302, "Found", {}, "http://cdn.example.edu/file")
 
+    def test_credential_free_redirect_does_not_forward_urllib_host(self):
+        request = self.urllib_prepared(urllib.request.Request("https://%s/signed" % HOST))
+        self.assertIn("host", {name.lower() for name, _ in request.header_items()})
+        redirected = guard.CredentialFreeRedirects().redirect_request(
+            request, None, 302, "Found", {}, "https://cdn.example.edu/file")
+        self.assertNotIn("host", {name.lower() for name, _ in redirected.header_items()})
+
     def test_pinned_attachment_redirect_keeps_token_only_on_canvas_host(self):
         request = urllib.request.Request("https://%s/files/9/download" % HOST, headers={
             "Authorization": "Bearer pinned-only", "User-Agent": "canvas-api-guard-test"})
@@ -594,6 +609,27 @@ class TestRedirectsAreRefused(unittest.TestCase):
         external = handler.redirect_request(request, None, 302, "Found", {}, "https://cdn.example.edu/file")
         self.assertIn("authorization", {key.lower() for key, _ in same_host.header_items()})
         self.assertNotIn("authorization", {key.lower() for key, _ in external.header_items()})
+
+    def test_attachment_redirect_does_not_forward_urllib_host_on_any_hop(self):
+        request = self.urllib_prepared(
+            urllib.request.Request("https://%s/files/9/download" % HOST))
+        handler = guard.PinnedAttachmentRedirects(HOST, [])
+        for destination in ("https://%s/files/9/again" % HOST,
+                            "https://cdn.example.edu/file"):
+            with self.subTest(destination=destination):
+                redirected = handler.redirect_request(
+                    request, None, 302, "Found", {}, destination)
+                self.assertNotIn("host", {name.lower() for name, _ in redirected.header_items()})
+
+    def test_caller_supplied_host_is_dropped_by_both_attachment_handlers(self):
+        request = urllib.request.Request("https://%s/files/9/download" % HOST,
+                                         headers={"Host": "stale.example.edu"})
+        handlers = (guard.CredentialFreeRedirects(), guard.PinnedAttachmentRedirects(HOST, []))
+        for handler in handlers:
+            with self.subTest(handler=type(handler).__name__):
+                redirected = handler.redirect_request(
+                    request, None, 302, "Found", {}, "https://cdn.example.edu/file")
+                self.assertNotIn("host", {name.lower() for name, _ in redirected.header_items()})
 
     def test_attachment_redirect_trace_has_only_status_hostname_and_scope(self):
         trace = []
