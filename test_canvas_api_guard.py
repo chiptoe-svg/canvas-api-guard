@@ -356,7 +356,7 @@ class TestLogBeforeRequest(GuardTestCase):
         with mock.patch("urllib.request.urlopen", side_effect=inspect_the_log):
             code, _ = self.run_main(["put", "courses/1/assignments/2/submissions/3", "--yes",
                                      "-d", '{"submission": {"posted_grade": 95}}'])
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 3)          # a transport failure on a write may have applied it
         self.assertEqual([line["event"] for line in seen["lines"]], ["read", "request"])
         self.assertEqual(seen["lines"][-1]["verb"], "PUT")
         self.assertEqual(seen["lines"][-1]["path"], "/api/v1/courses/1/assignments/2/submissions/3")
@@ -368,11 +368,12 @@ class TestLogBeforeRequest(GuardTestCase):
         with mock.patch("urllib.request.urlopen", side_effect=responses):
             code, _ = self.run_main(["put", "courses/1/assignments/2/submissions/3", "--yes",
                                      "-d", '{"submission": {"posted_grade": 95}}'])
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 3)
         events = [(line["event"], line.get("verb")) for line in self.log_lines()]
-        self.assertEqual(events, [("read", "GET"), ("request", "PUT"), ("response", "PUT")])
-        self.assertFalse(self.log_lines()[-1]["ok"])
-        self.assertEqual(self.log_lines()[-1]["error"], "OSError")
+        self.assertEqual(events, [("read", "GET"), ("request", "PUT"), ("response", "PUT"),
+                                  ("evidence", "PUT")])
+        self.assertFalse(self.log_lines()[2]["ok"])
+        self.assertEqual(self.log_lines()[2]["error"], "OSError")
 
     def test_a_read_is_one_line_written_after_the_response(self):
         with mock.patch("urllib.request.urlopen") as urlopen:
@@ -620,6 +621,15 @@ class TestEvidence(GuardTestCase):
         urlopen.assert_not_called()
         self.assertNotIn("about to POST", output)
 
+    def test_a_put_body_that_is_not_a_json_object_is_refused_before_anything_is_sent(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, output = self.run_main(
+                ["put", "courses/1/assignments/2", "--yes", "-d", '[1, 2]'])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+        self.assertNotIn("about to PUT", output)
+        self.assertIn("JSON object", self.last_stderr)
+
     def test_a_single_item_list_is_not_reported_as_1_items(self):
         with mock.patch("urllib.request.urlopen") as urlopen:
             urlopen.return_value = FakeResponse(payload=[{"id": 1}])
@@ -688,6 +698,69 @@ class TestEvidence(GuardTestCase):
         self.assertEqual(code, 3)
         self.assertIn("WRITE STATUS UNCERTAIN", output)
         self.assertNotIn("404 gone", output)
+
+
+class TestAFailedWriteRequest(GuardTestCase):
+    """Canvas answering 4xx means it did not apply the write; anything else - a timeout, a
+    transport error, a 5xx - may have applied it, and the outcome is uncertain."""
+
+    def put(self, failure):
+        responses = [FakeResponse(payload={"id": 3, "grade": "60", "score": 60.0,
+                                           "entered_score": 60.0}), failure]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            return self.run_main(["put", "courses/1/assignments/2/submissions/3", "--yes",
+                                  "-d", '{"submission": {"posted_grade": 95}}'])
+
+    def evidence_lines(self):
+        return [line for line in self.log_lines() if line["event"] == "evidence"]
+
+    def test_a_timed_out_write_is_uncertain_with_an_evidence_line(self):
+        code, output = self.put(TimeoutError("timed out"))
+        self.assertEqual(code, 3)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+        self.assertEqual(len(self.evidence_lines()), 1)
+
+    def test_a_5xx_write_is_uncertain(self):
+        error = urllib.error.HTTPError("https://" + HOST, 500, "Server Error", {}, None)
+        code, output = self.put(error)
+        error.close()
+        self.assertEqual(code, 3)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+        self.assertEqual(len(self.evidence_lines()), 1)
+
+    def test_a_4xx_write_stays_a_plain_failure_with_no_evidence_line(self):
+        error = urllib.error.HTTPError("https://" + HOST, 403, "Forbidden", {}, None)
+        code, output = self.put(error)
+        error.close()
+        self.assertEqual(code, 2)
+        self.assertNotIn("WRITE STATUS UNCERTAIN", output)
+        self.assertEqual(self.evidence_lines(), [])
+        self.assertIn("403", self.last_stderr)
+
+
+class TestVerifyFieldsAreValidatedFirst(GuardTestCase):
+    def test_a_verify_field_absent_from_the_body_is_refused_before_anything_is_sent(self):
+        def no_network(*args, **kwargs):
+            raise AssertionError("a request was made before the refusal")
+
+        with mock.patch("urllib.request.urlopen", side_effect=no_network) as urlopen:
+            code, _ = self.run_main(
+                ["put", "courses/1/assignments/2/submissions/3", "--yes",
+                 "--verify-fields", "grade", "-d", '{"submission": {"posted_grade": 95}}'])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+        self.assertIn("grade", self.last_stderr)
+
+    def test_a_verify_field_present_in_the_body_is_accepted(self):
+        graded = {"id": 3, "grade": "95", "entered_grade": "95", "score": 95.0,
+                  "entered_score": 95.0}
+        with mock.patch("urllib.request.urlopen",
+                        side_effect=[FakeResponse(payload=graded)] * 3):
+            code, output = self.run_main(
+                ["put", "courses/1/assignments/2/submissions/3", "--yes",
+                 "--verify-fields", "posted_grade", "-d", '{"submission": {"posted_grade": 95}}'])
+        self.assertEqual(code, 0)
+        self.assertIn("verification:  passed", output)
 
 
 class TestRedirectsAreRefused(unittest.TestCase):
@@ -856,6 +929,18 @@ class TestAttachmentDownload(GuardTestCase):
         logged = [line for line in self.log_lines() if line["event"] == "download-response"]
         self.assertEqual(logged[1]["next_route"], "submission-public-url")
         self.assertEqual(logged[-1]["download_route"], "submission-public-url")
+
+    def test_a_download_failure_names_the_reason_and_never_a_signed_url(self):
+        cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST})()
+        refusal = "Canvas did not return a usable HTTPS submission download URL"
+        with mock.patch.object(guard, "send_request", side_effect=guard.GuardError(refusal)), \
+                mock.patch.object(guard, "secure_review_dir", return_value=self.state_dir), \
+                mock.patch("sys.stdout", io.StringIO()):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.do_download_submission_file(cfg, "7", "9", "12", ".pdf")
+        self.assertIn("download failed", str(caught.exception))
+        self.assertIn(refusal, str(caught.exception))
+        self.assertNotIn("https://", str(caught.exception))
 
     def test_every_download_attempt_closes_its_response(self):
         cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST})()
@@ -1078,6 +1163,13 @@ class TestProvenance(GuardTestCase):
             with self.assertRaises(guard.GuardError) as caught:
                 guard.check_provenance()
         self.assertIn(real, str(caught.exception))
+
+    def test_a_guard_that_cannot_see_its_own_file_refuses_instead_of_raising_NameError(self):
+        saved = guard.__dict__.pop("__file__")
+        self.addCleanup(guard.__dict__.__setitem__, "__file__", saved)
+        with self.assertRaises(guard.GuardError) as caught:
+            guard.installed_guard_file()
+        self.assertIn("__file__", str(caught.exception))
 
     def test_the_default_config_path_is_held_to_the_same_rule(self):
         """CONFIG_PATH pinned at the installed path, with os.lstat (read_config's own check)

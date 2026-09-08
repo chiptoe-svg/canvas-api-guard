@@ -6,7 +6,7 @@ putting a Canvas token in `.env`, a repository, a command, or agent-visible outp
 The review surface is deliberately small: one Python 3.9+ standard-library program
 (`canvas_api_guard.py`, about 1,100 lines), one POSIX system installer, one macOS bootstrap,
 one Codex rules file, two Codex skills, the optional Specialized Functions program in
-`level2/`, and two stdlib test suites - 147 offline tests, all run by `python3 -m unittest`.
+`level2/`, and two stdlib test suites - 155 offline tests, all run by `python3 -m unittest`.
 
 ## The two-profile design
 
@@ -263,17 +263,18 @@ For `PUT` and `PATCH`, success requires every requested field to match the read-
 `POST`, success requires locating the created object and matching every requested field on
 the read-back. For `DELETE`, success requires a definite HTTP 404 on the read-back.
 
-Exit codes: `0` the command completed, and any write verified; `2` refused or failed before
-anything was sent (bad input, an unconfirmed write, a validation failure); `3` a write was sent
-but its outcome could not be verified. If Canvas accepted a write but verification fails, the
-command exits `3` and prints:
+Exit codes: `0` the command completed, and any write verified; `2` refused or failed with
+nothing applied (bad input, an unconfirmed write, a validation failure, or a 4xx on the write
+itself, which is Canvas saying it did not apply the change); `3` a write may have been applied
+and its outcome could not be verified - a failed read-back, or a timeout, transport failure or
+5xx on the write itself. In that case the command exits `3` and prints:
 
 ```text
 WRITE STATUS UNCERTAIN
 ```
 
 This means do not retry. Inspect Canvas and the audit record first. A transport failure,
-401, 403, 5xx response, timeout, or still-present object is never interpreted as deletion.
+4xx or 5xx response, timeout, or still-present object is never interpreted as deletion.
 
 When Canvas supplies a submission `user` object, the evidence and audit record include the
 student name and Canvas user ID. Include `include[]=user` on submission grade paths when

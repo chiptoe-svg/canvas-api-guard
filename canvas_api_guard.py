@@ -5,7 +5,8 @@
 # (or an agent acting for them) exactly the access their Canvas token already grants - it adds
 # NO capability - plus three things: a required confirmation before any write, with a record of
 # WHICH KIND it was (a human at a TTY, or an explicit --yes); before/after evidence read back
-# from Canvas; and an append-only JSON-lines log written BEFORE the request is sent.
+# from Canvas; and an append-only JSON-lines log, a write recorded BEFORE it is sent and a
+# read after it returns.
 #
 # THREAT MODEL - WHAT IT DOES NOT PROTECT AGAINST.
 #   * It does not restrict what the token can reach. Scope is set in Canvas, not here.
@@ -120,7 +121,10 @@ def trusted_path(path, label):
 
 def installed_guard_file():
     """The real path of the code that is running: __file__, never argv, which a wrapper controls."""
-    return os.path.realpath(__file__)
+    running = globals().get("__file__")
+    if not running:
+        raise GuardError("the guard cannot prove its own path: __file__ is not set")
+    return os.path.realpath(running)
 
 def check_provenance():
     """Prove the running guard is the installed, root-owned one before any credential use."""
@@ -619,6 +623,19 @@ def uncertain(cfg, evidence, reason):
     emit(cfg, evidence)
     raise VerificationFailure(evidence["note"])
 
+def send_write(cfg, verb, path, body=None):
+    """Send the confirmed write. A 4xx is Canvas answering that it did not apply the change,
+    which stays an ordinary refusal; a timeout, a transport failure or a 5xx may have applied
+    it, so the outcome is uncertain and is recorded as evidence rather than reported as
+    "nothing was sent"."""
+    try:
+        return send_request(cfg, verb, path, body)
+    except RequestFailure as err:
+        if isinstance(err.status, int) and 400 <= err.status < 500:
+            raise
+        uncertain(cfg, write_evidence(cfg, verb, path, None, body=body),
+                  "the write itself failed and may or may not have been applied: %s" % err)
+
 def next_link(headers, host):
     """Canvas paginates lists with a Link header. Return the rel="next" URL's path and query,
     pinned to the host, or None. Raises GuardError if that link leaves the pinned host.
@@ -690,6 +707,21 @@ def parse_fields(raw):
     if not wanted:
         raise GuardError("--fields was empty; name at least one field, for example --fields id")
     return wanted
+
+def parse_verify_fields(raw, body):
+    """Validate --verify-fields once, before any request, exactly as --fields is: a name that
+    is not a leaf of the -d body would otherwise verify nothing until after the write."""
+    if raw is None:
+        return None
+    wanted = [name.strip() for name in raw.split(",") if name.strip()]
+    if not wanted:
+        raise GuardError("verification field list is empty")
+    leaves = {dotted.split(".")[-1] for dotted in flatten_leaves(body or {})}
+    missing = [name for name in wanted if name not in leaves]
+    if missing:
+        raise GuardError("--verify-fields names field(s) the request body does not contain: %s"
+                         % ", ".join(missing))
+    return raw
 
 def project(data, fields):
     """Project a Canvas list or object to the parsed dot-paths, in the order asked for.
@@ -841,8 +873,11 @@ def do_download_submission_file(cfg, course_id, file_id, submission_id, suffix):
             status = (" HTTP %s" % failure["http_status"]) if failure["http_status"] else ""
             stage = " after %s redirect(s): %s" % (len(redirect_trace),
                                                      redirect_stage(redirect_trace))
-            raise GuardError("submission attachment download failed (%s%s%s)" %
-                             (failure["error"], status, stage))
+            # This guard's own refusals say why in words and never carry a URL; a network
+            # exception's text can carry the signed one, so only ours is repeated.
+            reason = (": %s" % err) if isinstance(err, GuardError) else ""
+            raise GuardError("submission attachment download failed (%s%s%s)%s" %
+                             (failure["error"], status, stage, reason))
         finally:
             if raw is not None:
                 raw.close()
@@ -857,8 +892,8 @@ def do_download_submission_file(cfg, course_id, file_id, submission_id, suffix):
 
 def do_update(cfg, method, path, body):
     """PUT/PATCH: read, show the change, confirm, write, read back, print before and after."""
-    if body is None:
-        raise GuardError("%s needs a JSON body: -d '{\"...\": ...}'" % method)
+    if not isinstance(body, dict):
+        raise GuardError("%s needs a JSON object body: -d '{\"...\": ...}'" % method)
     before = send_request(cfg, "GET", path)
     before_obj = before["data"] if before else None
     lines = ["about to %s %s" % (method, canvas_url(cfg.host, path)), "requested changes:"]
@@ -866,7 +901,7 @@ def do_update(cfg, method, path, body):
         lines.append("  %-22s %s -> %s" % (row["field"], json.dumps(row["before"], default=str),
                                            json.dumps(row["requested"], default=str)))
     cfg.confirmation = confirm(cfg, lines)
-    resp = send_request(cfg, method, path, body)
+    resp = send_write(cfg, method, path, body)
     evidence = write_evidence(cfg, method, path, resp, body=body)
     if cfg.dry_run:
         evidence.update({"changes": compare_fields(body, before_obj, None),
@@ -935,7 +970,7 @@ def do_post(cfg, path, body):
         "about to POST %s" % canvas_url(cfg.host, path), "request body:",
         "  " + json.dumps(body, sort_keys=True),
         "nothing exists before a POST; the created object is read back afterwards"])
-    resp = send_request(cfg, "POST", path, body)
+    resp = send_write(cfg, "POST", path, body)
     evidence = write_evidence(cfg, "POST", path, resp, body=body)
     if cfg.dry_run:
         evidence.update({"verification": "not-run", "note": "dry run: nothing was sent"})
@@ -976,7 +1011,7 @@ def do_delete(cfg, path, body):
         "about to DELETE %s" % canvas_url(cfg.host, path),
         "this object is about to be destroyed:",
         "  " + json.dumps(before_obj, sort_keys=True, default=str)])
-    resp = send_request(cfg, "DELETE", path, body)
+    resp = send_write(cfg, "DELETE", path, body)
     evidence = write_evidence(cfg, "DELETE", path, resp, object=before_obj,
                               target=target_identity(before["data"] if before else None))
     if cfg.dry_run:
@@ -1003,9 +1038,9 @@ def default_output():
     a Specialized Function - gets complete JSON without having to remember a flag."""
     return "text" if sys.stdout.isatty() else "json"
 
-def make_config(args):
-    """What send_request needs. confirmation is set by confirm() before any write. --fields is
-    parsed and validated here, before any request is made."""
+def make_config(args, body=None):
+    """What send_request needs. confirmation is set by confirm() before any write. --fields
+    and --verify-fields are parsed and validated here, before any request is made."""
     configured = read_config()
     return argparse.Namespace(host=configured["host"], profile=configured["profile"],
                               out=args.output or default_output(), log_path=DEFAULT_LOG,
@@ -1014,7 +1049,7 @@ def make_config(args):
                               post_readback=args.post_readback,
                               post_readback_field=args.post_readback_field,
                               post_verify_field=args.post_verify_field,
-                              verify_fields=args.verify_fields)
+                              verify_fields=parse_verify_fields(args.verify_fields, body))
 
 def read_config():
     """Read the fixed config after checking that untrusted users cannot modify it."""
@@ -1116,7 +1151,7 @@ def main(argv=None):
             do_download_submission_file(cfg, args.course_id, args.file_id, args.submission_id, args.suffix)
             return 0
         body = json.loads(args.data) if args.data else None
-        cfg = make_config(args)
+        cfg = make_config(args, body)
         canvas_url(cfg.host, args.path)              # fail before anything else happens
         refuse_unconfirmed_write(cfg, args.verb, args.path)
         VERBS[args.verb](cfg, args.path, body)

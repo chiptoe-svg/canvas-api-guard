@@ -129,11 +129,14 @@ correlation sources.
 - `POST`: Canvas must return an ID or usable same-host Location, and every requested field must
   match the created object's read-back.
 - `DELETE`: the read-back must return HTTP 404.
-- Any mismatch, timeout, transport error, 401, 403, 5xx, missing created-object location, or
-  still-present delete target is `WRITE STATUS UNCERTAIN` and is never retried automatically.
-  Submission-file downloads retry separately, on their own schedule (see above).
-- Exit codes: `0` completed, and any write verified; `2` refused or failed before anything was
-  sent; `3` a write was sent but could not be verified (`WRITE STATUS UNCERTAIN`).
+- Any mismatch, read-back failure, missing created-object location, or still-present delete
+  target is `WRITE STATUS UNCERTAIN` and is never retried automatically. So is a write whose
+  own request timed out, failed in transport, or returned 5xx: Canvas may have applied it.
+  A 4xx on the write itself is Canvas answering that it did not apply the change, so that is
+  an ordinary failure. Submission-file downloads retry separately, on their own schedule.
+- Exit codes: `0` completed, and any write verified; `2` refused or failed with nothing
+  applied; `3` a write may have been applied and could not be verified (`WRITE STATUS
+  UNCERTAIN`).
 
 ### Produce useful, protected audit evidence
 
