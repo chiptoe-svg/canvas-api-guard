@@ -6,7 +6,7 @@ putting a Canvas token in `.env`, a repository, a command, or agent-visible outp
 The review surface is deliberately small: one Python 3.9+ standard-library program
 (`canvas_api_guard.py`, about 1,100 lines), one POSIX system installer, one macOS bootstrap,
 one Codex rules file, two Codex skills, the optional Specialized Functions program in
-`level2/`, and two stdlib test suites - 161 offline tests, all run by `python3 -m unittest`.
+`level2/`, and two stdlib test suites - 173 offline tests, all run by `python3 -m unittest`.
 
 ## The two-profile design
 
@@ -220,6 +220,10 @@ command-line overrides in the installed interface.
   -d '{"submission":{"posted_grade":95}}' --yes
 ```
 
+A dry run prints the exact request it did not send: as labelled lines for a person, and as
+one JSON object with `dry_run`, `method`, `url`, `headers` (the Authorization header redacted)
+and `body` whenever output is JSON. No token is read and nothing is sent either way.
+
 Codex's rules prompt the person for every installed-path write, including dry-runs. `--yes`
 records that the explicit Codex approval is being passed to the guard; it is not permission
 for Codex to approve its own request.
@@ -236,8 +240,8 @@ sudo ./install.sh --profile specialized-functions --host school.instructure.com
 ```
 
 The read operation is `student-attention`, which reports Canvas activity, not verified
-attendance. The write operations are rubric creation, rubric attachment, and rubric grading for
-one student or for a batch. They accept a reviewed, allowlisted JSON definition and require
+attendance. The write operations are rubric creation and rubric grading for one student or for
+a batch. They accept a reviewed, allowlisted JSON definition and require
 `--dry-run` followed by explicit approval for `--yes`. See
 [level2/README.md](level2/README.md) for the exact boundary.
 

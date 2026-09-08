@@ -33,12 +33,20 @@ def canvas_id(value, label):
     return value
 
 
+def guard_failure(stderr):
+    """The guard's own `canvas-api-guard:` line is the LAST non-empty line of its stderr;
+    under -o json everything before it is the confirmation preamble, which would repeat the
+    request body. A failure reported here stays one line."""
+    lines = [line for line in (stderr or "").splitlines() if line.strip()]
+    return lines[-1].strip() if lines else ""
+
+
 def guard_get(path):
     """Ask API Only for one JSON response; Specialized Functions have no token or HTTP client."""
     result = subprocess.run([GUARD, "get", path, "-o", "json"], text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode:
-        raise OperationError("API Only guard failed: %s" % result.stderr.strip())
+        raise OperationError("API Only guard failed: %s" % guard_failure(result.stderr))
     try:
         response = json.loads(result.stdout)
     except ValueError as err:
@@ -59,9 +67,9 @@ def guard_write(verb, path, body, phase, extra=None):
     if result.returncode == 3:
         raise GuardUncertain("the write was sent and API Only could not verify it; inspect "
                              "Canvas and the audit log rather than running this again: %s"
-                             % result.stderr.strip())
+                             % guard_failure(result.stderr))
     if result.returncode:
-        raise OperationError("API Only guard failed: %s" % result.stderr.strip())
+        raise OperationError("API Only guard failed: %s" % guard_failure(result.stderr))
     if phase == "dry-run":
         return None
     try:

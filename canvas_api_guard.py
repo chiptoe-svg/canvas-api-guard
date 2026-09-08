@@ -451,8 +451,12 @@ def send_request(cfg, method, path, body=None):
     if body is not None:
         headers["Content-Type"] = "application/json"
         payload = json.dumps(body).encode("utf-8")
-    if cfg.dry_run:                          # print the exact request and send nothing
+    if cfg.dry_run:                          # show the exact request and send nothing
         shown = dict(headers, Authorization=REDACTED)
+        cfg.dry_run_request = {"dry_run": True, "method": method, "url": url,
+                               "headers": shown, "body": body}
+        if cfg.out == "json":                # stdout is machine-read: emit() prints the one
+            return None                      # object, so nothing loose is printed here
         print("DRY RUN - nothing is sent and no token is read")
         print("  method   %s\n  url      %s" % (method, url))
         print("\n".join("  header   %s: %s" % (k, shown[k]) for k in sorted(shown)))
@@ -653,7 +657,9 @@ def emit(cfg, ev):
                                  "target": ev.get("target"), "changes": ev.get("changes")})
     if cfg.out == "json":
         # Sort only the evidence's own top-level keys, for a stable diff; a nested "object" or
-        # "items" keeps the order project() built, which --fields promises to preserve.
+        # "items" keeps the order project() built, which --fields promises to preserve. A dry
+        # run folds in the exact request it did not send, so stdout is still one JSON object.
+        ev = dict(ev, **(getattr(cfg, "dry_run_request", None) or {}))
         print(json.dumps(dict(sorted(ev.items())), indent=2, default=str))
         return
     for key in ("verb", "path", "url", "confirmation", "status", "verification", "note",

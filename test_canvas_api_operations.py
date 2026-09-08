@@ -301,6 +301,41 @@ class TestLevel2Operations(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
         self.assertIn("verification", out.getvalue())     # the evidence is still shown
 
+    def test_a_guard_failure_is_reported_as_its_last_line_only(self):
+        """Under -o json the guard's confirmation preamble goes to stderr, so its own
+        `canvas-api-guard:` line is the LAST one. Repeating all of stderr would print the
+        request body a second time and turn a one-line failure into a paragraph."""
+        stderr = ("about to PUT https://canvas.example.edu/api/v1/courses/12\n"
+                  "requested changes:\n"
+                  "  posted_grade           null -> 95\n"
+                  "canvas-api-guard: refusing to write without confirmation\n")
+        completed = mock.Mock(returncode=2, stdout="", stderr=stderr)
+        with mock.patch.object(operations.subprocess, "run", return_value=completed):
+            with self.assertRaises(operations.OperationError) as caught:
+                operations.guard_get("courses/12")
+        self.assertEqual(str(caught.exception), "API Only guard failed: canvas-api-guard: "
+                                                "refusing to write without confirmation")
+        with mock.patch.object(operations.subprocess, "run", return_value=completed), \
+                mock.patch("sys.stdout", io.StringIO()):
+            with self.assertRaises(operations.OperationError) as caught:
+                operations.guard_write("put", "courses/12", {}, "yes")
+        self.assertNotIn("posted_grade", str(caught.exception))
+        self.assertEqual(len(str(caught.exception).splitlines()), 1)
+
+    def test_an_uncertain_write_reports_one_line_too(self):
+        stderr = ("about to PUT https://canvas.example.edu/api/v1/courses/12\n"
+                  "  posted_grade           null -> 95\n"
+                  "canvas-api-guard: WRITE STATUS UNCERTAIN: read-back did not match\n")
+        completed = mock.Mock(returncode=3, stdout="", stderr=stderr)
+        with mock.patch.object(operations.subprocess, "run", return_value=completed), \
+                mock.patch("sys.stdout", io.StringIO()):
+            with self.assertRaises(operations.GuardUncertain) as caught:
+                operations.guard_write("put", "courses/12", {}, "yes")
+        self.assertNotIn("posted_grade", str(caught.exception))
+        self.assertEqual(len(str(caught.exception).splitlines()), 1)
+        self.assertTrue(str(caught.exception).endswith(
+            "canvas-api-guard: WRITE STATUS UNCERTAIN: read-back did not match"))
+
     def test_main_maps_an_uncertain_write_to_exit_3(self):
         def uncertain(args):
             raise operations.GuardUncertain("the write was sent and could not be verified")

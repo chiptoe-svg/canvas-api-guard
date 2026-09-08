@@ -470,6 +470,47 @@ class TestTokenIsNeverExposed(GuardTestCase):
         self.assertNotIn(TOKEN, self.log_text())
 
 
+class TestDryRunOutput(GuardTestCase):
+    """Under -o json stdout is machine-read, so a dry run is one JSON object there too - not
+    four lines of prose in front of one. Text output is for a person and does not change."""
+
+    def test_a_json_dry_run_is_one_object_and_never_reads_the_token(self):
+        def explode():
+            raise AssertionError("--dry-run must not read the token")
+
+        with mock.patch.object(guard, "read_token", explode), \
+                mock.patch("urllib.request.urlopen") as urlopen:
+            code, output = self.run_main(
+                ["put", "courses/1/assignments/2/submissions/3", "--dry-run", "-o", "json",
+                 "-d", '{"submission": {"posted_grade": 95}}'])
+        self.assertEqual(code, 0)
+        urlopen.assert_not_called()
+        shown = json.loads(output)                       # the whole of stdout, once
+        self.assertIs(shown["dry_run"], True)
+        self.assertEqual(shown["method"], "PUT")
+        self.assertEqual(shown["url"],
+                         "https://" + HOST + "/api/v1/courses/1/assignments/2/submissions/3")
+        self.assertEqual(shown["headers"]["Authorization"], guard.REDACTED)
+        self.assertEqual(shown["body"], {"submission": {"posted_grade": 95}})
+        self.assertNotIn(TOKEN, output)
+        self.assertNotIn(TOKEN, self.log_text())
+
+    def test_a_json_dry_run_read_is_one_object_too(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, output = self.run_main(["get", "courses/1", "--dry-run", "-o", "json"])
+        self.assertEqual(code, 0)
+        urlopen.assert_not_called()
+        self.assertEqual(json.loads(output)["method"], "GET")
+
+    def test_the_text_dry_run_is_unchanged(self):
+        with mock.patch("urllib.request.urlopen"):
+            code, output = self.run_main(["get", "courses/1", "--dry-run", "-o", "text"])
+        self.assertEqual(code, 0)
+        self.assertIn("DRY RUN - nothing is sent and no token is read", output)
+        self.assertIn("  header   Authorization: Bearer <redacted>", output)
+        self.assertIn("  body     (none)", output)
+
+
 class TestDryRunSendsNothing(GuardTestCase):
     def test_every_verb_runs_under_dry_run_without_touching_the_network(self):
         def never(*args, **kwargs):
