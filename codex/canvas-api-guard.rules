@@ -10,7 +10,7 @@
 
 GUARD = "/usr/local/libexec/canvas_api_guard.py"
 OPERATIONS = "/usr/local/libexec/canvas_api_operations.py"
-READS = ["get", "count"]
+READS = ["get", "count", "download-submission-file"]
 WRITES = ["post", "put", "patch", "delete"]
 
 prefix_rule(
@@ -19,7 +19,8 @@ prefix_rule(
     justification = "Canvas read through the guard: logged, no approval needed",
     match = ["/usr/local/libexec/canvas_api_guard.py get courses",
              "/usr/local/libexec/canvas_api_guard.py get courses/1/students?per_page=100 -o json",
-             "/usr/local/libexec/canvas_api_guard.py count courses/1/enrollments?per_page=100"],
+             "/usr/local/libexec/canvas_api_guard.py count courses/1/enrollments?per_page=100",
+             "/usr/local/libexec/canvas_api_guard.py download-submission-file --file-id 10 --submission-id 20 --suffix .pdf"],
     not_match = ["/usr/local/libexec/canvas_api_guard.py put courses/1",
                  "./canvas_api_guard.py get courses"],
 )
@@ -40,12 +41,13 @@ prefix_rule(
 prefix_rule(
     pattern = [OPERATIONS, ["current-courses", "roster-count", "find-student", "needs-grading",
                             "course-health", "assignment-performance", "student-attention",
-                            "student-trajectory", "attendance-summary"]],
+                            "student-trajectory", "attendance-summary", "prepare-submission-review"]],
     decision = "allow",
     justification = "Canvas read-only analysis through installed Specialized Functions",
     match = ["/usr/local/libexec/canvas_api_operations.py current-courses",
              "/usr/local/libexec/canvas_api_operations.py course-health --course-id 1",
-             "/usr/local/libexec/canvas_api_operations.py student-attention --course-id 1"],
+             "/usr/local/libexec/canvas_api_operations.py student-attention --course-id 1",
+             "/usr/local/libexec/canvas_api_operations.py prepare-submission-review --course-id 1 --assignment-id 2 --student-id 3"],
     not_match = ["./level2/canvas_api_operations.py course-health --course-id 1",
                  "/usr/local/libexec/canvas_api_operations.py create-rubric --course-id 1"],
 )

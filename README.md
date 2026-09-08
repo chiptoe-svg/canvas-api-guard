@@ -19,8 +19,8 @@ and a stdlib test suite.
 - dry-run, human approval, pre-read, write, and fail-closed read-back verification;
 - no redirects and no automatic retries.
 
-**Specialized Functions** are an additive layer, not a second transport or a
-more privileged token. They leave API Only available for general API work and add small,
+**Specialized Functions** are an additive layer, not a second transport, an allow-list, or a
+more privileged token. They leave API Only available for all general API work and add small,
 reviewable instructor operations that resolve live Canvas objects, validate task-specific data,
 and produce compact evidence. It includes read-only course/student analytics plus narrowly
 defined rubric, rubric-grading, assignment, page, and announcement workflows. These writes use

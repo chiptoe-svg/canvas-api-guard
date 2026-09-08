@@ -44,6 +44,13 @@ Paths are Canvas REST paths: `courses/123`, `api/v1/courses/123` and
 `/api/v1/courses/123` all mean the same thing. Take them from the Canvas API
 documentation; do not guess field names.
 
+## Relationship to Specialized Functions
+
+Specialized Functions are optional convenience operations, not an allow-list. If no named
+Specialized Function fits a Canvas request, use this API Only guard for the documented Canvas REST
+endpoint; do not refuse solely because a convenience function is absent. Preserve the normal
+read/write safeguards below.
+
 ## Reads
 
 Reads need no approval. A list prints how many items it returned and, when there are

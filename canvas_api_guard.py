@@ -39,16 +39,17 @@
 # READ TOP TO BOTTOM: constants, token, logging, host pinning, the one request function,
 # confirmation, evidence, verbs, argparse, main.
 
-import argparse, datetime, getpass, json, os, pty, pwd, re, stat, subprocess, sys, time
+import argparse, datetime, getpass, hashlib, json, os, pty, pwd, re, stat, subprocess, sys, tempfile, time
 import urllib.error, urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
-USER_AGENT = "canvas-api-guard/1.4.0"
+USER_AGENT = "canvas-api-guard/1.5.0"
 KEYCHAIN_SERVICE = "canvas-api-guard"
 SECURITY_BIN = "/usr/bin/security"
 SECRET_TOOL_PATHS = ("/usr/bin/secret-tool", "/usr/local/bin/secret-tool")
 DEFAULT_DIR = os.path.join(pwd.getpwuid(os.getuid()).pw_dir, ".canvas-api-guard")
 DEFAULT_LOG = os.path.join(DEFAULT_DIR, "audit.jsonl")
+REVIEW_DIR = os.path.join(DEFAULT_DIR, "submission-reviews")
 CONFIG_PATH = "/usr/local/etc/canvas-api-guard/config.json"  # root/admin-owned; not a secret
 WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 TIMEOUT = 30
@@ -284,8 +285,12 @@ class RefuseRedirects(urllib.request.HTTPRedirectHandler):
 
 urllib.request.install_opener(urllib.request.build_opener(RefuseRedirects))
 
+def open_request(request):
+    """The only urlopen call; callers must construct an authenticated pinned or credential-free request."""
+    return urllib.request.urlopen(request, timeout=TIMEOUT)
+
 def send_request(cfg, method, path, body=None):
-    """The ONLY function that performs network I/O. It logs before it does."""
+    """Perform an authenticated request to the pinned Canvas host and log before it does."""
     started = time.monotonic()
     method = method.upper()
     url, npath = canvas_url(cfg.host, path), normalise_path(path)
@@ -314,7 +319,7 @@ def send_request(cfg, method, path, body=None):
     request = urllib.request.Request(url, data=payload, headers=headers, method=method)
     network_started = time.monotonic()
     try:
-        raw = urllib.request.urlopen(request, timeout=TIMEOUT)            # the only call
+        raw = open_request(request)
         status, head, text = raw.status, dict(raw.headers), raw.read()
         raw.close()
     except Exception as err:                       # HTTPError, DNS, TLS, timeout, ...
@@ -519,6 +524,76 @@ def do_count(cfg, path, body):
     emit(cfg, {"verb": "COUNT", "path": first_path, "url": canvas_url(cfg.host, path),
                "status": status, "note": "all Canvas pages counted",
                "count": total, "pages": pages})
+
+def secure_review_dir():
+    """Return the user-private persistent review directory without following a link."""
+    try:
+        info = os.lstat(REVIEW_DIR)
+    except FileNotFoundError:
+        os.makedirs(REVIEW_DIR, 0o700)
+        info = os.lstat(REVIEW_DIR)
+    except OSError as err:
+        raise GuardError("cannot inspect submission review directory: %s" % err)
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != os.getuid() or (info.st_mode & 0o077)):
+        raise GuardError("submission review directory must be user-owned mode 0700: %s" % REVIEW_DIR)
+    return REVIEW_DIR
+
+def numeric_id(value, label):
+    if not str(value).isdigit() or int(value) < 1:
+        raise GuardError("%s must be a positive Canvas numeric ID" % label)
+    return str(value)
+
+def safe_download_suffix(value):
+    if not re.fullmatch(r"\.[A-Za-z0-9]{1,16}", value or ""):
+        raise GuardError("download suffix must be a simple extension of at most 16 letters or digits")
+    return value.lower()
+
+def do_download_submission_file(cfg, file_id, submission_id, suffix):
+    """Download one Canvas-authorized submission attachment, never forwarding the token."""
+    file_id, submission_id = numeric_id(file_id, "file ID"), numeric_id(submission_id, "submission ID")
+    suffix = safe_download_suffix(suffix)
+    metadata = send_request(cfg, "GET", "files/%s/public_url?submission_id=%s" % (file_id, submission_id))
+    public_url = (metadata.get("data") or {}).get("public_url")
+    parsed = urllib.parse.urlsplit(public_url or "")
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+        raise GuardError("Canvas did not return a usable HTTPS submission download URL")
+    directory = secure_review_dir()
+    fd, output = tempfile.mkstemp(prefix="canvas-submission-", suffix=suffix, dir=directory)
+    digest, total = hashlib.sha256(), 0
+    try:
+        log_event(cfg.log_path, {"event": "download", "kind": "read", "file_id": file_id,
+                                 "submission_id": submission_id, "confirmation": None})
+        request = urllib.request.Request(public_url, headers={"User-Agent": USER_AGENT}, method="GET")
+        raw = open_request(request)  # deliberately credential-free; redirects are refused globally
+        with os.fdopen(fd, "wb") as handle:
+            fd = None
+            while True:
+                chunk = raw.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > 50 * 1024 * 1024:
+                    raise GuardError("submitted attachment exceeds the 50 MiB review limit")
+                digest.update(chunk)
+                handle.write(chunk)
+            handle.flush(); os.fsync(handle.fileno())
+        raw.close()
+    except Exception as err:
+        if fd is not None:
+            os.close(fd)
+        try: os.unlink(output)
+        except OSError: pass
+        log_event(cfg.log_path, {"event": "download-response", "kind": "read", "file_id": file_id,
+                                 "submission_id": submission_id, "ok": False, "error": type(err).__name__})
+        raise GuardError("submission PDF download failed: %s" % err)
+    log_event(cfg.log_path, {"event": "download-response", "kind": "read", "file_id": file_id,
+                             "submission_id": submission_id, "ok": True, "bytes": total,
+                             "sha256": digest.hexdigest()})
+    emit(cfg, {"verb": "DOWNLOAD", "path": "/api/v1/files/%s/public_url" % file_id,
+               "note": "submitted attachment saved for local review", "object": {"path": output,
+               "bytes": total, "sha256": digest.hexdigest(), "file_id": int(file_id),
+               "submission_id": int(submission_id)}})
 
 def do_update(cfg, method, path, body):
     """PUT/PATCH: read, show the change, confirm, write, read back, print before and after."""
@@ -750,6 +825,11 @@ def build_parser():
     subs = parser.add_subparsers(dest="verb")
     for name in sorted(VERBS):
         subs.add_parser(name, parents=[common], help="%s a Canvas path" % name)
+    download = subs.add_parser("download-submission-file", help="download one submitted attachment for local review")
+    download.add_argument("--file-id", required=True)
+    download.add_argument("--submission-id", required=True)
+    download.add_argument("--suffix", default=".bin", help="safe local filename extension, for example .pdf")
+    download.add_argument("-o", "--output", choices=("text", "json"), default="json")
     return parser
 
 def main(argv=None):
@@ -762,6 +842,12 @@ def main(argv=None):
         if not args.verb:
             parser.print_help()
             return 2
+        if args.verb == "download-submission-file":
+            cfg = make_config(argparse.Namespace(output=args.output, dry_run=False, yes=False,
+                                                  post_readback=None, post_readback_field="id",
+                                                  post_verify_field=None, verify_fields=None))
+            do_download_submission_file(cfg, args.file_id, args.submission_id, args.suffix)
+            return 0
         body = json.loads(args.data) if args.data else None
         cfg = make_config(args)
         canvas_url(cfg.host, args.path)              # fail before anything else happens

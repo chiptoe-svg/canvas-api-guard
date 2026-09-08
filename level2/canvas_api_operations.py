@@ -10,12 +10,13 @@ import argparse
 import datetime
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
 
 GUARD = "/usr/local/libexec/canvas_api_guard.py"
-USER_AGENT = "canvas-api-operations/0.3.0"
+USER_AGENT = "canvas-api-operations/0.4.0"
 
 
 class OperationError(Exception):
@@ -62,6 +63,25 @@ def guard_write(verb, path, body, phase, extra=None):
     if evidence.get("verification") != "passed":
         raise OperationError("API Only guard did not prove the write")
     return evidence
+
+
+def attachment_suffix(attachment):
+    extension = os.path.splitext(os.path.basename(str(attachment.get("display_name") or "")))[1]
+    return extension.lower() if re.fullmatch(r"\.[A-Za-z0-9]{1,16}", extension or "") else ".bin"
+
+
+def guard_download_attachment(file_id, submission_id, suffix):
+    """Ask API Only to retrieve one authorized attachment; this layer never opens a connection."""
+    result = subprocess.run([GUARD, "download-submission-file", "--file-id", str(file_id),
+                             "--submission-id", str(submission_id), "--suffix", suffix, "-o", "json"], text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode:
+        raise OperationError("API Only guard failed: %s" % result.stderr.strip())
+    try:
+        response = json.loads(result.stdout)
+        return response["object"]
+    except (ValueError, KeyError, TypeError) as err:
+        raise OperationError("API Only guard did not return attachment review evidence: %s" % err)
 
 
 def definition_file(path):
@@ -405,6 +425,32 @@ def grade_with_rubric(args):
     print(json.dumps({"result": grade_one(args, definition_file(args.definition))}, indent=2, sort_keys=True))
 
 
+def prepare_submission_review(args):
+    """Resolve one current submission and locally retrieve its complete attachment set."""
+    assignment = guard_get("courses/%s/assignments/%s" % (args.course_id, args.assignment_id)).get("object") or {}
+    submission = guard_get("courses/%s/assignments/%s/submissions/%s?include[]=user" %
+                           (args.course_id, args.assignment_id, args.student_id)).get("object") or {}
+    if str(submission.get("user_id")) != args.student_id:
+        raise OperationError("Canvas submission did not belong to the requested student")
+    submission_id = canvas_id(str(submission.get("id", "")), "submission ID")
+    attachments = submission.get("attachments") or []
+    attachments = [row for row in attachments if isinstance(row, dict) and str(row.get("id", "")).isdigit()]
+    if not attachments:
+        raise OperationError("submission review requires at least one Canvas file attachment")
+    if len(attachments) > 20:
+        raise OperationError("submission review refuses more than 20 attachments in one submission")
+    downloaded = []
+    for attachment in attachments:
+        evidence = guard_download_attachment(attachment["id"], submission_id, attachment_suffix(attachment))
+        downloaded.append({"file_id": attachment.get("id"), "display_name": attachment.get("display_name"),
+                           "content_type": attachment.get("content-type"), "local_review_copy": evidence})
+    return {"operation": "prepare-submission-review", "course_id": args.course_id,
+            "assignment": {"assignment_id": assignment.get("id"), "title": assignment.get("name")},
+            "student": {"student_id": submission.get("user_id"), "name": (submission.get("user") or {}).get("name")},
+            "submission_id": int(submission_id), "attachments": downloaded,
+            "next_step": "Review the local attachment set against the live rubric; no grade has been written."}
+
+
 def bulk_grade_with_rubric(args):
     definition = exact_object(definition_file(args.definition), ("grades",), ())
     if not isinstance(definition["grades"], list) or not definition["grades"]:
@@ -601,6 +647,7 @@ OPERATIONS = {"current-courses": current_courses, "roster-count": roster_count,
               "course-health": course_health, "assignment-performance": assignment_performance,
               "student-attention": student_attention, "student-trajectory": student_trajectory,
               "attendance-summary": attendance_summary,
+              "prepare-submission-review": prepare_submission_review,
               "create-rubric": create_rubric, "attach-rubric": attach_rubric,
               "grade-with-rubric": grade_with_rubric,
               "bulk-grade-with-rubric": bulk_grade_with_rubric,
@@ -627,6 +674,10 @@ def parser():
     trajectory = subs.add_parser("student-trajectory")
     trajectory.add_argument("--course-id", type=lambda value: canvas_id(value, "course ID"), required=True)
     trajectory.add_argument("--student-id", type=lambda value: canvas_id(value, "student ID"), required=True)
+    review = subs.add_parser("prepare-submission-review")
+    review.add_argument("--course-id", type=lambda value: canvas_id(value, "course ID"), required=True)
+    review.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)
+    review.add_argument("--student-id", type=lambda value: canvas_id(value, "student ID"), required=True)
     write = argparse.ArgumentParser(add_help=False)
     write.add_argument("--course-id", type=lambda value: canvas_id(value, "course ID"), required=True)
     write.add_argument("--definition", required=True, help="path to a reviewed JSON operation definition")

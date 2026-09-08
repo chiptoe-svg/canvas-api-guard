@@ -132,6 +132,40 @@ class TestLevel2Operations(unittest.TestCase):
         self.assertEqual(resolved["data"][0]["id"], "criterion_1")
         self.assertEqual(association, "10")
 
+    def test_prepare_submission_review_accepts_one_pdf_and_does_not_grade(self):
+        args = Args()
+        args.assignment_id = "22"
+        assignment = {"id": 22, "name": "Week 2 Notes"}
+        submission = {"id": 99, "user_id": 34, "user": {"name": "Jordan Lee"},
+                      "attachments": [{"id": 7, "display_name": "notes.pdf",
+                                       "content-type": "application/pdf"}]}
+        evidence = {"path": "/private/review.pdf", "sha256": "a" * 64, "bytes": 12}
+        with mock.patch.object(operations, "guard_get", side_effect=[{"object": assignment}, {"object": submission}]), \
+                mock.patch.object(operations, "guard_download_attachment", return_value=evidence) as download:
+            result = operations.prepare_submission_review(args)
+        download.assert_called_once_with(7, "99", ".pdf")
+        self.assertEqual(result["student"]["name"], "Jordan Lee")
+        self.assertIn("no grade has been written", result["next_step"])
+
+    def test_prepare_submission_review_accepts_multiple_document_types_but_refuses_empty(self):
+        args = Args()
+        args.assignment_id = "22"
+        empty = {"id": 99, "user_id": 34, "attachments": []}
+        with mock.patch.object(operations, "guard_get", side_effect=[{"object": {}}, {"object": empty}]), \
+                mock.patch.object(operations, "guard_download_attachment") as download:
+            with self.assertRaises(operations.OperationError):
+                operations.prepare_submission_review(args)
+        download.assert_not_called()
+        attachments = [{"id": 1, "display_name": "page.jpg", "content-type": "image/jpeg"},
+                       {"id": 2, "display_name": "notes.docx", "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}]
+        submission = {"id": 99, "user_id": 34, "attachments": attachments}
+        with mock.patch.object(operations, "guard_get", side_effect=[{"object": {}}, {"object": submission}]), \
+                mock.patch.object(operations, "guard_download_attachment", return_value={"path": "/private/file"}) as download:
+            result = operations.prepare_submission_review(args)
+        self.assertEqual(download.call_args_list[0][0], (1, "99", ".jpg"))
+        self.assertEqual(download.call_args_list[1][0], (2, "99", ".docx"))
+        self.assertEqual(len(result["attachments"]), 2)
+
     def test_date_helper_rejects_invalid_or_new_quiz_dates_before_a_write(self):
         args = Args()
         args.assignment_id = "22"
