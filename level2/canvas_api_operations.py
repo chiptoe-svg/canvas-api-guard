@@ -184,9 +184,7 @@ def create_rubric(args):
     path = "courses/%s/rubrics" % args.course_id
     write_plan("create-rubric", args, path, body)
     evidence = guard_write("post", path, body, operation_phase(args),
-                           ["--post-readback", "courses/%s/rubrics/{value}" % args.course_id,
-                            "--post-readback-field", "rubric.id", "--post-verify-field", "rubric",
-                            "--verify-fields", "title"])
+                           ["--created-id", "rubric.id"])
     if evidence:
         rubric_id = (evidence.get("object") or {}).get("id")
         if rubric_id is None:
@@ -265,7 +263,7 @@ def grade_one(args, value):
     guard_get(path)
     body = {"submission": {"posted_grade": total}, "rubric_assessment": criteria}
     write_plan("grade-with-rubric", args, path, body)
-    guard_write("put", path, body, operation_phase(args), ["--verify-fields", "posted_grade"])
+    guard_write("put", path, body, operation_phase(args))
     return {"student_id": student_id, "rubric_association_id": association_id, "posted_grade": total}
 
 

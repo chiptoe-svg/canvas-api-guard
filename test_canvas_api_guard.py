@@ -591,16 +591,14 @@ class TestEvidence(GuardTestCase):
                      FakeResponse(payload={"id": 42, "title": "Lab", "data": []})]
         with mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen:
             code, output = self.run_main(
-                ["post", "courses/1/rubrics", "--yes",
-                 "--post-readback", "courses/1/rubrics/{value}",
-                 "--post-readback-field", "rubric.id", "--post-verify-field", "rubric",
-                 "--verify-fields", "title", "-d", '{"rubric": {"title": "Lab"}}'])
+                ["post", "courses/1/rubrics", "--yes", "--created-id", "rubric.id",
+                 "-d", '{"rubric": {"title": "Lab"}}'])
         self.assertEqual(code, 0)
         self.assertIn("verification:  passed", output)
         self.assertEqual(urlopen.call_args[0][0].full_url,
                          "https://" + HOST + "/api/v1/courses/1/rubrics/42")
 
-    def test_post_readback_mismatch_is_uncertain_and_nonzero(self):
+    def test_a_created_object_that_contradicts_the_body_is_uncertain(self):
         responses = [FakeResponse(status=201, payload={"id": 42, "name": "Lab 4"}),
                      FakeResponse(payload={"id": 42, "name": "Different name"})]
         with mock.patch("urllib.request.urlopen", side_effect=responses):
@@ -611,15 +609,25 @@ class TestEvidence(GuardTestCase):
         self.assertIn("WRITE STATUS UNCERTAIN", output)
         self.assertIn("created object did not match requested field", output)
 
-    def test_a_bad_post_verify_field_is_refused_before_anything_is_sent(self):
+    def test_a_created_id_the_response_does_not_carry_is_uncertain_not_a_refusal(self):
+        """The POST was already sent by then, so an unresolvable --created-id cannot be an
+        ordinary refusal: the object may exist and could not be read back."""
         with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(status=201, payload={"rubric": {"title": "Lab"}})
             code, output = self.run_main(
-                ["post", "courses/1/assignments", "--yes",
-                 "--post-verify-field", "nonexistent",
-                 "-d", '{"assignment": {"name": "Lab 4"}}'])
-        self.assertEqual(code, 2)
-        urlopen.assert_not_called()
-        self.assertNotIn("about to POST", output)
+                ["post", "courses/1/rubrics", "--yes", "--created-id", "rubric.id",
+                 "-d", '{"rubric": {"title": "Lab"}}'])
+        self.assertEqual(code, 3)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+        self.assertIn("rubric.id", output)
+
+    def test_created_id_is_a_post_only_flag(self):
+        parser = guard.build_parser()
+        parser.parse_args(["post", "courses/1/rubrics", "--created-id", "rubric.id"])
+        with mock.patch("sys.stderr", io.StringIO()):
+            for verb in ("get", "put", "patch", "delete"):
+                with self.assertRaises(SystemExit):
+                    parser.parse_args([verb, "courses/1", "--created-id", "id"])
 
     def test_a_put_body_that_is_not_a_json_object_is_refused_before_anything_is_sent(self):
         with mock.patch("urllib.request.urlopen") as urlopen:
@@ -738,29 +746,55 @@ class TestAFailedWriteRequest(GuardTestCase):
         self.assertIn("403", self.last_stderr)
 
 
-class TestVerifyFieldsAreValidatedFirst(GuardTestCase):
-    def test_a_verify_field_absent_from_the_body_is_refused_before_anything_is_sent(self):
-        def no_network(*args, **kwargs):
-            raise AssertionError("a request was made before the refusal")
+class TestOneVerificationRule(GuardTestCase):
+    """One rule for every write, POST and PUT/PATCH alike: a requested leaf the read-back
+    object exposes must match; a leaf it does not expose is reported with a null match and
+    cannot fail; if it exposed none of them, nothing about the write could be verified."""
 
-        with mock.patch("urllib.request.urlopen", side_effect=no_network) as urlopen:
-            code, _ = self.run_main(
-                ["put", "courses/1/assignments/2/submissions/3", "--yes",
-                 "--verify-fields", "grade", "-d", '{"submission": {"posted_grade": 95}}'])
-        self.assertEqual(code, 2)
-        urlopen.assert_not_called()
-        self.assertIn("grade", self.last_stderr)
+    def test_a_leaf_the_created_object_does_not_expose_is_null_not_a_failure(self):
+        created = {"id": 42, "title": "Lab"}
+        responses = [FakeResponse(status=201, payload=created), FakeResponse(payload=created)]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, output = self.run_main(
+                ["post", "courses/1/rubrics", "--yes", "-o", "json",
+                 "-d", '{"title": "Lab", "association_type": "Course"}'])
+        self.assertEqual(code, 0)
+        self.assertEqual({row["field"]: row["match"] for row in json.loads(output)["changes"]},
+                         {"title": True, "association_type": None})
 
-    def test_a_verify_field_present_in_the_body_is_accepted(self):
+    def test_a_write_whose_read_back_exposes_no_requested_leaf_is_uncertain(self):
+        created = {"id": 42}
+        responses = [FakeResponse(status=201, payload=created), FakeResponse(payload=created)]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, output = self.run_main(
+                ["post", "courses/1/rubrics", "--yes", "-d", '{"title": "Lab"}'])
+        self.assertEqual(code, 3)
+        self.assertIn("nothing about the write could be verified", output)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+
+    def test_an_unexposed_leaf_does_not_fail_a_put_whose_grade_verified(self):
         graded = {"id": 3, "grade": "95", "entered_grade": "95", "score": 95.0,
                   "entered_score": 95.0}
         with mock.patch("urllib.request.urlopen",
                         side_effect=[FakeResponse(payload=graded)] * 3):
             code, output = self.run_main(
-                ["put", "courses/1/assignments/2/submissions/3", "--yes",
-                 "--verify-fields", "posted_grade", "-d", '{"submission": {"posted_grade": 95}}'])
+                ["put", "courses/1/assignments/2/submissions/3", "--yes", "-o", "json",
+                 "-d", '{"submission": {"posted_grade": 95}, "rubric_assessment": '
+                       '{"criterion_1": {"points": 8}}}'])
         self.assertEqual(code, 0)
-        self.assertIn("verification:  passed", output)
+        self.assertEqual({row["field"]: row["match"] for row in json.loads(output)["changes"]},
+                         {"posted_grade": True, "points": None})
+
+    def test_a_leaf_the_object_exposes_and_contradicts_still_fails(self):
+        graded = {"id": 3, "grade": "60", "entered_grade": "60", "score": 60.0,
+                  "entered_score": 60.0}
+        with mock.patch("urllib.request.urlopen",
+                        side_effect=[FakeResponse(payload=graded)] * 3):
+            code, output = self.run_main(
+                ["put", "courses/1/assignments/2/submissions/3", "--yes",
+                 "-d", '{"submission": {"posted_grade": 95}}'])
+        self.assertEqual(code, 3)
+        self.assertIn("read-back did not match requested field(s): posted_grade", output)
 
 
 class TestRedirectsAreRefused(unittest.TestCase):

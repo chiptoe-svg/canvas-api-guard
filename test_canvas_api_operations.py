@@ -289,13 +289,11 @@ class TestGuardWriteContract(GuardTestCase):
                      FakeResponse(payload=graded), FakeResponse(payload=graded)]
         with mock.patch("urllib.request.urlopen", side_effect=responses):
             code, captured = self.run_main([
-                "put", path, "--yes", "-o", "json", "--verify-fields", "posted_grade",
-                "-d", json.dumps(body)])
+                "put", path, "--yes", "-o", "json", "-d", json.dumps(body)])
         self.assertEqual(code, 0)
         completed = mock.Mock(returncode=0, stdout=captured, stderr="")
         with mock.patch.object(operations.subprocess, "run", return_value=completed), \
                 mock.patch("sys.stdout", io.StringIO()):
-            evidence = operations.guard_write("put", path, body, "yes",
-                                              ["--verify-fields", "posted_grade"])
+            evidence = operations.guard_write("put", path, body, "yes")
         self.assertEqual(evidence["verification"], "passed")
         self.assertEqual(evidence["url"], "https://" + HOST + "/api/v1/" + path)

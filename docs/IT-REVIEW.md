@@ -125,12 +125,15 @@ correlation sources.
 
 ### Fail closed after consequential writes
 
-- `PUT`/`PATCH`: all requested leaf fields must match the read-back.
-- `POST`: Canvas must return an ID or usable same-host Location, and every requested field must
-  match the created object's read-back.
+- `POST`/`PUT`/`PATCH`: one rule. Every requested leaf field the read-back object exposes must
+  match it. A requested field the object does not expose is reported with `match: null` and
+  cannot fail, because it proves nothing either way; a write whose read-back proved none of the
+  requested fields is uncertain.
+- `POST` must locate the created object first: the response's own ID, the response field named
+  by `--created-id`, or a usable same-host `Location` header.
 - `DELETE`: the read-back must return HTTP 404.
-- Any mismatch, read-back failure, missing created-object location, or still-present delete
-  target is `WRITE STATUS UNCERTAIN` and is never retried automatically. So is a write whose
+- Any mismatch, unprovable write, read-back failure, missing created-object location, or
+  still-present delete target is `WRITE STATUS UNCERTAIN` and is never retried automatically. So is a write whose
   own request timed out, failed in transport, or returned 5xx: Canvas may have applied it.
   A 4xx on the write itself is Canvas answering that it did not apply the change, so that is
   an ordinary failure. Submission-file downloads retry separately, on their own schedule.
@@ -238,7 +241,8 @@ operation is `student-attention`, an activity signal, not verified attendance.
 It also provides named rubric, rubric-grading, and submission-review workflows. Each accepts
 only an allowlisted JSON definition, resolves the live Canvas target before acting, requires a
 reviewed `--dry-run` before `--yes`, and delegates the write and its read-back to API Only.
-Rubric creates use an explicit documented response-field read-back; grading rejects stale or
+Rubric creates name the created rubric's ID in the create response (`--created-id rubric.id`)
+so the read-back is the rubric itself; grading rejects stale or
 invented rubric criterion IDs; batches are capped at 50 students and are individually audited
 and read back rather than sent through an opaque asynchronous bulk endpoint. Codex rules prompt
 for each Specialized Functions write and for each of the two operations that download student

@@ -560,33 +560,22 @@ def matches(requested, got):
 
 def compare_fields(body, before, after):
     """Canvas wraps a write body in a resource key ({"submission": {...}}) while the read-back
-    object does not, so each requested leaf is compared with the field that proves it. Before
-    and after are read from that one field, chosen from the after object, so a single name
-    labels both."""
+    object does not, so each requested leaf is compared BY NAME with the field that proves it.
+    Before and after are read from that one field, chosen from the after object, so a single
+    name labels both. A leaf the object does not expose at all cannot prove or disprove
+    anything: its match is null, and the caller treats that as unverified, never as failed."""
     rows, flat = [], flatten_leaves(body or {})
     after_obj = after if isinstance(after, dict) else {}
     for dotted in sorted(flat):
         leaf, requested = dotted.split(".")[-1], flat[dotted]
         names = read_field_for(leaf, requested)
         name = next((n for n in names if n in after_obj), names[-1])
-        got_after = after_obj.get(name)
+        exposed = isinstance(after, dict) and name in after_obj
         rows.append({"field": leaf, "read_field": name, "requested": requested,
                      "before": before.get(name) if isinstance(before, dict) else None,
-                     "after": got_after, "match": None if not isinstance(after, dict)
-                     else matches(requested, got_after)})
+                     "after": after_obj.get(name),
+                     "match": matches(requested, after_obj.get(name)) if exposed else None})
     return rows
-
-def selected_changes(changes, fields):
-    """Limit verification only when a reviewed specialized operation names stable fields."""
-    if not fields:
-        return changes
-    wanted = {field.strip() for field in fields.split(",") if field.strip()}
-    if not wanted:
-        raise GuardError("verification field list is empty")
-    selected = [row for row in changes if row["field"] in wanted]
-    if not selected:
-        raise GuardError("none of the requested verification fields occur in the request body")
-    return selected
 
 def summarise(obj, limit=10):
     return dict((k, obj[k]) for k in sorted(obj)[:limit]) if isinstance(obj, dict) else None
@@ -615,6 +604,9 @@ def write_evidence(cfg, verb, path, resp, **extra):
     return dict({"verb": verb, "path": normalise_path(path), "url": canvas_url(cfg.host, path),
                  "confirmation": cfg.confirmation,
                  "status": resp["status"] if resp else None}, **extra)
+
+UNVERIFIABLE = ("nothing about the write could be verified: the read-back object exposed none "
+                "of the requested fields")
 
 def uncertain(cfg, evidence, reason):
     """Record the failed verification and return a non-success outcome to the caller."""
@@ -707,21 +699,6 @@ def parse_fields(raw):
     if not wanted:
         raise GuardError("--fields was empty; name at least one field, for example --fields id")
     return wanted
-
-def parse_verify_fields(raw, body):
-    """Validate --verify-fields once, before any request, exactly as --fields is: a name that
-    is not a leaf of the -d body would otherwise verify nothing until after the write."""
-    if raw is None:
-        return None
-    wanted = [name.strip() for name in raw.split(",") if name.strip()]
-    if not wanted:
-        raise GuardError("verification field list is empty")
-    leaves = {dotted.split(".")[-1] for dotted in flatten_leaves(body or {})}
-    missing = [name for name in wanted if name not in leaves]
-    if missing:
-        raise GuardError("--verify-fields names field(s) the request body does not contain: %s"
-                         % ", ".join(missing))
-    return raw
 
 def project(data, fields):
     """Project a Canvas list or object to the parsed dot-paths, in the order asked for.
@@ -915,42 +892,36 @@ def do_update(cfg, method, path, body):
         uncertain(cfg, evidence, "the write returned, but read-back failed: %s" % err)
     after_obj = after["data"]
     evidence["target"] = target_identity(before_obj, resp.get("data"), after_obj)
-    evidence["changes"] = selected_changes(compare_fields(body, before_obj, after_obj),
-                                             cfg.verify_fields)
-    mismatches = [row["field"] for row in evidence["changes"] if row["match"] is not True]
+    evidence["changes"] = compare_fields(body, before_obj, after_obj)
+    mismatches = [row["field"] for row in evidence["changes"] if row["match"] is False]
     if mismatches:
         uncertain(cfg, evidence, "read-back did not match requested field(s): %s"
                   % ", ".join(mismatches))
+    if not any(row["match"] is True for row in evidence["changes"]):
+        uncertain(cfg, evidence, UNVERIFIABLE)
     evidence["verification"] = "passed"
     emit(cfg, evidence)
 
-def template_value(data, template):
-    """Resolve a dot-separated response field for an explicit POST read-back template."""
-    value = data
-    for part in template.split("."):
-        if not part or not isinstance(value, dict) or part not in value:
-            raise GuardError("POST read-back template did not resolve %r" % template)
-        value = value[part]
-    if not isinstance(value, (str, int)) or not str(value):
-        raise GuardError("POST read-back template resolved to an invalid path value")
+def created_object_id(data, dotted):
+    """The created object's id: one dot-path in the POST response, which must name a plain
+    string or number. Anything else cannot be part of a Canvas path."""
+    value = field_value(data, dotted)
+    if isinstance(value, bool) or not isinstance(value, (str, int)) or not str(value).strip():
+        return None
     return urllib.parse.quote(str(value), safe="-._~")
 
-def post_read_path(cfg, path, response, readback_template):
-    """Choose the exact object to verify after a create, never following another host."""
-    if readback_template:
-        if readback_template.count("{value}") != 1:
-            raise GuardError("POST read-back template must contain exactly one {value} placeholder")
-        try:
-            read_path = readback_template.format(
-                value=template_value(response["data"], cfg.post_readback_field))
-        except (KeyError, IndexError, ValueError) as err:
-            raise GuardError("invalid POST read-back template: %s" % err)
-        canvas_url(cfg.host, read_path)
-        return read_path
-    location = response["headers"].get("Location") or response["headers"].get("location")
-    new_id = response["data"].get("id") if isinstance(response["data"], dict) else None
+def post_read_path(cfg, path, response):
+    """Choose the exact object to verify after a create, never following another host. The
+    created object is read back beside the path that created it, under the id named by
+    --created-id (default: the response's own top-level id). Only when that flag was not given
+    and Canvas returned no id does a same-host Location header stand in."""
+    new_id = created_object_id(response["data"], cfg.created_id or "id")
     if new_id is not None:
-        return normalise_path(path).split("?")[0] + "/" + str(new_id)
+        return normalise_path(path).split("?")[0] + "/" + new_id
+    if cfg.created_id:
+        raise GuardError("the POST response carries no usable %r naming the created object"
+                         % cfg.created_id)
+    location = response["headers"].get("Location") or response["headers"].get("location")
     if location:
         parsed = urllib.parse.urlsplit(location)
         if parsed.netloc and parsed.netloc != cfg.host:
@@ -962,10 +933,6 @@ def do_post(cfg, path, body):
     """POST: nothing exists before, so show the body, confirm, write, read the new object."""
     if body is None:
         raise GuardError("post needs a JSON body: -d '{\"...\": ...}'")
-    if cfg.post_verify_field and (not isinstance(body, dict)
-                                  or not isinstance(body.get(cfg.post_verify_field), dict)):
-        raise GuardError("POST verification field is not an object in the request body: %s"
-                         % cfg.post_verify_field)
     cfg.confirmation = confirm(cfg, [
         "about to POST %s" % canvas_url(cfg.host, path), "request body:",
         "  " + json.dumps(body, sort_keys=True),
@@ -977,7 +944,7 @@ def do_post(cfg, path, body):
         emit(cfg, evidence)
         return
     try:
-        read_path = post_read_path(cfg, path, resp, cfg.post_readback)
+        read_path = post_read_path(cfg, path, resp)
     except GuardError as err:
         uncertain(cfg, evidence, str(err))
     if not read_path:
@@ -992,14 +959,14 @@ def do_post(cfg, path, body):
     created = summarise(back["data"])
     if created is None:
         uncertain(cfg, evidence, "read-back at %s was not a Canvas object" % read_path)
-    expected = body[cfg.post_verify_field] if cfg.post_verify_field else body
     evidence.update({"object": created, "target": target_identity(resp["data"], back["data"]),
-                     "changes": selected_changes(compare_fields(expected, None, back["data"]),
-                                                 cfg.verify_fields)})
-    mismatches = [row["field"] for row in evidence["changes"] if row["match"] is not True]
+                     "changes": compare_fields(body, None, back["data"])})
+    mismatches = [row["field"] for row in evidence["changes"] if row["match"] is False]
     if mismatches:
         uncertain(cfg, evidence, "created object did not match requested field(s): %s"
                   % ", ".join(mismatches))
+    if not any(row["match"] is True for row in evidence["changes"]):
+        uncertain(cfg, evidence, UNVERIFIABLE)
     evidence["verification"] = "passed"
     emit(cfg, evidence)
 
@@ -1038,18 +1005,16 @@ def default_output():
     a Specialized Function - gets complete JSON without having to remember a flag."""
     return "text" if sys.stdout.isatty() else "json"
 
-def make_config(args, body=None):
-    """What send_request needs. confirmation is set by confirm() before any write. --fields
-    and --verify-fields are parsed and validated here, before any request is made."""
+def make_config(args):
+    """What send_request needs. confirmation is set by confirm() before any write. --fields is
+    parsed and validated here, before any request is made. --created-id exists on the post
+    subcommand only, so every other verb reaches this with none."""
     configured = read_config()
     return argparse.Namespace(host=configured["host"], profile=configured["profile"],
                               out=args.output or default_output(), log_path=DEFAULT_LOG,
                               dry_run=args.dry_run, all_pages=args.all_pages,
                               fields=parse_fields(args.fields), yes=args.yes, confirmation=None,
-                              post_readback=args.post_readback,
-                              post_readback_field=args.post_readback_field,
-                              post_verify_field=args.post_verify_field,
-                              verify_fields=parse_verify_fields(args.verify_fields, body))
+                              created_id=getattr(args, "created_id", None))
 
 def read_config():
     """Read the fixed config after checking that untrusted users cannot modify it."""
@@ -1106,15 +1071,6 @@ def build_parser():
     common.add_argument("-d", "--data", help="JSON object to send as the request body")
     common.add_argument("--dry-run", action="store_true", help="print the request, send nothing")
     common.add_argument("--yes", action="store_true", help="confirm a write non-interactively")
-    common.add_argument("--post-readback", metavar="PATH{value}",
-                        help="POST only: exact pinned-host read-back path; {value} is filled "
-                             "from the Canvas response field named by --post-readback-field")
-    common.add_argument("--post-readback-field", default="id", metavar="FIELD",
-                        help="POST only: dot-separated Canvas response field for {value} (default: id)")
-    common.add_argument("--post-verify-field", metavar="FIELD",
-                        help="POST only: verify this object inside the request body against read-back")
-    common.add_argument("--verify-fields", metavar="FIELD[,FIELD...]",
-                        help="verify only these requested leaf fields after a write")
     common.add_argument("--all-pages", action="store_true",
                         help="get: follow every rel=\"next\" page on the pinned Canvas host")
     common.add_argument("--fields", metavar="FIELD[,FIELD...]",
@@ -1124,7 +1080,11 @@ def build_parser():
                         help="output format (default: json unless stdout is a terminal)")
     subs = parser.add_subparsers(dest="verb")
     for name in sorted(VERBS):
-        subs.add_parser(name, parents=[common], help="%s a Canvas path" % name)
+        verb = subs.add_parser(name, parents=[common], help="%s a Canvas path" % name)
+        if name == "post":
+            verb.add_argument("--created-id", metavar="FIELD",
+                              help="dot-separated field of the POST response naming the created "
+                                   "object's id, used to read it back (default: id)")
     download = subs.add_parser("download-submission-file", help="download one submitted attachment for local review")
     download.add_argument("--course-id", required=True)
     download.add_argument("--file-id", required=True)
@@ -1144,14 +1104,12 @@ def main(argv=None):
             parser.print_help()
             return 2
         if args.verb == "download-submission-file":
-            cfg = make_config(argparse.Namespace(output=args.output, dry_run=False, yes=False,
-                                                  all_pages=False, fields=None,
-                                                  post_readback=None, post_readback_field="id",
-                                                  post_verify_field=None, verify_fields=None))
+            cfg = make_config(argparse.Namespace(output=args.output, dry_run=False,
+                                                  yes=False, all_pages=False, fields=None))
             do_download_submission_file(cfg, args.course_id, args.file_id, args.submission_id, args.suffix)
             return 0
         body = json.loads(args.data) if args.data else None
-        cfg = make_config(args, body)
+        cfg = make_config(args)
         canvas_url(cfg.host, args.path)              # fail before anything else happens
         refuse_unconfirmed_write(cfg, args.verb, args.path)
         VERBS[args.verb](cfg, args.path, body)
