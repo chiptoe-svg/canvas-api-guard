@@ -31,19 +31,22 @@
 #   * Every read this script returns flows through the agent to its provider. Nothing here
 #     changes where that data goes.
 #
-# WHAT IT DOES GIVE. A complete, append-only, local record of everything done through it,
-# written before the fact, and a required confirmation whose mode is recorded beside the change
-# it authorised - or refused, if no confirmation was possible. And one invariant above all:
-# THE TOKEN IS ONLY EVER SENT TO THE HOST RECORDED IN THE FIXED SYSTEM CONFIGURATION.
+# WHAT IT DOES GIVE. A complete, append-only, local record of everything done through it, a
+# read logged as one line and a write logged as three, and a required confirmation whose mode
+# is recorded beside the change it authorised, or refused. Two invariants above all:
+# THE TOKEN IS ONLY EVER SENT TO THE HOST RECORDED IN THE FIXED SYSTEM CONFIGURATION, and it is
+# not read at all unless this file, its configuration and every directory above them are
+# root-owned and not writable by group or others (provenance, below).
 #
-# READ TOP TO BOTTOM: constants, token, logging, host pinning, the one request function,
-# confirmation, evidence, verbs, argparse, main.
+# READ TOP TO BOTTOM: constants, provenance, token, logging, host pinning,
+# the one request function, attachment downloads, confirmation, evidence helpers, verbs,
+# argparse, main.
 
 import argparse, datetime, getpass, hashlib, json, os, pty, pwd, re, stat, subprocess, sys, tempfile
 import urllib.error, urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
-USER_AGENT = "canvas-api-guard/1.13.0"
+USER_AGENT = "canvas-api-guard/1.14.0"
 KEYCHAIN_SERVICE = "canvas-api-guard"
 SECURITY_BIN = "/usr/bin/security"
 SECRET_TOOL_PATHS = ("/usr/bin/secret-tool", "/usr/local/bin/secret-tool")
@@ -83,9 +86,11 @@ class VerificationFailure(GuardError):
 # the fixed configuration, and every directory above them must be owned by root and not
 # writable by group or others. A source-tree copy can still show --version, a dry run and
 # every refusal - none of those read a credential - but it cannot make a live request, which
-# is exactly what the shipped Codex rules already assume. The one exception is the test seam:
-# when CONFIG_PATH has been pointed at a throwaway config the check stands down, so the suite
-# stays offline and root-free.
+# is exactly what the shipped Codex rules already assume. That proves provenance for a copy
+# launched as a program; it says nothing about code exec'd in-process with forged globals, where
+# the Codex rules' absolute-path match, not this check, is the load-bearing layer. The one
+# exception here is the test seam: when CONFIG_PATH has been pointed at a throwaway config the
+# check stands down, so the suite stays offline and root-free.
 def trusted_path(path, label):
     """Refuse unless the resolved path and every ancestor are root-owned and not group- or
     world-writable. The message names the first component that failed."""
@@ -107,6 +112,7 @@ def trusted_path(path, label):
         if component != real and not stat.S_ISDIR(info.st_mode):
             raise GuardError("%s must live under directories only; %s is not one"
                              % (label, component))
+        # Mode bits only; an ACL (macOS or POSIX) can grant write access this check cannot see.
         if info.st_uid != 0 or (info.st_mode & 0o022):
             raise GuardError("%s is not trustworthy: %s must be owned by root and not "
                              "writable by group or others" % (label, component))
@@ -376,6 +382,9 @@ def open_attachment_request(request, host, trace):
     return opener.open(request, timeout=TIMEOUT)
 
 
+# ------------------------------------------------------------------------ attachment downloads
+# Everything below fetches a Canvas-issued file URL and records it without ever retaining the
+# access-bearing URL, its query, or a response body.
 def safe_download_failure(err):
     """Return non-secret evidence for an attachment-fetch failure.
 

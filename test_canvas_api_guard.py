@@ -1317,6 +1317,37 @@ class TestCodexRules(unittest.TestCase):
             self.assertIn('"%s"' % verb, rules, "verb %r is not in the rules file" % verb)
 
 
+class TestGuardHeader(unittest.TestCase):
+    """The header is the map a reviewer reads first; it must describe the file that exists."""
+
+    SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "canvas_api_guard.py")
+
+    def source(self):
+        with open(self.SOURCE) as handle:
+            return handle.read()
+
+    def test_the_version_is_1_14_0(self):
+        self.assertEqual(guard.USER_AGENT, "canvas-api-guard/1.14.0")
+
+    def test_every_section_the_header_promises_has_a_banner(self):
+        source = self.source()
+        header = source.split("# READ TOP TO BOTTOM:")[1].split("import argparse")[0]
+        for name in ("constants", "provenance", "token", "logging",
+                     "host pinning", "the one request function", "attachment downloads",
+                     "confirmation", "evidence", "verbs", "argparse"):
+            with self.subTest(section=name):
+                self.assertIn(name, header)
+                self.assertIn("--- %s" % name, source)
+
+    def test_the_header_states_the_provenance_and_token_invariants(self):
+        header = self.source().split("import argparse")[0]
+        self.assertIn("THE TOKEN IS ONLY EVER SENT TO THE HOST RECORDED IN THE FIXED SYSTEM "
+                      "CONFIGURATION", header)
+        self.assertIn("root-owned", header)
+        self.assertIn("attachment", header)
+        self.assertIn("provenance", header)
+
+
 class TestInstallerPlan(unittest.TestCase):
     """The review step must be useful and must not require root or touch external state."""
 
