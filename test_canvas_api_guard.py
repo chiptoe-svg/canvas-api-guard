@@ -481,13 +481,14 @@ class TestEvidence(GuardTestCase):
         self.assertIn("created object did not match requested field", output)
 
     def test_a_bad_post_verify_field_is_refused_before_anything_is_sent(self):
-        with mock.patch("urllib.request.urlopen",
-                        side_effect=AssertionError("a request was sent")):
-            code, _ = self.run_main(
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, output = self.run_main(
                 ["post", "courses/1/assignments", "--yes",
                  "--post-verify-field", "nonexistent",
                  "-d", '{"assignment": {"name": "Lab 4"}}'])
         self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+        self.assertNotIn("about to POST", output)
 
     def test_a_single_item_list_is_not_reported_as_1_items(self):
         with mock.patch("urllib.request.urlopen") as urlopen:

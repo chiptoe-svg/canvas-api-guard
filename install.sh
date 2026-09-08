@@ -79,6 +79,7 @@ case "$(uname -s)" in
         APPEND_ONLY="chflags sappnd"
         hash_file() { shasum -a 256 "$1" | awk '{print $1}'; }
         stat_uid() { stat -f '%u' "$1"; }
+        stat_owner() { stat -f '%Su' "$1"; }
         stat_perm() { stat -f '%Sp' "$1"; }
         ;;
     Linux)
@@ -87,6 +88,7 @@ case "$(uname -s)" in
         APPEND_ONLY="chattr +a"
         hash_file() { sha256sum "$1" | awk '{print $1}'; }
         stat_uid() { stat -c '%u' "$1"; }
+        stat_owner() { stat -c '%U' "$1"; }
         stat_perm() { stat -c '%A' "$1"; }
         ;;
     *)
@@ -100,7 +102,13 @@ esac
 # exactly this of its installed path) would fail closed after a successful install, with a
 # confusing message. Checked before the plan is printed and before any change is made, so a
 # reviewer sees the result under --plan too.
+#
+# A chown/chmod remedy is only offered for the destination directory itself: an ancestor
+# above it (e.g. /usr/local on an Intel Homebrew Mac, owned by the console user) may be
+# owned or managed by something else entirely, and "sudo chown" on it would be destructive
+# advice, not a fix. For an ancestor, this refuses with an explanation instead of a remedy.
 check_ancestor_ownership() {
+    target=$1
     path=$1
     while :; do
         if [ -e "$path" ] || [ -L "$path" ]; then
@@ -110,14 +118,27 @@ check_ancestor_ownership() {
                 exit 1
             fi
             if [ "$(stat_uid "$path")" != 0 ]; then
-                echo "refusing: $path is not owned by root" >&2
-                echo "  remedy: sudo chown root:$ROOT_GROUP $path" >&2
+                if [ "$path" = "$target" ]; then
+                    echo "refusing: $path is not owned by root" >&2
+                    echo "  remedy: sudo chown root:$ROOT_GROUP $path" >&2
+                else
+                    echo "refusing: $path is owned by $(stat_owner "$path"); the guard cannot be" >&2
+                    echo "  installed under a prefix a non-root user can write. This may be the" >&2
+                    echo "  Homebrew-on-Intel layout; installing the guard here needs a root-owned" >&2
+                    echo "  prefix, which this installer does not provide." >&2
+                fi
                 exit 1
             fi
             case "$(stat_perm "$path")" in
                 ?????w????|????????w?)
-                    echo "refusing: $path is writable by group or other" >&2
-                    echo "  remedy: sudo chmod 755 $path" >&2
+                    if [ "$path" = "$target" ]; then
+                        echo "refusing: $path is writable by group or other" >&2
+                        echo "  remedy: sudo chmod 755 $path" >&2
+                    else
+                        echo "refusing: $path is writable by group or other; the guard cannot be" >&2
+                        echo "  installed under a prefix that is not exclusively root-writable, and" >&2
+                        echo "  this installer does not change permissions above $target." >&2
+                    fi
                     exit 1
                     ;;
             esac
@@ -182,7 +203,8 @@ canvas-api-guard installation plan (no changes made)
   guard sha:    $SOURCE_SHA
   rules sha:    $RULES_SHA
   skill sha:    $SKILL_SHA
-  ancestor check: passed ($DEST_DIR and $CONFIG_DIR are root-owned, unlinked, unwritable by group/other)
+  ancestor check: existing ancestors of $DEST_DIR and $CONFIG_DIR: root-owned, not links, not
+                  group/other-writable; missing components will be created root-owned
   Canvas host:  $CANVAS_HOST
   executable:   $DEST (root:$ROOT_GROUP, 0555)
   config:       $CONFIG (root:$ROOT_GROUP, 0644; profile $PROFILE_LABEL; compatibility key $PROFILE)
