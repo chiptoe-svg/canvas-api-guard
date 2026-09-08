@@ -110,9 +110,8 @@ def trusted_path(path, label):
     return real
 
 def installed_guard_file():
-    """The real path of the program that is actually running."""
-    candidate = sys.argv[0] if sys.argv and os.path.isfile(sys.argv[0] or "") else __file__
-    return os.path.realpath(candidate)
+    """The real path of the code that is running: __file__, never argv, which a wrapper controls."""
+    return os.path.realpath(__file__)
 
 def check_provenance():
     """Prove the running guard is the installed, root-owned one before any credential use."""
@@ -858,6 +857,10 @@ def do_post(cfg, path, body):
     """POST: nothing exists before, so show the body, confirm, write, read the new object."""
     if body is None:
         raise GuardError("post needs a JSON body: -d '{\"...\": ...}'")
+    if cfg.post_verify_field and (not isinstance(body, dict)
+                                  or not isinstance(body.get(cfg.post_verify_field), dict)):
+        raise GuardError("POST verification field is not an object in the request body: %s"
+                         % cfg.post_verify_field)
     cfg.confirmation = confirm(cfg, [
         "about to POST %s" % canvas_url(cfg.host, path), "request body:",
         "  " + json.dumps(body, sort_keys=True),
@@ -886,12 +889,7 @@ def do_post(cfg, path, body):
     created = summarise(back["data"])
     if created is None:
         uncertain(cfg, evidence, "read-back at %s was not a Canvas object" % read_path)
-    expected = body
-    if cfg.post_verify_field:
-        if not isinstance(body, dict) or not isinstance(body.get(cfg.post_verify_field), dict):
-            raise GuardError("POST verification field is not an object in the request body: %s"
-                             % cfg.post_verify_field)
-        expected = body[cfg.post_verify_field]
+    expected = body[cfg.post_verify_field] if cfg.post_verify_field else body
     evidence.update({"object": created, "target": target_identity(resp["data"], back["data"]),
                      "changes": selected_changes(compare_fields(expected, None, back["data"]),
                                                  cfg.verify_fields)})
@@ -959,11 +957,11 @@ def read_config():
                          "or the current user and not writable by group or others: %s" % parent)
     if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
         raise GuardError("Canvas configuration must be a regular file, not a link: %s" % CONFIG_PATH)
-    if info.st_uid not in (0, os.getuid()) or (info.st_mode & 0o022):
+    if CONFIG_PATH == INSTALLED_CONFIG_PATH:    # the installed path: trusted_path is the one rule
+        trusted_path(CONFIG_PATH, "the Canvas configuration")
+    elif info.st_uid not in (0, os.getuid()) or (info.st_mode & 0o022):
         raise GuardError("Canvas configuration must be owned by root or the current user and "
                          "not writable by group or others: %s" % CONFIG_PATH)
-    if CONFIG_PATH == INSTALLED_CONFIG_PATH:    # the installed path: prove the whole chain
-        trusted_path(CONFIG_PATH, "the Canvas configuration")
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW

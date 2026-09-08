@@ -480,6 +480,15 @@ class TestEvidence(GuardTestCase):
         self.assertIn("WRITE STATUS UNCERTAIN", output)
         self.assertIn("created object did not match requested field", output)
 
+    def test_a_bad_post_verify_field_is_refused_before_anything_is_sent(self):
+        with mock.patch("urllib.request.urlopen",
+                        side_effect=AssertionError("a request was sent")):
+            code, _ = self.run_main(
+                ["post", "courses/1/assignments", "--yes",
+                 "--post-verify-field", "nonexistent",
+                 "-d", '{"assignment": {"name": "Lab 4"}}'])
+        self.assertEqual(code, 2)
+
     def test_a_single_item_list_is_not_reported_as_1_items(self):
         with mock.patch("urllib.request.urlopen") as urlopen:
             urlopen.return_value = FakeResponse(payload=[{"id": 1}])
@@ -905,14 +914,43 @@ class TestProvenance(GuardTestCase):
 
     def test_the_config_seam_is_the_only_thing_that_skips_the_check(self):
         guard.check_provenance()                 # setUp pinned a private config: skipped
-        source_tree = os.path.abspath(guard.__file__)
-        if os.stat(source_tree).st_uid == 0:
+        if os.stat(os.path.realpath(guard.__file__)).st_uid == 0:
+            self.skipTest("this checkout is root-owned, so it is indistinguishable from an install")
+        with mock.patch.object(guard, "CONFIG_PATH", guard.INSTALLED_CONFIG_PATH):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.check_provenance()          # installed_guard_file() runs for real here
+        self.assertIn("the guard executable", str(caught.exception))
+
+    def test_the_guard_checks_the_file_that_is_running_not_argv(self):
+        """installed_guard_file must ignore sys.argv[0], which a wrapper or symlink launcher
+        controls, and report the real path of this module instead."""
+        real = os.path.realpath(guard.__file__)
+        with mock.patch.object(guard.sys, "argv", ["/bin/ls", "get", "courses/1"]):
+            self.assertEqual(guard.installed_guard_file(), real)
+        if os.stat(real).st_uid == 0:
             self.skipTest("this checkout is root-owned, so it is indistinguishable from an install")
         with mock.patch.object(guard, "CONFIG_PATH", guard.INSTALLED_CONFIG_PATH), \
-                mock.patch.object(guard, "installed_guard_file", return_value=source_tree):
+                mock.patch.object(guard.sys, "argv", ["/bin/ls", "get", "courses/1"]):
             with self.assertRaises(guard.GuardError) as caught:
                 guard.check_provenance()
-        self.assertIn("the guard executable", str(caught.exception))
+        self.assertIn(real, str(caught.exception))
+
+    def test_the_default_config_path_is_held_to_the_same_rule(self):
+        """CONFIG_PATH pinned at the installed path, with os.lstat (read_config's own check)
+        and os.stat (trusted_path's ancestor walk) both patched so every directory in the
+        chain is root-owned 0755 but the config file itself is merely user-owned 0644."""
+        user_owned_file = os.stat_result((0o100644, 0, 0, 1, os.getuid(), 0, 0, 0, 0, 0))
+        def fake_stat(path):
+            return user_owned_file if path == guard.INSTALLED_CONFIG_PATH else self.rooted(0o040755)
+        with mock.patch.object(guard, "CONFIG_PATH", guard.INSTALLED_CONFIG_PATH), \
+                mock.patch.object(guard.os, "lstat", fake_stat), \
+                mock.patch.object(guard.os, "stat", fake_stat):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.read_config()
+        # "owned by root" is trusted_path's own wording; a config that is merely missing on
+        # disk raises a different message, so this pins the check that actually ran.
+        self.assertIn("owned by root", str(caught.exception))
+        self.assertIn(guard.INSTALLED_CONFIG_PATH, str(caught.exception))
 
     def test_a_live_request_refuses_before_the_token_and_before_the_network(self):
         def no_keychain():
@@ -1126,6 +1164,14 @@ class TestInstallerPlan(unittest.TestCase):
             self.assertIn(label, proc.stdout)
         self.assertIn("no changes made", proc.stdout)
         self.assertIn("does not read or store a token", proc.stdout)
+
+    def test_plan_runs_the_ancestor_ownership_check(self):
+        """The installer refuses to leave the guard's own provenance check unsatisfiable, so
+        the ancestor check must run -- and be visible -- even under --plan. This does not
+        simulate a bad /usr/local; it only proves the check ran and named its result."""
+        proc = self.run_installer("--plan", "--host", HOST)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("ancestor check", proc.stdout)
 
     def test_specialized_functions_plan_lists_its_separate_artifacts(self):
         proc = self.run_installer("--plan", "--profile", "specialized-functions", "--host", HOST)

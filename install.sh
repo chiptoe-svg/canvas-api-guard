@@ -78,18 +78,56 @@ case "$(uname -s)" in
         IMMUTABLE="chflags schg"
         APPEND_ONLY="chflags sappnd"
         hash_file() { shasum -a 256 "$1" | awk '{print $1}'; }
+        stat_uid() { stat -f '%u' "$1"; }
+        stat_perm() { stat -f '%Sp' "$1"; }
         ;;
     Linux)
         ROOT_GROUP=root
         IMMUTABLE="chattr +i"
         APPEND_ONLY="chattr +a"
         hash_file() { sha256sum "$1" | awk '{print $1}'; }
+        stat_uid() { stat -c '%u' "$1"; }
+        stat_perm() { stat -c '%A' "$1"; }
         ;;
     *)
         echo "unsupported platform $(uname -s): macOS and Linux only" >&2
         exit 1
         ;;
 esac
+
+# Every ancestor of an installation path must be root-owned, not a symlink, and not
+# writable by group or other -- otherwise the guard's own provenance check (which demands
+# exactly this of its installed path) would fail closed after a successful install, with a
+# confusing message. Checked before the plan is printed and before any change is made, so a
+# reviewer sees the result under --plan too.
+check_ancestor_ownership() {
+    path=$1
+    while :; do
+        if [ -e "$path" ] || [ -L "$path" ]; then
+            if [ -L "$path" ]; then
+                echo "refusing: $path is a symbolic link in the installation path" >&2
+                echo "  remedy: replace it with a real, root-owned directory" >&2
+                exit 1
+            fi
+            if [ "$(stat_uid "$path")" != 0 ]; then
+                echo "refusing: $path is not owned by root" >&2
+                echo "  remedy: sudo chown root:$ROOT_GROUP $path" >&2
+                exit 1
+            fi
+            case "$(stat_perm "$path")" in
+                ?????w????|????????w?)
+                    echo "refusing: $path is writable by group or other" >&2
+                    echo "  remedy: sudo chmod 755 $path" >&2
+                    exit 1
+                    ;;
+            esac
+        fi
+        [ "$path" = / ] && break
+        parent=$(dirname "$path")
+        [ "$parent" = "$path" ] && break
+        path=$parent
+    done
+}
 
 SOURCE_SHA=$(hash_file "$SCRIPT")
 RULES_SHA=$(hash_file "$RULES")
@@ -134,6 +172,9 @@ if command -v git >/dev/null 2>&1 && git -C "$SRC_DIR" rev-parse --is-inside-wor
     fi
 fi
 
+check_ancestor_ownership "$DEST_DIR"
+check_ancestor_ownership "$CONFIG_DIR"
+
 if [ "$PLAN" = yes ]; then
     cat <<EOP
 canvas-api-guard installation plan (no changes made)
@@ -141,6 +182,7 @@ canvas-api-guard installation plan (no changes made)
   guard sha:    $SOURCE_SHA
   rules sha:    $RULES_SHA
   skill sha:    $SKILL_SHA
+  ancestor check: passed ($DEST_DIR and $CONFIG_DIR are root-owned, unlinked, unwritable by group/other)
   Canvas host:  $CANVAS_HOST
   executable:   $DEST (root:$ROOT_GROUP, 0555)
   config:       $CONFIG (root:$ROOT_GROUP, 0644; profile $PROFILE_LABEL; compatibility key $PROFILE)
