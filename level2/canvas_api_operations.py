@@ -214,16 +214,15 @@ def create_rubric(args):
 
 
 def live_rubric(args):
+    """The assignment object carries its attached rubric's criteria (ids and points) in
+    `rubric`; Canvas exposes no read for the association itself, and the grade write below
+    needs none: the rubric rows ride the submission update, and the rubric total is posted
+    as the grade, so the "use for grading" setting is not consulted."""
     assignment = guard_get("courses/%s/assignments/%s" % (args.course_id, args.assignment_id)).get("object") or {}
-    settings = assignment.get("rubric_settings") or {}
-    rubric_id = settings.get("id") or assignment.get("rubric_id")
-    association_id = settings.get("rubric_association_id") or assignment.get("rubric_association_id")
-    if rubric_id is None or association_id is None:
-        raise OperationError("assignment has no live Canvas rubric association; attach a rubric first")
-    # The write below posts the rubric total as the grade itself, so the association's
-    # "use for grading" setting does not decide whether the score lands; it is not checked.
-    rubric = guard_get("courses/%s/rubrics/%s" % (args.course_id, rubric_id)).get("object") or {}
-    return assignment, rubric, str(association_id)
+    criteria = assignment.get("rubric")
+    if not isinstance(criteria, list) or not criteria:
+        raise OperationError("assignment has no attached Canvas rubric; attach a rubric first")
+    return assignment, {"data": criteria}
 
 
 def grade_payload(value, rubric):
@@ -267,7 +266,7 @@ def verify_rubric_assessment(args, student_id, criteria):
 
 
 def grade_one(args, value):
-    assignment, rubric, association_id = live_rubric(args)
+    assignment, rubric = live_rubric(args)
     student_id, criteria, total = grade_payload(value, rubric)
     path = "courses/%s/assignments/%s/submissions/%s?include[]=rubric_assessment&include[]=user" % (
         args.course_id, args.assignment_id, student_id)
@@ -277,7 +276,7 @@ def grade_one(args, value):
     guard_write("put", path, body, operation_phase(args))
     if operation_phase(args) != "dry-run":
         verify_rubric_assessment(args, student_id, criteria)
-    return {"student_id": student_id, "rubric_association_id": association_id, "posted_grade": total}
+    return {"student_id": student_id, "posted_grade": total}
 
 
 def grade_with_rubric(args):
@@ -319,6 +318,12 @@ def download_submission_attachments(course_id, submission, limit):
     return downloaded
 
 
+def current_grade(submission):
+    """What Canvas already holds for this submission, so an already-graded one is never
+    re-reviewed or regraded by accident."""
+    return {key: submission.get(key) for key in ("workflow_state", "score", "grade", "graded_at")}
+
+
 def prepare_submission_review(args):
     """Resolve one submission and locally retrieve every distinct attachment across its attempts."""
     assignment = guard_get("courses/%s/assignments/%s" % (args.course_id, args.assignment_id)).get("object") or {}
@@ -330,11 +335,17 @@ def prepare_submission_review(args):
     if not attachments:
         raise OperationError("submission review requires at least one Canvas file attachment")
     downloaded = download_submission_attachments(args.course_id, submission, 20)
+    grade = current_grade(submission)
+    if grade["workflow_state"] == "graded":
+        next_step = ("Already graded %s at %s: ask the instructor before reviewing or regrading; "
+                     "no grade has been written." % (grade["grade"], grade["graded_at"]))
+    else:
+        next_step = "Review the local attachment set against the live rubric; no grade has been written."
     return {"operation": "prepare-submission-review", "course_id": args.course_id,
             "assignment": {"assignment_id": assignment.get("id"), "title": assignment.get("name")},
             "student": {"student_id": submission.get("user_id"), "name": (submission.get("user") or {}).get("name")},
             "submission_id": int(canvas_id(str(submission.get("id", "")), "submission ID")), "attachments": downloaded,
-            "next_step": "Review the local attachment set against the live rubric; no grade has been written."}
+            "current_grade": grade, "next_step": next_step}
 
 
 def download_assignment_submissions(args):
@@ -354,7 +365,8 @@ def download_assignment_submissions(args):
             no_attachment += 1
             continue
         for record in download_submission_attachments(args.course_id, submission, MAX_REVIEW_ATTACHMENTS):
-            record.update({"student_id": submission.get("user_id"), "submission_id": submission.get("id")})
+            record.update({"student_id": submission.get("user_id"), "submission_id": submission.get("id"),
+                           "current_grade": current_grade(submission)})
             files.append(record)
     return {"operation": "download-assignment-submissions", "course_id": args.course_id,
             "assignment": {"assignment_id": assignment.get("id"), "title": assignment.get("name")},

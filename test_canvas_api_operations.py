@@ -74,20 +74,20 @@ class TestLevel2Operations(unittest.TestCase):
             operations.grade_payload({"student_id": 4,
                                       "criteria": {"criterion_404": {"points": 8}}}, rubric)
 
-    def test_live_rubric_needs_an_attached_rubric_but_not_the_use_for_grading_flag(self):
-        """The grade write carries the rubric total as posted_grade, so a rubric attached for
-        feedback only still grades; only a missing association refuses."""
+    def test_live_rubric_comes_from_the_assignment_object_alone(self):
+        """Canvas puts the attached rubric's criteria on the assignment and documents no read
+        for the association, so one assignment read is the whole preflight: no association
+        id, no "use for grading" flag, no second request."""
         args = Args()
         args.assignment_id = "22"
-        assignment = {"rubric_settings": {"id": 9, "rubric_association_id": 10}}
-        rubric = {"data": [{"id": "criterion_1", "points": 10}],
-                  "associations": [{"id": 10, "use_for_grading": False}]}
-        with mock.patch.object(operations, "guard_get",
-                               side_effect=[{"object": assignment}, {"object": rubric}]) as get:
-            _, resolved, association = operations.live_rubric(args)
+        assignment = {"id": 22, "use_rubric_for_grading": False,
+                      "rubric_settings": {"id": 9, "title": "Notes"},
+                      "rubric": [{"id": "criterion_1", "points": 10, "description": "Notes"}]}
+        with mock.patch.object(operations, "guard_get", return_value={"object": assignment}) as get:
+            _, resolved = operations.live_rubric(args)
         self.assertEqual(resolved["data"][0]["id"], "criterion_1")
-        self.assertEqual(association, "10")
-        self.assertEqual(get.call_args[0][0], "courses/12/rubrics/9")
+        self.assertEqual(get.call_count, 1)
+        self.assertEqual(get.call_args[0][0], "courses/12/assignments/22")
         with mock.patch.object(operations, "guard_get", return_value={"object": {"id": 22}}):
             with self.assertRaises(operations.OperationError) as caught:
                 operations.live_rubric(args)
@@ -106,6 +106,24 @@ class TestLevel2Operations(unittest.TestCase):
             result = operations.prepare_submission_review(args)
         download.assert_called_once_with("12", 7, "99", ".pdf")
         self.assertEqual(result["student"]["name"], "Jordan Lee")
+        self.assertIn("no grade has been written", result["next_step"])
+        self.assertEqual(result["current_grade"]["workflow_state"], None)
+
+    def test_prepare_submission_review_reports_an_existing_grade_before_anyone_reviews(self):
+        """A regrade must be the instructor's decision: the result carries Canvas's current
+        grade and says so in the next step instead of inviting a review."""
+        args = Args()
+        args.assignment_id = "22"
+        submission = {"id": 99, "user_id": 34, "workflow_state": "graded", "score": 5.0,
+                      "grade": "5", "graded_at": "2026-09-08T11:44:18Z",
+                      "attachments": [{"id": 7, "display_name": "notes.pdf"}]}
+        with mock.patch.object(operations, "guard_get", side_effect=[{"object": {}}, {"object": submission}]), \
+                mock.patch.object(operations, "guard_download_attachment", return_value={"path": "/private/file"}):
+            result = operations.prepare_submission_review(args)
+        self.assertEqual(result["current_grade"],
+                         {"workflow_state": "graded", "score": 5.0, "grade": "5",
+                          "graded_at": "2026-09-08T11:44:18Z"})
+        self.assertIn("Already graded 5 at 2026-09-08T11:44:18Z", result["next_step"])
         self.assertIn("no grade has been written", result["next_step"])
 
     def test_prepare_submission_review_accepts_multiple_document_types_but_refuses_empty(self):
@@ -218,7 +236,7 @@ class TestLevel2Operations(unittest.TestCase):
         rubric = {"data": [{"id": "criterion_1", "points": 10}]}
         value = {"student_id": 4, "criteria": {"criterion_1": {"points": points}}}
         reads = [{"object": {}}, {"object": {}}, {"object": assessment}]
-        with mock.patch.object(operations, "live_rubric", return_value=({}, rubric, "10")), \
+        with mock.patch.object(operations, "live_rubric", return_value=({}, rubric)), \
                 mock.patch.object(operations, "guard_get", side_effect=reads) as get, \
                 mock.patch.object(operations, "guard_write", return_value={}) as write, \
                 mock.patch("sys.stdout", io.StringIO()):

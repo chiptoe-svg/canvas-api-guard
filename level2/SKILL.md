@@ -36,6 +36,9 @@ Never substitute curl, browser automation, Python HTTP code, or a source-tree co
   attempt, downloads each one through API Only, and reports its provenance and SHA-256.
 - `download-assignment-submissions` does the same across a whole assignment (up to 500 files),
   reporting file, student and attempt provenance without submission text.
+- Both report each submission's `current_grade` (state, score, grade, graded_at). A submission
+  Canvas already shows as graded is not reviewed or regraded unless the instructor asks for
+  that student by name; say what the current grade is and stop.
 
 Both copy confidential student records into a user-private review directory, so Codex prompts
 before either runs. Neither infers a score or writes a grade. Review the files against the live
@@ -55,7 +58,8 @@ rubric, then use `grade-with-rubric --dry-run`.
   in it, totals the points, and writes the grade and the assessment as one verified write.
   API Only proves the grade; each scored criterion is read back here, because a rubric
   criterion is not a field of the submission object API Only reads back. The rubric only has
-  to be attached to the assignment; its "use for grading" setting is not required.
+  to be attached to the assignment (its criteria arrive on the assignment object); the
+  "use for grading" setting is not required.
 - `bulk-grade-with-rubric` does that for up to 50 students, refusing duplicates, as
   individually audited and read-back writes - never an opaque bulk request.
 
