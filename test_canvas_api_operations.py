@@ -28,21 +28,23 @@ class TestLevel2Operations(unittest.TestCase):
         self.assertNotIn("urllib", source)
         self.assertNotIn("http.client", source)
 
-    def test_student_attention_orders_transparent_signals_without_names(self):
-        pages = {
-            "courses/12/analytics/student_summaries?per_page=100": {
-                "items": [
-                    {"id": 1, "page_views": 20, "participations": 4,
-                     "tardiness_breakdown": {"missing": 0, "late": 3, "on_time": 5, "total": 8}},
-                    {"id": 2, "page_views": 2, "participations": 0,
-                     "tardiness_breakdown": {"missing": 2, "late": 0, "on_time": 1, "total": 3}},
-                ], "next": None,
-            }
-        }
-        with mock.patch.object(operations, "guard_get", side_effect=lambda path: pages[path]):
+    def test_student_attention_orders_signals_and_fetches_only_flagged_names(self):
+        summaries = [
+            {"id": 1, "page_views": 20, "participations": 4,
+             "tardiness_breakdown": {"missing": 0, "late": 3, "on_time": 5, "total": 8}},
+            {"id": 2, "page_views": 2, "participations": 0,
+             "tardiness_breakdown": {"missing": 2, "late": 0, "on_time": 1, "total": 3}},
+        ]
+        identities = [{"id": 1, "name": "Jordan Lee", "sortable_name": "Lee, Jordan"},
+                      {"id": 2, "name": "Casey Kim", "sortable_name": "Kim, Casey"}]
+        def read(path):
+            return summaries if "student_summaries" in path else identities
+        with mock.patch.object(operations, "all_items", side_effect=read) as get:
             report = operations.student_attention(Args())
         self.assertEqual([student["student_id"] for student in report["students"]], [2, 1])
-        self.assertNotIn("name", report["students"][0])
+        self.assertEqual(report["students"][0]["name"], "Casey Kim")
+        self.assertIn("user_ids[]=2", get.call_args_list[1][0][0])
+        self.assertNotIn("courses/12/users?per_page=100", get.call_args_list[1][0][0])
         self.assertIn("not a risk score", report["definition"])
 
     def test_current_courses_uses_the_server_side_teacher_and_term_filters(self):

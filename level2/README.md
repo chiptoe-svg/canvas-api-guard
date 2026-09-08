@@ -22,7 +22,7 @@ task-aware operations that are more efficient and less error-prone for recurring
 | `needs-grading` | Assignment queue and total needing grading |
 | `course-health` | Assignment-level score and late/missing patterns |
 | `assignment-performance` | Same evidence, ordered for instructional review |
-| `student-attention` | Transparent submission and engagement signals, not a risk score |
+| `student-attention` | Named flagged students and transparent signals, not a risk score or full roster |
 | `student-trajectory` | One student's assignment and activity evidence |
 | `attendance-summary` | Course activity only; not verified attendance |
 

@@ -137,6 +137,20 @@ def assignment_rows(course_id, limit):
     return compact[:limit]
 
 
+def student_identities(course_id, student_ids):
+    """Retrieve names only for already-flagged students, never the whole roster."""
+    identities = {}
+    ids = [str(student_id) for student_id in student_ids if student_id is not None]
+    for start in range(0, len(ids), 100):
+        selected = ids[start:start + 100]
+        path = ("courses/%s/users?enrollment_type[]=student&enrollment_state[]=active&per_page=100&" %
+                course_id) + "&".join("user_ids[]=" + student_id for student_id in selected)
+        for row in all_items(path):
+            identities[str(row.get("id"))] = {"name": row.get("name"),
+                                                "sortable_name": row.get("sortable_name")}
+    return identities
+
+
 def course_health(args):
     return {"operation": "course-health", "course_id": args.course_id,
             "definition": "assignment-level submission and score patterns; not attendance",
@@ -165,9 +179,13 @@ def student_attention(args):
         })
     candidates.sort(key=lambda row: (row["missing"], row["late"],
                                       -row["participations"], -row["page_views"]), reverse=True)
+    candidates = candidates[:args.limit]
+    identities = student_identities(args.course_id, [row["student_id"] for row in candidates])
+    for row in candidates:
+        row.update(identities.get(str(row["student_id"]), {}))
     return {"operation": "student-attention", "course_id": args.course_id,
-            "definition": "transparent Canvas engagement and submission signals; not a risk score or attendance record",
-            "students": candidates[:args.limit]}
+            "definition": "named, flagged active students with transparent Canvas engagement and submission signals; not a risk score or attendance record",
+            "students": candidates}
 
 
 def student_trajectory(args):
