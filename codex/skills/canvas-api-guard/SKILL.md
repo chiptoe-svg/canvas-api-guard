@@ -47,6 +47,39 @@ Reads need no approval. A list prints how many items it returned and, when there
 more, a `next:` line with the path of the next page. Follow it by passing that
 path back to `get`. Do not assume a list is complete until there is no `next:`.
 
+## Fast, compact reads
+
+Use the guard for every Canvas request, then filter its JSON locally before it reaches the
+conversation. This keeps full Canvas records out of routine answers without changing the
+guard's fixed host, token handling, or audit trail. Do not use curl or another API client.
+
+- Reuse a course ID confirmed earlier in the same task. Resolve it live again in a later task
+  or whenever the course identity is uncertain.
+- Ask for the narrowest Canvas endpoint that answers the question. Do not list every course
+  to answer a question about a known course.
+- For lists, use `-o json` and local `jq` filtering. Check the returned `next` value before
+  claiming a count or list is complete.
+- Return only the requested aggregate or fields. Do not print raw student, enrollment, or
+  course records unless the instructor asks for them.
+
+Examples:
+
+```bash
+# Active-student count; inspect `next` before treating this as complete.
+/usr/local/libexec/canvas_api_guard.py get \
+  "courses/288066/enrollments?type[]=StudentEnrollment&state[]=active&per_page=100" -o json \
+  | jq -r '(.items | length), (.next // "NO_NEXT")'
+
+# Teaching-course names and IDs, compactly. Reuse a selected ID for later questions.
+/usr/local/libexec/canvas_api_guard.py get \
+  "users/self/courses?enrollment_type=teacher&enrollment_state=active&per_page=100" -o json \
+  | jq -r '.items[] | [.id, .course_code, .name] | @tsv'
+```
+
+Every guard response includes numeric `timing_ms` values for request-audit, credential,
+network, and total-before-response-audit time. Treat them as diagnostics only: they contain
+no token or response-body data.
+
 ## Writes: dry-run, show, then send
 
 Every write goes like this, no exceptions:

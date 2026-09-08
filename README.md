@@ -216,6 +216,7 @@ Events include:
 
 - `request`: method, normalized path, URL, read/write kind, confirmation mode, and write body;
 - `response`: status, success, byte count or error type;
+- `response.timing_ms`: numeric request-audit, credential, network, and total-before-response-audit durations;
 - `evidence`: target identity, before/after changes, and verification result;
 - `refusal`: a write that lacked confirmation.
 

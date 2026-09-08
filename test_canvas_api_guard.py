@@ -281,6 +281,20 @@ class TestLogBeforeRequest(GuardTestCase):
         self.assertEqual(seen["lines"][0]["verb"], "GET")
         self.assertEqual(seen["lines"][0]["path"], "/api/v1/courses/1")
 
+    def test_response_timing_is_numeric_and_visible_without_sensitive_data(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            code, output = self.run_main(["get", "courses/1", "-o", "json"])
+        self.assertEqual(code, 0)
+        timing = json.loads(output)["timing_ms"]
+        self.assertEqual(set(timing), {"request_audit", "credential", "network",
+                                       "total_before_response_audit"})
+        self.assertTrue(all(isinstance(value, int) and value >= 0
+                            for value in timing.values()))
+        response = [line for line in self.log_lines() if line["event"] == "response"][-1]
+        self.assertEqual(response["timing_ms"], timing)
+        self.assertNotIn(TOKEN, json.dumps(timing))
+
     def test_a_failed_write_still_leaves_its_request_line(self):
         def boom(request, timeout=None):
             raise OSError("no network in tests")

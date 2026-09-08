@@ -109,6 +109,8 @@ correlation sources.
   regular user-owned `0600` file.
 - A request event is flushed and fsynced before network I/O.
 - Response bodies and credentials are excluded.
+- Response timing records contain only numeric request-audit, credential, network, and
+  total-before-response-audit durations; they do not contain credentials or response bodies.
 - Write evidence includes the Canvas user ID and student name when Canvas returns the user
   object, plus requested/before/after fields and the verification result.
 
