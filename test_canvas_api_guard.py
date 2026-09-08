@@ -1785,7 +1785,7 @@ class TestInstallerPlan(unittest.TestCase):
         proc = self.run_installer("--help")
         self.assertEqual(proc.returncode, 0)
         self.assertIn("--plan", proc.stdout)
-        self.assertIn("exits 0 when installing would change a file and 3 when", proc.stdout)
+        self.assertIn("It exits 0 when a root-owned file would change (rerun with sudo), 4 when", proc.stdout)
 
     def test_plan_lists_every_reviewed_hash_and_destination(self):
         proc = self.run_installer("--plan", "--host", HOST)
@@ -1861,13 +1861,37 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertIn("Nothing to do", proc.stdout)
         self.assertNotIn("Run the same command through sudo", proc.stdout)
 
-        with open(os.path.join(root, "codex/skills/canvas-api-guard/SKILL.md"), "a") as handle:
+        skill = os.path.join(root, "codex/skills/canvas-api-guard/SKILL.md")
+        with open(skill, "a") as handle:
             handle.write("# older\n")
         proc = plan()
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("SKILL.md (", proc.stdout)
+        self.assertEqual(proc.returncode, 4, proc.stdout + proc.stderr)
         self.assertEqual(proc.stdout.count("[differs]"), 1)
-        self.assertNotIn("Nothing to do", proc.stdout)
+        self.assertIn("without --plan and without sudo", proc.stdout)
+        self.assertNotIn("through sudo", proc.stdout)
+
+        # Only a user-owned file differs, so the same command without --plan and without root
+        # replaces it, backs the old copy up, and leaves the root-owned files alone.
+        guard = os.path.join(root, "libexec/canvas_api_guard.py")
+        before = os.stat(guard)
+        proc = subprocess.run([copy, "--allow-dirty", "--host", HOST], cwd=self.ROOT,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("backed up %s" % skill, proc.stdout)
+        self.assertTrue(any(name.startswith("SKILL.md.bak-")
+                            for name in os.listdir(os.path.dirname(skill))))
+        self.assertEqual(plan().returncode, 3)
+        self.assertEqual(os.stat(guard).st_mtime_ns, before.st_mtime_ns)
+
+        with open(guard, "a") as handle:
+            handle.write("# older\n")
+        proc = plan()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("through sudo", proc.stdout)
+        proc = subprocess.run([copy, "--allow-dirty", "--host", HOST], cwd=self.ROOT,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("requires root ownership", proc.stderr)
 
     def extracted_file_state(self):
         """install.sh's SHA-256 state check, alone, cut out with sed like the ancestor check."""
@@ -2047,6 +2071,10 @@ class TestInstallerPlan(unittest.TestCase):
             script = handle.read()
         self.assertNotIn("upgrade", script.lower())
         self.assertIn('if [ "\\$plan_status" -eq 3 ]; then', script)
+        self.assertIn('elif [ "\\$plan_status" -eq 4 ]; then', script)
+        user_only = script.index('"$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST"')
+        self.assertLess(script.index('-eq 4 ]'), user_only)
+        self.assertLess(user_only, script.index('/usr/bin/sudo "$CHECKOUT/install.sh"'))
         self.assertLess(script.index("plan_status=0"), script.index('/usr/bin/sudo "$CHECKOUT/install.sh"'))
         lookup = [line for line in script.splitlines() if "find-generic-password" in line]
         self.assertEqual(len(lookup), 1, lookup)

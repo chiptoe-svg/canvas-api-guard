@@ -10,7 +10,9 @@ usage() {
     text="usage: $0 [--plan] [--allow-dirty] [--profile api-only|specialized-functions] --host school.instructure.com
   --plan compares every installed file with the reviewed source (SHA-256; owner and mode for
   root-owned files) and changes nothing.
-  It exits 0 when installing would change a file and 3 when nothing needs to change."
+  It exits 0 when a root-owned file would change (rerun with sudo), 4 when only the Codex
+  rules or skills in the user's home would change (rerun without sudo), and 3 when nothing
+  needs to change."
     if [ "${1:-2}" = 1 ]; then
         echo "$text"
         exit 0
@@ -207,16 +209,18 @@ DEST_STATE=$(file_state "$DEST" "$SOURCE_SHA" root)
 CONFIG_STATE=$(file_state "$CONFIG" "$CONFIG_SHA" root)
 RULES_STATE=$(file_state "$RULE_DEST" "$RULES_SHA" user)
 SKILL_STATE=$(file_state "$SKILL_DEST" "$SKILL_SHA" user)
-STATES="$DEST_STATE $CONFIG_STATE $RULES_STATE $SKILL_STATE"
+ROOT_STATES="$DEST_STATE $CONFIG_STATE"
+USER_STATES="$RULES_STATE $SKILL_STATE"
 if [ "$PROFILE" = level-2 ]; then
     LEVEL2_STATE=$(file_state "$LEVEL2_DEST" "$LEVEL2_SCRIPT_SHA" root)
     LEVEL2_SKILL_STATE=$(file_state "$LEVEL2_SKILL_DEST" "$LEVEL2_SKILL_SHA" user)
-    STATES="$STATES $LEVEL2_STATE $LEVEL2_SKILL_STATE"
+    ROOT_STATES="$ROOT_STATES $LEVEL2_STATE"
+    USER_STATES="$USER_STATES $LEVEL2_SKILL_STATE"
 fi
-UP_TO_DATE=yes
-for state in $STATES; do
-    [ "$state" = same ] || UP_TO_DATE=no
-done
+ROOT_CHANGES=no
+for state in $ROOT_STATES; do [ "$state" = same ] || ROOT_CHANGES=yes; done
+USER_CHANGES=no
+for state in $USER_STATES; do [ "$state" = same ] || USER_CHANGES=yes; done
 
 SOURCE_STATE="release archive or non-git source"
 if command -v git >/dev/null 2>&1 && git -C "$SRC_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -262,7 +266,7 @@ EOP
   Specialized Functions skill sha:  $LEVEL2_SKILL_SHA
 EOP
     fi
-    if [ "$UP_TO_DATE" = yes ]; then
+    if [ "$ROOT_CHANGES" = no ] && [ "$USER_CHANGES" = no ]; then
         echo
         echo "Nothing to do: every installed file already matches this source (exit status 3)."
         exit 3
@@ -270,14 +274,22 @@ EOP
     cat <<EOP
 
 [state] compares the installed file's SHA-256 with the reviewed source, plus owner and mode for
-root-owned files; only files that are not [same] will be replaced, and a [link] is refused.
+root-owned files. A sudo run rewrites the root-owned files and backs up any that differed; a
+[link] is refused, not replaced.
 The installer performs no Canvas request and does not read or store a token.
-Run the same command through sudo without --plan only after reviewing this plan.
 EOP
+    if [ "$ROOT_CHANGES" = no ]; then
+        echo "Only the Codex rules or skills in $USER_NAME's home differ: rerun the same command"
+        echo "without --plan and without sudo (exit status 4)."
+        exit 4
+    fi
+    echo "Run the same command through sudo without --plan only after reviewing this plan."
     exit 0
 fi
 
-if [ "$(id -u)" -ne 0 ]; then
+# Without root, only the user-owned Codex files may be replaced, and only when every
+# root-owned file is already installed correctly.
+if [ "$(id -u)" -ne 0 ] && [ "$ROOT_CHANGES" = yes ]; then
     echo "installation requires root ownership: rerun with sudo after reviewing --plan" >&2
     exit 1
 fi
@@ -321,18 +333,24 @@ if [ "$PROFILE" = level-2 ]; then
     refuse_link "$LEVEL2_SKILL_DEST"
 fi
 
-install -d -o root -g "$ROOT_GROUP" -m 0755 "$DEST_DIR" "$CONFIG_DIR"
-backup_if_different "$SCRIPT" "$DEST"
-install -o root -g "$ROOT_GROUP" -m 0555 "$SCRIPT" "$DEST"
-CONFIG_TEMP="$CONFIG_DIR/config.json.tmp.$$"
-printf '%s\n' "$CONFIG_TEXT" > "$CONFIG_TEMP"
-chown root:"$ROOT_GROUP" "$CONFIG_TEMP"
-chmod 0644 "$CONFIG_TEMP"
-if [ -f "$CONFIG" ] && ! cmp -s "$CONFIG_TEMP" "$CONFIG"; then
-    cp -p "$CONFIG" "$CONFIG.bak-$STAMP"
-    echo "backed up $CONFIG"
+if [ "$(id -u)" -eq 0 ]; then
+    install -d -o root -g "$ROOT_GROUP" -m 0755 "$DEST_DIR" "$CONFIG_DIR"
+    backup_if_different "$SCRIPT" "$DEST"
+    install -o root -g "$ROOT_GROUP" -m 0555 "$SCRIPT" "$DEST"
+    CONFIG_TEMP="$CONFIG_DIR/config.json.tmp.$$"
+    printf '%s\n' "$CONFIG_TEXT" > "$CONFIG_TEMP"
+    chown root:"$ROOT_GROUP" "$CONFIG_TEMP"
+    chmod 0644 "$CONFIG_TEMP"
+    if [ -f "$CONFIG" ] && ! cmp -s "$CONFIG_TEMP" "$CONFIG"; then
+        cp -p "$CONFIG" "$CONFIG.bak-$STAMP"
+        echo "backed up $CONFIG"
+    fi
+    mv -f "$CONFIG_TEMP" "$CONFIG"
+    if [ "$PROFILE" = level-2 ]; then
+        backup_if_different "$LEVEL2_SCRIPT" "$LEVEL2_DEST"
+        install -o root -g "$ROOT_GROUP" -m 0555 "$LEVEL2_SCRIPT" "$LEVEL2_DEST"
+    fi
 fi
-mv -f "$CONFIG_TEMP" "$CONFIG"
 
 ensure_user_dir "$LOG_DIR"
 chown "$USER_NAME" "$LOG_DIR"
@@ -353,9 +371,7 @@ install -o "$USER_NAME" -m 0644 "$RULES" "$RULE_DEST"
 install -o "$USER_NAME" -m 0644 "$SKILL" "$SKILL_DEST"
 if [ "$PROFILE" = level-2 ]; then
     ensure_user_dir "$CODEX_DIR/skills/canvas-api-operations"
-    backup_if_different "$LEVEL2_SCRIPT" "$LEVEL2_DEST"
     backup_if_different "$LEVEL2_SKILL" "$LEVEL2_SKILL_DEST"
-    install -o root -g "$ROOT_GROUP" -m 0555 "$LEVEL2_SCRIPT" "$LEVEL2_DEST"
     install -o "$USER_NAME" -m 0644 "$LEVEL2_SKILL" "$LEVEL2_SKILL_DEST"
 fi
 

@@ -24,7 +24,8 @@ usage: install-from-github.sh --ref FULL_COMMIT_SHA --host school.instructure.co
 Downloads exactly FULL_COMMIT_SHA, creates a private self-deleting .command launcher, and
 opens it in macOS Terminal. The same command serves a new Mac, an older installation, and an
 up-to-date one: the reviewed plan compares every installed file's SHA-256 with the downloaded
-commit, and the administrator password is asked for only when a file needs to change. The
+commit, and the administrator password is asked for only when a root-owned file needs to
+change; when only the Codex rules or skills differ they are replaced without one. The
 Canvas API token is asked for only when the Keychain holds none; an existing token is kept and
 never read or displayed. Neither secret is passed to this bootstrap or stored in the launcher.
 A private, non-secret completion-status JSON file is printed after Terminal launches so an
@@ -135,6 +136,9 @@ plan_status=0
 ./install.sh --plan --profile "$PROFILE" --host "$CANVAS_HOST" || plan_status=\$?
 if [ "\$plan_status" -eq 3 ]; then
     printf '\nThis Mac already has this commit installed; no administrator password is needed.\n'
+elif [ "\$plan_status" -eq 4 ]; then
+    printf '\nOnly the Codex rules or skills differ; updating them needs no administrator password.\n\n'
+    "$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST"
 elif [ "\$plan_status" -ne 0 ]; then
     exit "\$plan_status"
 else

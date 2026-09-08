@@ -175,12 +175,15 @@ Those remain deployment controls.
   not group/other-writable; `[perms]` is matching content with wrong owner or mode;
 - an explicit statement that it performs no Canvas or credential operation.
 
-It exits 0 when an installation would change a file and 3 when every file is already
-`[same]`; the macOS bootstrap uses that status to skip the privileged step entirely.
+It exits 0 when a root-owned file would change, 4 when only the user-owned Codex rules or
+skills would change, and 3 when every file is already `[same]`. The macOS bootstrap uses
+those statuses to skip the privileged step: on 4 it reruns the installer as the user, which
+replaces only the user-owned files and refuses if a root-owned file differs.
 
 Actual installation:
 
-- requires root;
+- requires root for any root-owned file; without root it replaces only the user-owned Codex
+  rules and skills, and only when every root-owned file is already installed correctly;
 - refuses a tracked, modified Git checkout unless `--allow-dirty` is explicit;
 - installs the executable and host configuration as root-owned;
 - backs up differing executable, config, Codex rule, and skill files;

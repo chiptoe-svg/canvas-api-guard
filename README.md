@@ -75,9 +75,11 @@ First, inspect a no-change plan:
 ```
 
 The plan marks each installed file `[same]`, `[differs]`, `[missing]`, `[link]`, or `[perms]`
-by SHA-256 against the checkout, plus owner and mode for root-owned files, and exits with
-status 3 when nothing needs to change. After reviewing
-the source revision, hashes, states, destinations, ownership, and modes:
+by SHA-256 against the checkout, plus owner and mode for root-owned files. It exits with
+status 3 when nothing needs to change and 4 when only the Codex rules or skills in your home
+differ; in that case rerun the same command without `--plan` and without `sudo`, and only
+those files are replaced (a `[link]` is refused, not replaced). After reviewing the source
+revision, hashes, states, destinations, ownership, and modes:
 
 ```sh
 sudo ./install.sh --host school.instructure.com
@@ -144,9 +146,12 @@ plan, which marks every installed file `[same]`, `[differs]`, `[missing]`, `[lin
 `[perms]` by comparing its SHA-256 with the downloaded commit, plus owner and mode for the
 root-owned files. When every file is `[same]` the plan exits
 with status 3 and the workflow skips the privileged step, so no administrator password is asked
-for. Otherwise it pauses for Return, installs the root-owned files with `sudo`, and replaces
-only the files that differ. It then stores a token only if the Keychain holds none, found by an
-attribute lookup that never reads the secret; an existing token is kept unchanged. Finally it
+for. When only the Codex rules or skills differ, the plan exits with status 4 and the workflow
+replaces those files as you, again without a password and without a second pause, since the
+plan is already on screen. Otherwise it pauses for Return and installs with `sudo`, which
+rewrites the root-owned files and backs up any file that differed. It then stores a token
+only if the Keychain holds none, found by an attribute lookup that never reads the secret; an
+existing token is kept unchanged. Finally it
 reports the installed version and waits for Return before closing. It makes no Canvas API
 request. If Terminal cannot be opened, the bootstrap reports failure rather than claiming a
 prompt is visible and tells a Codex user that host/GUI execution permission is required.
