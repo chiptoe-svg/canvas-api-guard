@@ -606,26 +606,26 @@ class TestRedirectsAreRefused(unittest.TestCase):
 
 
 class TestAttachmentDownload(GuardTestCase):
-    def test_download_uses_submission_authorized_public_url_without_a_token(self):
+    def test_download_uses_file_url_without_a_token(self):
         cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST})()
-        file_url = "https://cdn.example.edu/submitted-file?signature=not-for-output"
-        with mock.patch.object(guard, "send_request", return_value={"data": {"public_url": file_url}}) as send, \
+        file_url = "https://%s/files/9/download?verifier=not-for-output" % HOST
+        with mock.patch.object(guard, "send_request", return_value={"data": {"url": file_url}}) as send, \
                 mock.patch.object(guard, "secure_review_dir", return_value=self.state_dir), \
                 mock.patch.object(guard, "open_pinned_attachment_request", return_value=io.BytesIO(b"student work")) as open_it, \
                 mock.patch("sys.stdout", io.StringIO()):
             guard.do_download_submission_file(cfg, "7", "9", "12", ".pdf")
-        self.assertEqual(send.call_args[0][1:], ("GET", "files/9/public_url?submission_id=12"))
+        self.assertEqual(send.call_args[0][1:], ("GET", "files/9"))
         request = open_it.call_args[0][0]
         self.assertEqual(request.full_url, file_url)
         self.assertNotIn("authorization", {key.lower() for key, _ in request.header_items()})
         evidence = [line for line in self.log_lines() if line["event"] == "evidence"][-1]
-        self.assertEqual(evidence["path"], "/api/v1/files/9/public_url?submission_id=12")
+        self.assertEqual(evidence["path"], "/api/v1/files/9")
 
-    def test_download_retries_one_transient_server_error_with_a_fresh_public_url(self):
+    def test_download_retries_one_transient_server_error_with_a_fresh_file_url(self):
         cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST})()
-        file_url = "https://cdn.example.edu/submitted-file?signature=not-for-output"
+        file_url = "https://%s/files/9/download?verifier=not-for-output" % HOST
         transient = urllib.error.HTTPError(file_url, 500, "Server Error", {}, None)
-        with mock.patch.object(guard, "send_request", return_value={"data": {"public_url": file_url}}) as send, \
+        with mock.patch.object(guard, "send_request", return_value={"data": {"url": file_url}}) as send, \
                 mock.patch.object(guard, "secure_review_dir", return_value=self.state_dir), \
                 mock.patch.object(guard, "open_pinned_attachment_request", side_effect=[transient, io.BytesIO(b"student work")]) as open_it, \
                 mock.patch("sys.stdout", io.StringIO()):
