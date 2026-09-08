@@ -43,7 +43,7 @@
 # argparse.
 
 import argparse, datetime, getpass, hashlib, json, os, pty, pwd, re, stat, subprocess, sys, tempfile
-import urllib.error, urllib.parse, urllib.request
+import urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
 USER_AGENT = "canvas-api-guard/1.14.0"
@@ -341,9 +341,7 @@ class RefuseRedirects(urllib.request.HTTPRedirectHandler):
         raise GuardError("refusing to follow a redirect (%s) to %r: the token is sent only to "
                          "the pinned URL" % (code, newurl))
 
-
 urllib.request.install_opener(urllib.request.build_opener(RefuseRedirects))
-
 
 class AttachmentRedirects(urllib.request.HTTPRedirectHandler):
     """Follow a Canvas attachment redirect over HTTPS only, carrying no credential.
@@ -355,7 +353,7 @@ class AttachmentRedirects(urllib.request.HTTPRedirectHandler):
     STRIPPED = ("authorization", "cookie", "host", "proxy-authorization")
 
     def __init__(self, host, trace):
-        super(AttachmentRedirects, self).__init__()
+        super().__init__()
         self.host, self.trace = host, trace
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -371,7 +369,6 @@ def open_request(request):
     """The one authenticated request. The installed opener refuses every redirect."""
     return urllib.request.urlopen(request, timeout=TIMEOUT)
 
-
 def open_attachment_request(request, host, trace):
     """Open a bearer-free Canvas file URL directly, never through a system proxy.
 
@@ -383,7 +380,6 @@ def open_attachment_request(request, host, trace):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
                                          AttachmentRedirects(host, trace))
     return opener.open(request, timeout=TIMEOUT)
-
 
 # ------------------------------------------------------------------------ attachment downloads
 # Everything below fetches a Canvas-issued file URL and records it without ever retaining the
@@ -400,7 +396,6 @@ def safe_download_failure(err):
     return {"error": type(err).__name__, "http_status": status,
             "response_host": safe_url_host(getattr(err, "url", ""))}
 
-
 def https_parts(url, refusal):
     """Split a URL that must be absolute HTTPS with a host and no embedded credentials; every
     off-host hop this file will open is admitted through here, and nothing else is."""
@@ -409,7 +404,6 @@ def https_parts(url, refusal):
         raise GuardError(refusal)
     return parsed
 
-
 def safe_url_host(url):
     """Return only a normalized hostname from a URL; never a path, query, port, or userinfo."""
     try:
@@ -417,7 +411,6 @@ def safe_url_host(url):
     except ValueError:
         host = None
     return host.lower() if host and len(host) <= 253 else None
-
 
 def safe_response_hop(response):
     """Capture safe final response evidence without preserving its URL or headers."""
@@ -432,7 +425,6 @@ def safe_response_hop(response):
         except AttributeError:
             status = None
     return {"status": status if isinstance(status, int) else None, "host": safe_url_host(url)}
-
 
 def redirect_stage(trace):
     return ",".join(hop["scope"] for hop in trace) or "none"
@@ -574,7 +566,6 @@ def compare_fields(body, before, after):
                      "after": got_after, "match": None if not isinstance(after, dict)
                      else matches(requested, got_after)})
     return rows
-
 
 def selected_changes(changes, fields):
     """Limit verification only when a reviewed specialized operation names stable fields."""
@@ -779,7 +770,6 @@ def safe_download_suffix(value):
         raise GuardError("download suffix must be a simple extension of at most 16 letters or digits")
     return value.lower()
 
-
 def submission_download_url(cfg, path, field, kind):
     """Resolve a Canvas-issued file URL through the authenticated, pinned API request path:
     File.url, or the submission-authorized temporary URL after File.url delivery fails."""
@@ -787,7 +777,6 @@ def submission_download_url(cfg, path, field, kind):
     file_url = (response.get("data") or {}).get(field)
     https_parts(file_url, "Canvas did not return a usable HTTPS submission %s URL" % kind)
     return file_url
-
 
 def do_download_submission_file(cfg, course_id, file_id, submission_id, suffix):
     """Download one Canvas-authorized submission attachment, never forwarding the token."""
@@ -906,7 +895,6 @@ def template_value(data, template):
         raise GuardError("POST read-back template resolved to an invalid path value")
     return urllib.parse.quote(str(value), safe="-._~")
 
-
 def post_read_path(cfg, path, response, readback_template):
     """Choose the exact object to verify after a create, never following another host."""
     if readback_template:
@@ -929,7 +917,6 @@ def post_read_path(cfg, path, response, readback_template):
             raise GuardError("Location header points off the pinned host: %s" % parsed.netloc)
         return parsed.path + (("?" + parsed.query) if parsed.query else "")
     return None
-
 
 def do_post(cfg, path, body):
     """POST: nothing exists before, so show the body, confirm, write, read the new object."""
@@ -1057,8 +1044,6 @@ def read_config():
             raise GuardError("Canvas configuration changed during validation: %s" % CONFIG_PATH)
         with os.fdopen(fd) as handle:
             configured = json.load(handle)
-    except GuardError:
-        raise
     except (OSError, ValueError) as err:
         raise GuardError("cannot read Canvas configuration %s: %s" % (CONFIG_PATH, err))
     if not isinstance(configured, dict):
