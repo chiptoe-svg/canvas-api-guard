@@ -36,6 +36,17 @@ class FakeResponse(object):
         pass
 
 
+class FakeStdout(io.StringIO):
+    """Captured stdout that can claim to be a terminal, so the guard's -o default applies."""
+
+    def __init__(self, is_tty):
+        io.StringIO.__init__(self)
+        self.is_tty = is_tty
+
+    def isatty(self):
+        return self.is_tty
+
+
 class GuardTestCase(unittest.TestCase):
     def setUp(self):
         guard._SOURCE = None
@@ -70,13 +81,13 @@ class GuardTestCase(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def run_main(self, argv, stdin_is_tty=False):
+    def run_main(self, argv, stdin_is_tty=False, stdout_is_tty=True):
         """Run main() with private fixed config/log paths and captured output."""
-        return self.run_argv(list(argv), stdin_is_tty)
+        return self.run_argv(list(argv), stdin_is_tty, stdout_is_tty)
 
-    def run_argv(self, argv, stdin_is_tty=False):
+    def run_argv(self, argv, stdin_is_tty=False, stdout_is_tty=True):
         """Run main() on exactly this argv, with the same patches run_main uses."""
-        out, err = io.StringIO(), io.StringIO()
+        out, err = FakeStdout(stdout_is_tty), io.StringIO()
         stdin = io.StringIO()          # StringIO.isatty() is False
         if stdin_is_tty:
             stdin = mock.Mock()
@@ -410,7 +421,6 @@ class TestDryRunSendsNothing(GuardTestCase):
             raise AssertionError("--dry-run made a network call")
 
         cases = [["get", "courses/1"],
-                 ["count", "courses"],
                  ["post", "courses/1/assignments", "-d", '{"assignment": {"name": "Lab"}}'],
                  ["put", "courses/1/assignments/2", "-d", '{"assignment": {"name": "Lab"}}'],
                  ["patch", "courses/1/assignments/2", "-d", '{"assignment": {"name": "L"}}'],
@@ -1112,17 +1122,6 @@ class TestNextPage(GuardTestCase):
             code, output = self.run_main(["get", "courses", "-o", "json"])
         self.assertEqual(json.loads(output)["next"], "/api/v1/courses?page=2&per_page=10")
 
-    def test_count_follows_every_page_and_returns_one_total(self):
-        responses = [FakeResponse(headers={"Link": self.LINK}, payload=[{"id": 1}, {"id": 2}]),
-                     FakeResponse(payload=[{"id": 3}])]
-        with mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen:
-            code, output = self.run_main(["count", "courses?per_page=10", "-o", "json"])
-        result = json.loads(output)
-        self.assertEqual(code, 0)
-        self.assertEqual(result["count"], 3)
-        self.assertEqual(result["pages"], 2)
-        self.assertEqual(urlopen.call_count, 2)
-
     def test_a_list_without_a_next_link_says_nothing_about_pages(self):
         with mock.patch("urllib.request.urlopen") as urlopen:
             urlopen.return_value = FakeResponse(payload=[{"id": 1}])
@@ -1151,6 +1150,96 @@ class TestNextPage(GuardTestCase):
                 '<https://%s/api/v1/courses?ids=1,2;x=y&page=2>; rel="next"') % (HOST, HOST)
         self.assertEqual(guard.next_link({"Link": link}, HOST),
                          "/api/v1/courses?ids=1,2;x=y&page=2")
+
+    def page(self, number, items):
+        """One Canvas page, with a Link header pointing at the next one."""
+        link = '<https://%s/api/v1/courses?page=%d&per_page=2>; rel="next"' % (HOST, number + 1)
+        return FakeResponse(headers={"Link": link}, payload=items)
+
+    def test_all_pages_concatenates_every_page_and_reports_count_and_pages(self):
+        responses = [self.page(1, [{"id": 1}, {"id": 2}]), self.page(2, [{"id": 3}]),
+                     FakeResponse(payload=[{"id": 4}])]
+        with mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen:
+            code, output = self.run_main(["get", "courses?per_page=2", "--all-pages",
+                                          "-o", "json"])
+        self.assertEqual(code, 0)
+        result = json.loads(output)
+        self.assertEqual(code, 0)
+        self.assertEqual([item["id"] for item in result["items"]], [1, 2, 3, 4])
+        self.assertEqual((result["count"], result["pages"]), (4, 3))
+        self.assertEqual(urlopen.call_count, 3)
+        reads = [line for line in self.log_lines() if line["event"] == "read"]
+        self.assertEqual(len(reads), 3)
+
+    def test_all_pages_refuses_a_link_that_repeats_a_page_it_has_read(self):
+        responses = [self.page(1, [{"id": 1}]), self.page(1, [{"id": 2}])]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, _ = self.run_main(["get", "courses?per_page=2", "--all-pages"])
+        self.assertEqual(code, 2)
+        self.assertIn("pagination loop", self.last_stderr)
+
+    def test_all_pages_stops_at_the_page_cap(self):
+        responses = [self.page(number, [{"id": number}]) for number in range(1, 6)]
+        with mock.patch.object(guard, "PAGE_CAP", 2), \
+                mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen:
+            code, _ = self.run_main(["get", "courses?per_page=2", "--all-pages"])
+        self.assertEqual(code, 2)
+        self.assertIn("2 pages", self.last_stderr)
+        self.assertEqual(urlopen.call_count, 2)
+
+    def test_all_pages_refuses_a_response_that_is_not_a_list(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            code, _ = self.run_main(["get", "courses/1", "--all-pages"])
+        self.assertEqual(code, 2)
+        self.assertIn("list response", self.last_stderr)
+
+
+class TestFieldsAndOutputDefault(GuardTestCase):
+    def test_fields_projects_every_item_to_the_named_dot_paths(self):
+        payload = [{"id": 1, "name": "A", "term": {"id": 8, "name": "Fall"}, "extra": "drop"},
+                   {"id": 2, "name": "B"}]
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload=payload)
+            code, output = self.run_main(["get", "courses", "--fields", "id,term.name",
+                                          "-o", "json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output)["items"],
+                         [{"id": 1, "term.name": "Fall"}, {"id": 2, "term.name": None}])
+
+    def test_fields_projects_a_single_object_and_keeps_the_requested_order(self):
+        payload = {"id": 2, "name": "Lab", "rubric_settings": {"id": 9}}
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload=payload)
+            code, output = self.run_main(["get", "courses/1/assignments/2",
+                                          "--fields", "name,rubric_settings.id,missing",
+                                          "-o", "json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(list(json.loads(output)["object"]),
+                         ["name", "rubric_settings.id", "missing"])
+        self.assertEqual(json.loads(output)["object"]["missing"], None)
+
+    def test_an_empty_field_list_is_refused(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload=[{"id": 1}])
+            code, _ = self.run_main(["get", "courses", "--fields", " , "])
+        self.assertEqual(code, 2)
+        self.assertIn("--fields", self.last_stderr)
+
+    def test_json_is_the_default_when_stdout_is_not_a_terminal(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1, "name": "Lab"})
+            code, output = self.run_main(["get", "courses/1"], stdout_is_tty=False)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output)["object"], {"id": 1, "name": "Lab"})
+
+    def test_text_is_the_default_at_a_terminal(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1, "name": "Lab"})
+            code, output = self.run_main(["get", "courses/1"], stdout_is_tty=True)
+        self.assertEqual(code, 0)
+        self.assertIn("object:", output)
+        self.assertNotIn("{", output.splitlines()[0])
 
 
 def find_codex():
@@ -1191,8 +1280,6 @@ class TestCodexRules(unittest.TestCase):
     def test_the_matrix(self):
         rows = [
             (["/usr/local/libexec/canvas_api_guard.py", "get", "courses"], "allow"),
-            (["/usr/local/libexec/canvas_api_guard.py", "count", "courses/1/enrollments"],
-             "allow"),
             (["/usr/local/libexec/canvas_api_guard.py", "put", "courses/1/assignments/2", "-d", "{}", "--yes"], "prompt"),
             (["/usr/local/libexec/canvas_api_guard.py", "post", "courses/1/assignments", "-d", "{}", "--yes"], "prompt"),
             (["/usr/local/libexec/canvas_api_guard.py", "patch", "courses/1", "-d", "{}", "--yes"], "prompt"),

@@ -10,7 +10,7 @@
 
 GUARD = "/usr/local/libexec/canvas_api_guard.py"
 OPERATIONS = "/usr/local/libexec/canvas_api_operations.py"
-READS = ["get", "count", "download-submission-file"]
+READS = ["get", "download-submission-file"]
 WRITES = ["post", "put", "patch", "delete"]
 
 prefix_rule(
@@ -19,7 +19,6 @@ prefix_rule(
     justification = "Canvas read through the guard: logged, no approval needed",
     match = ["/usr/local/libexec/canvas_api_guard.py get courses",
              "/usr/local/libexec/canvas_api_guard.py get courses/1/students?per_page=100 -o json",
-             "/usr/local/libexec/canvas_api_guard.py count courses/1/enrollments?per_page=100",
              "/usr/local/libexec/canvas_api_guard.py download-submission-file --course-id 1 --file-id 10 --submission-id 20 --suffix .pdf"],
     not_match = ["/usr/local/libexec/canvas_api_guard.py put courses/1",
                  "./canvas_api_guard.py get courses"],

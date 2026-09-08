@@ -58,6 +58,8 @@ INSTALLED_CONFIG_PATH = CONFIG_PATH          # the offline-test seam: the suite 
 WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 READ_VERBS = ("GET", "DOWNLOAD")   # evidence verbs already logged as their own single line
 TIMEOUT = 30
+PAGE_CAP = 200                     # --all-pages: an upper bound, not a promise. A server that
+                                   # keeps returning the same rel="next" would otherwise loop.
 REDACTED = "Bearer <redacted>"
 AGENT_MARKERS = ("AI_AGENT", "CLAUDE_CODE_SESSION_ID", "CODEX_SANDBOX",
                  "CODEX_SANDBOX_NETWORK_DISABLED")   # names recorded if present; never values
@@ -617,7 +619,9 @@ def emit(cfg, ev):
                                  "verification": ev.get("verification"),
                                  "target": ev.get("target"), "changes": ev.get("changes")})
     if cfg.out == "json":
-        print(json.dumps(ev, indent=2, sort_keys=True, default=str))
+        # Sort only the evidence's own top-level keys, for a stable diff; a nested "object" or
+        # "items" keeps the order project() built, which --fields promises to preserve.
+        print(json.dumps(dict(sorted(ev.items())), indent=2, default=str))
         return
     for key in ("verb", "path", "url", "confirmation", "status", "verification", "note",
                 "count", "pages", "next"):
@@ -643,46 +647,77 @@ def emit(cfg, ev):
             print("  %-22s %s" % (key, json.dumps(ev["object"][key], default=str)[:120]))
 
 # ------------------------------------------------------------------------------------- verbs
+def field_value(obj, dotted):
+    """Resolve one dot-path in a Canvas object. A missing or non-object step is null."""
+    value = obj
+    for part in dotted.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return value
+
+def project(data, fields):
+    """Project a Canvas list or object to the requested dot-paths, in the order asked for.
+    A field Canvas did not return is present and null, never dropped."""
+    if not fields:
+        return data
+    wanted = [name.strip() for name in fields.split(",") if name.strip()]
+    if not wanted:
+        raise GuardError("--fields was empty; name at least one field, for example --fields id")
+    if isinstance(data, list):
+        return [dict((name, field_value(item, name)) for name in wanted) for item in data]
+    if isinstance(data, dict):
+        return dict((name, field_value(data, name)) for name in wanted)
+    return data
+
 def do_get(cfg, path, body):
+    """GET one Canvas path, projected to --fields when asked."""
+    if cfg.all_pages and not cfg.dry_run:
+        return do_get_all_pages(cfg, path)
     resp = send_request(cfg, "GET", path)
     ev = {"verb": "GET", "path": normalise_path(path), "url": canvas_url(cfg.host, path),
           "status": resp["status"] if resp else None}
     if resp and isinstance(resp["data"], list):
         count = len(resp["data"])
         ev["note"] = "%d item%s returned" % (count, "" if count == 1 else "s")
-        ev["items"] = resp["data"]
+        ev["items"] = project(resp["data"], cfg.fields)
         try:
             ev["next"] = next_link(resp["headers"], cfg.host)
         except GuardError as err:
             ev["next"], ev["note"] = None, ev["note"] + "; " + str(err)
     elif resp:
-        # Text output stays compact for a human, while a root-owned specialized operation that
-        # asks for JSON can validate fields Canvas places beyond the first display summary.
-        ev["object"] = resp["data"] if cfg.out == "json" else summarise(resp["data"])
+        # Text output stays compact for a person; JSON, and anything the caller narrowed with
+        # --fields, is complete.
+        obj = project(resp["data"], cfg.fields)
+        ev["object"] = obj if (cfg.out == "json" or cfg.fields) else summarise(obj)
     emit(cfg, ev)
 
-def do_count(cfg, path, body):
-    """GET every same-host page and return one count, avoiding agent-side shell parsing."""
-    if cfg.dry_run:
-        send_request(cfg, "GET", path)
-        return
-    first_path, current = normalise_path(path), path
-    seen, total, pages, status = set(), 0, 0, None
+def do_get_all_pages(cfg, path):
+    """GET every rel="next" page on the pinned host and return one concatenated list.
+
+    Two things bound the walk: a page it has already read is a loop, and PAGE_CAP pages is as
+    far as it goes. (canvas-cli's GetAllPages makes the same two checks.)"""
+    first, current = normalise_path(path), path
+    seen, items, pages, status = set(), [], 0, None
     while current:
         normalised = normalise_path(current)
         if normalised in seen:
             raise GuardError("pagination loop detected at %s" % normalised)
         seen.add(normalised)
+        if pages >= PAGE_CAP:
+            raise GuardError("refusing to follow more than %d pages of %s; narrow the query "
+                             "with per_page or a filter" % (PAGE_CAP, first))
         resp = send_request(cfg, "GET", current)
-        status = resp["status"]
         if not isinstance(resp["data"], list):
-            raise GuardError("count requires a Canvas list response at %s" % normalised)
-        total += len(resp["data"])
-        pages += 1
+            raise GuardError("--all-pages needs a Canvas list response at %s" % normalised)
+        items.extend(resp["data"])
+        pages, status = pages + 1, resp["status"]
         current = next_link(resp["headers"], cfg.host)
-    emit(cfg, {"verb": "COUNT", "path": first_path, "url": canvas_url(cfg.host, path),
-               "status": status, "note": "all Canvas pages counted",
-               "count": total, "pages": pages})
+    emit(cfg, {"verb": "GET", "path": first, "url": canvas_url(cfg.host, path),
+               "status": status, "count": len(items), "pages": pages,
+               "note": "%d item%s from %d page%s" % (len(items), "" if len(items) == 1 else "s",
+                                                     pages, "" if pages == 1 else "s"),
+               "items": project(items, cfg.fields)})
 
 def secure_review_dir():
     """Return the user-private persistent review directory without following a link."""
@@ -947,17 +982,24 @@ def do_delete(cfg, path, body):
         uncertain(cfg, evidence, "the delete returned, but read-back failed with %s" % err)
     uncertain(cfg, evidence, "read-back after delete still returned the object")
 
-VERBS = {"get": do_get, "count": do_count, "post": do_post, "delete": do_delete,
+VERBS = {"get": do_get, "post": do_post, "delete": do_delete,
          "put": lambda c, p, b: do_update(c, "PUT", p, b),
          "patch": lambda c, p, b: do_update(c, "PATCH", p, b)}
 
 # ---------------------------------------------------------------------------------- argparse
+def default_output():
+    """A person at a terminal gets the compact text summary; anything else - an agent, a pipe,
+    a Specialized Function - gets complete JSON without having to remember a flag."""
+    return "text" if sys.stdout.isatty() else "json"
+
 def make_config(args):
     """What send_request needs. confirmation is set by confirm() before any write."""
     configured = read_config()
     return argparse.Namespace(host=configured["host"], profile=configured["profile"],
-                              out=args.output, log_path=DEFAULT_LOG, dry_run=args.dry_run,
-                              yes=args.yes, confirmation=None, post_readback=args.post_readback,
+                              out=args.output or default_output(), log_path=DEFAULT_LOG,
+                              dry_run=args.dry_run, all_pages=args.all_pages,
+                              fields=args.fields, yes=args.yes, confirmation=None,
+                              post_readback=args.post_readback,
                               post_readback_field=args.post_readback_field,
                               post_verify_field=args.post_verify_field,
                               verify_fields=args.verify_fields)
@@ -1028,7 +1070,13 @@ def build_parser():
                         help="POST only: verify this object inside the request body against read-back")
     common.add_argument("--verify-fields", metavar="FIELD[,FIELD...]",
                         help="verify only these requested leaf fields after a write")
-    common.add_argument("-o", "--output", choices=("text", "json"), default="text")
+    common.add_argument("--all-pages", action="store_true",
+                        help="get: follow every rel=\"next\" page on the pinned Canvas host")
+    common.add_argument("--fields", metavar="FIELD[,FIELD...]",
+                        help="get: keep only these dot-separated fields of each object; a "
+                             "field Canvas did not return comes back null")
+    common.add_argument("-o", "--output", choices=("text", "json"), default=None,
+                        help="output format (default: json unless stdout is a terminal)")
     subs = parser.add_subparsers(dest="verb")
     for name in sorted(VERBS):
         subs.add_parser(name, parents=[common], help="%s a Canvas path" % name)
@@ -1037,7 +1085,7 @@ def build_parser():
     download.add_argument("--file-id", required=True)
     download.add_argument("--submission-id", required=True)
     download.add_argument("--suffix", default=".bin", help="safe local filename extension, for example .pdf")
-    download.add_argument("-o", "--output", choices=("text", "json"), default="json")
+    download.add_argument("-o", "--output", choices=("text", "json"), default=None)
     return parser
 
 def main(argv=None):
@@ -1052,6 +1100,7 @@ def main(argv=None):
             return 2
         if args.verb == "download-submission-file":
             cfg = make_config(argparse.Namespace(output=args.output, dry_run=False, yes=False,
+                                                  all_pages=False, fields=None,
                                                   post_readback=None, post_readback_field="id",
                                                   post_verify_field=None, verify_fields=None))
             do_download_submission_file(cfg, args.course_id, args.file_id, args.submission_id, args.suffix)
