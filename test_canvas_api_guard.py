@@ -2506,6 +2506,47 @@ class TestInstallerPlan(unittest.TestCase):
                 self.assertIn(expected, proc.stderr)
                 self.assertNotIn("clone", proc.stderr)          # it never reached the network
 
+    def test_github_bootstrap_needs_no_arguments_on_the_release_copy(self):
+        """The human command is the bare curl | sh: host and profile default to this
+        repository's institution and the reviewed commit is pinned on the release branch. A
+        scratch copy with a pin and a fake git proves the defaults are accepted and the run
+        gets as far as the first git call."""
+        import subprocess
+        directory = tempfile.mkdtemp(prefix="cag-defaults-")
+        self.addCleanup(shutil.rmtree, directory, True)
+        fake = os.path.join(directory, "git")
+        with open(fake, "w") as handle:
+            handle.write("#!/bin/sh\necho reached-git >&2\nexit 1\n")
+        os.chmod(fake, 0o755)
+        with open(self.BOOTSTRAP) as handle:
+            script = handle.read()
+        self.assertIn("DEFAULT_HOST=clemson.instructure.com", script)
+        self.assertIn("DEFAULT_PROFILE=specialized-functions", script)
+        pinned = re.sub(r"(?m)^RELEASE_REF=.*$", "RELEASE_REF=%s" % ("a" * 40), script, count=1)
+        pinned = pinned.replace("GIT_BIN=/usr/bin/git", "GIT_BIN=%s" % fake, 1)
+        copy = os.path.join(directory, "install-from-github.sh")
+        with open(copy, "w") as handle:
+            handle.write(pinned)
+        os.chmod(copy, 0o755)
+        proc = subprocess.run([copy], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True, stdin=subprocess.DEVNULL)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("reached-git", proc.stderr)                 # ref, host and profile all accepted
+        self.assertNotIn("--host needs", proc.stderr)
+
+    def test_github_bootstrap_runs_inline_when_it_has_a_terminal(self):
+        """Pasted into Terminal, the launcher runs in that window with stdin from /dev/tty and
+        skips the 'press Return to close' that only a separate window needs; without a
+        terminal (Codex) the Terminal-window path below is unchanged."""
+        with open(self.BOOTSTRAP) as handle:
+            script = handle.read()
+        inline = script.index("if { exec 3</dev/tty; } 2>/dev/null; then")
+        self.assertLess(script.index('chmod 0700 "$LAUNCHER"'), inline)
+        self.assertLess(inline, script.index('"$OPEN_BIN" -g -j -a "$TERMINAL_APP"'))
+        self.assertIn('CANVAS_GUARD_INLINE=1 exec /bin/sh "$LAUNCHER" </dev/tty', script)
+        self.assertIn('if [ -z "\\${CANVAS_GUARD_INLINE:-}" ]; then', script)
+        self.assertIn("/profile/settings", script)               # the token page, named and opened
+
     def test_github_bootstrap_refuses_an_invalid_host_before_network(self):
         proc = self.run_bootstrap("--ref", "a" * 40, "--host", "https://evil.example/x")
         self.assertEqual(proc.returncode, 1)

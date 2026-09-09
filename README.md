@@ -68,7 +68,27 @@ only what the installed token can do.
 See [docs/IT-REVIEW.md](docs/IT-REVIEW.md) for the complete trust model, data flow, controls,
 review commands, and residual risks.
 
-## Codex-led installation
+## Install or update (macOS)
+
+1. Make a Canvas access token once: in Canvas open Account, Settings, Approved Integrations,
+   "+ New Access Token", and copy it. The installer opens that page for you when it needs it.
+2. Open Terminal and paste this one line:
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/release/install-from-github.sh | sh
+   ```
+
+   It shows what it will install, waits for Return, asks for your Mac password only when a
+   root-owned file must change, and asks for the token only if none is stored. It also
+   installs both Codex skills, the Codex execution rules, and the three Codex settings.
+   Running the same line again is how you update; an up-to-date Mac is told so.
+3. Start a new Codex thread and ask: "In Canvas, what are my current classes?"
+
+Requirements: macOS with the Xcode Command Line Tools (macOS offers to install them the first
+time `git` runs) and `/usr/local` owned by root, which is the case on Apple silicon Macs.
+Other institutions add `--host school.instructure.com` after `sh -s --`.
+
+## Codex-led installation (alternative)
 
 Codex can perform the installation, but the person reviews the plan and approves the
 privileged step. The installer itself makes no network call, performs no Canvas request,
@@ -131,7 +151,7 @@ the token while it is being entered. On Linux, it writes the token to Secret Ser
 The stored item is read back for verification and the token is never accepted through argv, a file,
 or an environment variable.
 
-### One-command macOS installation or upgrade from GitHub
+### The same bootstrap, driven by Codex
 
 One fixed command installs or updates; running it again is how you update:
 

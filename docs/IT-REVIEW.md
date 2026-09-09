@@ -170,6 +170,14 @@ Those remain deployment controls.
 
 ## Installation controls
 
+The bootstrap `install-from-github.sh` has two modes with one code path. Run from a terminal
+(a person pasting `curl ... | sh`), it opens `/dev/tty` and runs the launcher in that window,
+stdin from the terminal, so the plan review, the administrator password and the token entry
+happen where the person is. Run without a terminal (Codex), `/dev/tty` cannot be opened and
+it opens a macOS Terminal window for the same launcher, printing a non-secret status file for
+Codex to watch. Host and profile default to this repository's institution and the
+Specialized Functions profile; `--host` and `--profile` override.
+
 `install.sh --plan --host <host>` runs without root and changes nothing. It reports:
 
 - source Git revision and whether tracked files differ;

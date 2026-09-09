@@ -11,7 +11,9 @@ TERMINAL_APP=/System/Applications/Utilities/Terminal.app
 CANVAS_HOST=
 SOURCE_REF=
 RELEASE_REF=                            # set only on the release branch, by tools/release.sh
-PROFILE=level-1                         # stable on-disk compatibility key
+DEFAULT_HOST=clemson.instructure.com    # this repository's institution; --host overrides
+DEFAULT_PROFILE=specialized-functions
+PROFILE=
 
 die() {
     printf 'canvas-api-guard bootstrap: %s\n' "$1" >&2
@@ -20,21 +22,22 @@ die() {
 
 usage() {
     cat <<'EOF'
-usage: install-from-github.sh [--ref FULL_COMMIT_SHA] --host school.instructure.com [--profile api-only|specialized-functions]
+Install or update canvas-api-guard. Paste into Terminal:
 
-Downloads exactly one commit, creates a private self-deleting .command launcher, and opens it
-in macOS Terminal. The copy of this script on the release branch carries the reviewed
-commit as its default, so --ref is needed only to install a different reviewed commit. The same command serves a new Mac, an older installation, and an
-up-to-date one: the reviewed plan compares every installed file's SHA-256 with the downloaded
-commit, and the administrator password is asked for only when a root-owned file needs to
-change; when only the Codex rules, skills, or settings differ they are replaced without one. The
-Canvas API token is asked for only when the Keychain holds none; an existing token is kept and
-never read or displayed. Neither secret is passed to this bootstrap or stored in the launcher.
-A private, non-secret completion-status JSON file is printed after Terminal launches so an
-active Codex task can wait for success or failure without observing either prompt.
+  curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/release/install-from-github.sh | sh
 
-When Codex runs this bootstrap, the command must be granted host/GUI execution permission;
-macOS applications cannot be launched from the normal Codex filesystem sandbox.
+Options: [--ref FULL_COMMIT_SHA] [--host school.instructure.com] [--profile api-only|specialized-functions]
+Defaults: the reviewed commit pinned on the release branch, clemson.instructure.com, specialized-functions.
+
+Downloads exactly one commit, checks it, shows what will change, and installs it. Run from
+a terminal, it asks its questions right there: Return to continue, the Mac administrator
+password only when a root-owned file must change, and a Canvas API token only when the
+Keychain holds none (an existing token is kept and never read or displayed). Running it again
+is how you update; an up-to-date Mac is told so and nothing changes.
+
+Run without a terminal (Codex), it opens a macOS Terminal window for those questions instead
+and prints a private, non-secret completion-status file for Codex to watch. Codex must run it
+with host/GUI execution permission, since its sandbox cannot open applications.
 EOF
 }
 
@@ -49,6 +52,8 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
+CANVAS_HOST=${CANVAS_HOST:-$DEFAULT_HOST}
+PROFILE=${PROFILE:-$DEFAULT_PROFILE}
 case "$PROFILE" in
     api-only|level-1) PROFILE=level-1 ;;
     specialized-functions|level-2) PROFILE=level-2 ;;
@@ -135,8 +140,10 @@ finish() {
         printf 'The workflow stopped with exit status %s. Review the output above.\n' "\$status" >&2
     fi
     printf 'The reviewed checkout remains at:\n  %s\n' "$CHECKOUT"
-    printf '\nPress Return to close this window. '
-    read unused || true
+    if [ -z "\${CANVAS_GUARD_INLINE:-}" ]; then
+        printf '\nPress Return to close this window. '
+        read unused || true
+    fi
     exit "\$status"
 }
 trap finish EXIT HUP INT TERM
@@ -192,19 +199,29 @@ if /usr/bin/security find-generic-password -s canvas-api-guard -a "\$(id -un)" >
     printf '\nA Canvas API token is already stored; it was not read, changed, or re-entered.\n'
     printf 'To replace it later, run: /usr/local/libexec/canvas_api_guard.py --set-token\n'
 else
-    printf '\nThe next prompt is for your Canvas API token.\n'
-    printf 'Paste the token and press Return; it will not appear on screen.\n\n'
+    printf '\nThe next prompt is for your Canvas API token. Make one at\n'
+    printf '  https://$CANVAS_HOST/profile/settings  (Approved Integrations, "+ New Access Token")\n'
+    printf 'That page is opening in your browser. Paste the token here and press Return; it will not appear on screen.\n\n'
+    /usr/bin/open "https://$CANVAS_HOST/profile/settings" 2>/dev/null || true
     /usr/local/libexec/canvas_api_guard.py --set-token
 fi
 
 printf '\nInstalled version:\n'
 /usr/local/libexec/canvas_api_guard.py --version
 
-printf '\nReturn to Codex and use this read-only Canvas smoke test:\n'
+printf '\nDone. Now open Codex and ask it:\n'
 printf '  In Canvas, what are my current classes?\n'
 EOF
 
 chmod 0700 "$LAUNCHER"
+# A person who pasted this into a terminal already has a window: run the launcher right here,
+# with stdin from that terminal (under "curl | sh", stdin is the script itself). Codex has no
+# terminal, so /dev/tty cannot be opened, and it takes the Terminal-window path below.
+if { exec 3</dev/tty; } 2>/dev/null; then
+    exec 3<&-
+    trap - EXIT HUP INT TERM
+    CANVAS_GUARD_INLINE=1 exec /bin/sh "$LAUNCHER" </dev/tty
+fi
 trap - EXIT HUP INT TERM
 # Terminal runs a .command file by starting a login shell and typing the file's path into it.
 # On a cold launch of Terminal the shell can still be starting when the path is typed, and
