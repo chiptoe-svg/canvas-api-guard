@@ -1054,6 +1054,44 @@ class TestEdgeSeam(GuardTestCase):
                          ["edge:test"])
 
 
+class TestAuditFormat(GuardTestCase):
+    """The stock audit record, key by key. IT has reviewed this format; a change here is a
+    change to what every existing installation writes, and must be a deliberate one."""
+
+    READ = ["bytes", "event", "ok", "path", "pid", "source", "status", "timestamp", "verb"]
+    REQUEST = ["confirmation", "dry_run", "event", "kind", "path", "pid", "request_body",
+               "source", "timestamp", "url", "verb"]
+    EVIDENCE = ["changes", "confirmation", "event", "note", "path", "pid", "source", "status",
+                "target", "timestamp", "verb", "verification"]
+    REFUSAL = ["confirmation", "event", "kind", "path", "pid", "source", "timestamp", "verb"]
+
+    def test_a_stock_read_write_dry_run_and_refusal_write_exactly_these_keys(self):
+        with mock.patch("urllib.request.urlopen", return_value=FakeResponse(payload={"id": 1})):
+            self.run_main(["get", "courses/1"])
+        responses = [FakeResponse(payload={"id": 1, "name": "A"}),
+                     FakeResponse(payload={"id": 1, "name": "X"}),
+                     FakeResponse(payload={"id": 1, "name": "X"})]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            self.run_main(["put", "courses/1", "-d", '{"course": {"name": "X"}}', "--yes"])
+        with mock.patch("urllib.request.urlopen", side_effect=AssertionError("dry run sent")):
+            self.run_main(["put", "courses/1", "-d", '{"course": {"name": "X"}}', "--dry-run"])
+        with mock.patch("urllib.request.urlopen", side_effect=AssertionError("refused write sent")):
+            code, _ = self.run_main(["delete", "courses/1"])
+        self.assertEqual(code, 2)
+        keys = [(line["event"], sorted(line)) for line in self.log_lines()]
+        self.assertEqual(keys, [
+            ("read", self.READ),
+            ("read", self.READ),                 # the write's pre-read
+            ("request", self.REQUEST),
+            ("response", self.READ),
+            ("read", self.READ),                 # the write's read-back
+            ("evidence", self.EVIDENCE),
+            ("request", self.REQUEST),           # the dry run
+            ("evidence", self.EVIDENCE),
+            ("refusal", self.REFUSAL),
+        ])
+
+
 class TestAttachmentDownload(GuardTestCase):
     def test_attachment_opener_disables_proxy_use(self):
         request = urllib.request.Request("https://%s/files/9/download" % HOST)
@@ -2407,6 +2445,14 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertIn("if ! read reviewed; then", script)
         self.assertIn("No terminal to confirm on; not installing.", script)
         self.assertLess(script.index("if ! read reviewed; then"), sudo)
+
+    def test_replay_probe_runs_and_reports_the_working_tree_identical_to_head(self):
+        import subprocess
+        proc = subprocess.run([os.path.join(self.ROOT, "tools", "replay-probe.py"), "HEAD"],
+                              cwd=self.ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("byte-identical", proc.stdout)
 
 
 class TestDocumentClaims(unittest.TestCase):
