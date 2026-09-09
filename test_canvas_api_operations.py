@@ -642,7 +642,7 @@ class TestQuizRegradeWrites(QuizRegradeFixtures, unittest.TestCase):
     """Every write goes through API Only. One at a time, and the attempt score is read back
     here: it is not a field API Only can prove on the submission object."""
 
-    def run_regrade(self, dry_run=False, scores=(8.0, 6.0), key=(1003, 1004)):
+    def run_regrade(self, dry_run=False, scores=(8.0, 6.0), key=(1003, 1004), expect_plan=None):
         """Returns (guard_get mock, guard_write mock). scores are what each read-back reports."""
         # The fixture always returns 1003 and 1004 as correct after the write.
         # For the normal case (key=(1003,1004)), this matches what we wrote.
@@ -678,10 +678,32 @@ class TestQuizRegradeWrites(QuizRegradeFixtures, unittest.TestCase):
                 mock.patch.object(operations, "guard_write", side_effect=write) as written, \
                 mock.patch("sys.stdout", io.StringIO()) as out:
             try:
-                operations.regrade_quiz_question(self.args(dry_run=dry_run))
+                args = self.args(dry_run=dry_run)
+                args.expect_plan = expect_plan
+                operations.regrade_quiz_question(args)
             finally:
                 self.clock, self.out = clock, out.getvalue()
         return get, written
+
+    def test_the_dry_run_prints_a_plan_digest_that_the_yes_run_can_be_bound_to(self):
+        """An approver sees N attempts; if one arrives in between, the --yes run must not score
+        it unseen. The digest names exactly the (submission, attempt, new points) rows."""
+        self.run_regrade(dry_run=True)
+        first_document = self.out[:self.out.index("\n}\n") + 2]      # the plan, printed first
+        digest = json.loads(first_document)["plan_digest"]
+        self.assertEqual(len(digest), 64)
+        _, written = self.run_regrade(expect_plan=digest)          # same plan: proceeds
+        self.assertEqual(len(written.call_args_list), 3)
+        self.assertEqual(operations.plan_digest([{"submission_id": 55, "attempt": 1, "new_points": 8.0},
+                                                 {"submission_id": 56, "attempt": 1, "new_points": 6.0}]),
+                         operations.plan_digest([{"submission_id": "56", "attempt": 1, "new_points": 6},
+                                                 {"submission_id": "55", "attempt": 1, "new_points": 8}]))
+
+    def test_a_plan_that_moved_since_approval_is_refused_before_any_write(self):
+        with self.assertRaises(operations.OperationError) as caught:
+            self.run_regrade(expect_plan="0" * 64)
+        self.assertIn("not the ones that were approved", str(caught.exception))
+        self.assertNotIn("courses/12/quizzes/5/questions/789", self.out)   # nothing was written
 
     def test_the_answer_key_is_written_once_and_then_each_attempt_individually(self):
         _, written = self.run_regrade()

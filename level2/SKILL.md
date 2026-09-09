@@ -69,6 +69,7 @@ which is enough for OCR and reading handwriting. Otherwise render once per page 
 /usr/local/libexec/canvas_api_operations.py grade-with-rubric --course-id 123 --assignment-id 20 --definition grade.json --dry-run
 /usr/local/libexec/canvas_api_operations.py bulk-grade-with-rubric --course-id 123 --assignment-id 20 --definition grades.json --dry-run
 /usr/local/libexec/canvas_api_operations.py regrade-quiz-question --course-id 123 --definition regrade.json --dry-run
+/usr/local/libexec/canvas_api_operations.py regrade-quiz-question --course-id 123 --definition regrade.json --expect-plan DIGEST --yes
 ```
 
 - `create-rubric` turns a flat criteria list into Canvas’s indexed rubric shape and reads every
@@ -90,6 +91,8 @@ which is enough for OCR and reading handwriting. Otherwise render once per page 
   graded classic quiz (a New Quizzes quiz is not in this API at all) and any other question
   type. The definition is `{"quiz_id": N, "question_id": N, "correct_answer_ids": [N, ...]}`;
   IDs only, because answer text is instructor HTML this write has to round-trip untouched.
+  The dry run prints a `plan_digest`; pass it as `--expect-plan` on the `--yes` run, and the
+  write is refused if the attempts that would change are no longer exactly those.
   **Every answer not listed becomes worth 0**, so a student who picked the previously correct
   answer loses those points - the dry run shows each attempt's old points, new points and
   delta, negative ones included, and the instructor approves that table. Up to 100 attempts

@@ -23,7 +23,7 @@ those, with the Canvas documentation, and does them as well.
 | `create-rubric` | converts a flat criteria list into Canvas's indexed shape and reads every criterion back; with `--assignment-id`, the same write attaches it to that assignment for grading, proven by reading the assignment back |
 | `grade-with-rubric` | reads the live rubric, rejects criterion IDs absent from it, totals the points, writes grade and assessment as one verified write, then reads each scored criterion back - a criterion is not a field of the submission object, so API Only cannot prove it |
 | `bulk-grade-with-rubric` | up to 50 students, duplicates refused, each an individually audited and read-back write |
-| `regrade-quiz-question` | rewrites a classic quiz question's answer key and rescores every completed attempt of that question: one write for the key, then one audited, individually read-back write per attempt, with the attempt's score read at ?attempt=N because the assignment submission's history lags it |
+| `regrade-quiz-question` | rewrites a classic quiz question's answer key and rescores every completed attempt of that question: one write for the key, then one audited, individually read-back write per attempt, with the attempt's score read at ?attempt=N because the assignment submission's history lags it; the dry run prints a `plan_digest` and `--expect-plan DIGEST` on the `--yes` run refuses if the attempts that would change are no longer exactly those |
 
 The read operation is open; the two download operations and every write require the same Codex
 prompt, dry-run, explicit approval, and API Only read-back evidence. See `SKILL.md` for the

@@ -7,6 +7,7 @@ same credential isolation, host pinning, and audit record.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -631,17 +632,32 @@ def write_attempt_score(args, quiz_id, question_id, row):
         read_back_attempt(path, row)
 
 
+def plan_digest(changed):
+    """One string naming exactly which attempts would be written and to what. The dry run prints
+    it; --expect-plan on the --yes run refuses if a recomputed plan differs, so an attempt that
+    arrived between the approval and the write is never scored unseen."""
+    rows = sorted((str(row["submission_id"]), int(row["attempt"]), float(number(row["new_points"])))
+                  for row in changed)
+    return hashlib.sha256(json.dumps(rows).encode("utf-8")).hexdigest()
+
+
 def regrade_quiz_question(args):
     """Rewrite one classic-quiz question's answer key and rescore every completed attempt of
     that question: the answer key first, so a failure there touches no score, then one audited
     write per attempt, each read back at its own attempt number."""
     quiz_id, question_id, answer_ids, question, rows, changed = regrade_plan(args)
+    digest = plan_digest(changed)
+    expected = getattr(args, "expect_plan", None)
+    if expected and expected != digest:
+        raise OperationError("the attempts that would change are not the ones that were approved "
+                             "(plan %s, approved %s): an attempt or score moved since the dry run; "
+                             "run the dry run again and approve that plan" % (digest[:12], expected[:12]))
     print(json.dumps({"operation": "regrade-quiz-question", "phase": operation_phase(args),
                       "course_id": args.course_id, "quiz_id": quiz_id,
                       "question_id": question_id, "question_type": question.get("question_type"),
                       "points_possible": number(question.get("points_possible")),
                       "correct_answer_ids": answer_ids, "attempts_considered": len(rows),
-                      "attempts_changed": len(changed), "rows": rows,
+                      "attempts_changed": len(changed), "rows": rows, "plan_digest": digest,
                       "warning": "every answer not listed is now worth 0; a student who picked "
                                  "one of those loses the points, shown as a negative delta"},
                      indent=2, sort_keys=True))
@@ -765,7 +781,10 @@ def parser():
     for name in ("grade-with-rubric", "bulk-grade-with-rubric"):
         grade = subs.add_parser(name, parents=[write])
         grade.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)
-    subs.add_parser("regrade-quiz-question", parents=[write])
+    regrade = subs.add_parser("regrade-quiz-question", parents=[write])
+    regrade.add_argument("--expect-plan", metavar="DIGEST",
+                         help="the plan_digest the dry run printed; the write is refused if the "
+                              "attempts that would change are no longer exactly those")
     return result
 
 
