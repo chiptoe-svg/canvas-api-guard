@@ -300,29 +300,6 @@ Date changes, excusals, assignment/page/announcement authoring and the former an
 shortcuts are ordinary API Only calls against the documented Canvas endpoints, with the same
 dry-run, approval and read-back.
 
-## Running under an external credential proxy and an external approver
-
-Two optional keys in the root-owned `config.json` let the guard run where there is no keychain and
-no terminal — a container behind a credential-injecting proxy, for example. Both default to the
-historical behaviour, so an existing installation is unchanged by upgrading.
-
-| Key | Default | Effect |
-|---|---|---|
-| `token_source` | `"keyring"` | `"gateway"` reads no token and attaches no `Authorization`; the proxy injects the credential at the TLS boundary. The request leaves this process bearer-free. |
-| `external_confirmation` | absent | A short approver label, e.g. `"nanoclaw"`. Enables `--confirmed-by RECEIPT` on writes; the write is logged as `confirmation: "external:<label>"` with the receipt beside it. |
-
-`token_source: "gateway"` narrows what this process holds rather than widening it: it never reads a
-token at all, which is the same property `follow_redirect()` already preserves by stripping
-`authorization` on every hop. It does not weaken the pinning, the audit line, the refusal log, or
-the evidence read-back.
-
-`external_confirmation` exists because `--yes` is self-approval, which is all a caller without a
-TTY can offer. Its two halves come from different places on purpose: the approver label is declared
-in the root-owned config, which the caller cannot write, and the receipt is supplied per
-invocation. A caller that can set only the flag gets a refusal, logged as
-`refused-external-not-configured`. A named approver outside the process, recorded with its receipt,
-is stronger evidence than "somebody was at a terminal".
-
 ## Fail-closed write evidence
 
 Every `POST`, `PUT` and `PATCH` is verified by one rule. Each requested leaf field is compared
