@@ -2421,6 +2421,17 @@ class TestGatewayCredentialSource(NoSecretsMixin, GuardTestCase):
         self.assertEqual([e.get("token_source") for e in self.log_lines() if e["event"] == "read"],
                          ["gateway"])
 
+    def test_a_keychain_installation_logs_exactly_what_it_always_did(self):
+        """No new field reaches a keychain-and-TTY installation: its record is unchanged."""
+        self.pin_config(self.temp_config(HOST))
+        with mock.patch.object(guard, "read_token", lambda: "tok"), \
+                mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            self.run_argv(["get", "courses/1"])
+        for entry in self.log_lines():
+            self.assertNotIn("token_source", entry)
+            self.assertNotIn("approval_receipt", entry)
+
     def test_an_unknown_token_source_is_refused(self):
         self.pin_config(self.temp_config(HOST, token_source="environment"))
         with self.no_keychain(), self.no_network():

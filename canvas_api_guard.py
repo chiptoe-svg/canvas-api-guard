@@ -433,6 +433,14 @@ def safe_response_hop(response):
 def redirect_stage(trace):
     return ",".join(hop["scope"] for hop in trace) or "none"
 
+def credential_provenance(cfg):
+    """The credential source, but only when it is not the built-in one.
+
+    On a keychain installation this is a constant, and a constant in an audit record says
+    nothing while changing a format that has already been reviewed. It appears only where it
+    can actually vary: an installation whose credential is injected by something else."""
+    return {} if cfg.token_source == "keyring" else {"token_source": cfg.token_source}
+
 def send_request(cfg, method, path, body=None):
     """Perform an authenticated request to the pinned Canvas host, and log it.
 
@@ -446,7 +454,7 @@ def send_request(cfg, method, path, body=None):
         log_event(cfg.log_path, {
             "event": "request", "verb": method, "path": npath, "url": url, "kind": "write",
             "dry_run": cfg.dry_run, "confirmation": cfg.confirmation,
-            "token_source": cfg.token_source, "request_body": body,
+            "request_body": body, **credential_provenance(cfg),
             # Only when an external approver actually confirmed: a null receipt on every
             # keychain-and-TTY installation would be noise in the record it never uses.
             **({"approval_receipt": cfg.confirmed_by} if cfg.confirmed_by else {})})
@@ -490,7 +498,7 @@ def send_request(cfg, method, path, body=None):
         raise RequestFailure("%s %s failed: %s: %s"
                              % (method, url, type(err).__name__, err), status=status)
     log_event(cfg.log_path, {"event": event, "verb": method, "path": npath, "status": status,
-                             "ok": True, "bytes": len(text), "token_source": cfg.token_source})
+                             "ok": True, "bytes": len(text), **credential_provenance(cfg)})
     try:
         data = json.loads(text.decode("utf-8")) if text else None
     except ValueError:
