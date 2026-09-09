@@ -21,6 +21,57 @@ Everything else is shared and must never diverge: host and path pinning, `normal
 redirect stripping, the audit log and its fsync-before-the-request, evidence read-back and
 verification, refusal-before-credential, output shaping, and the level-2 operations.
 
+## The seam is clean — measured, not assumed
+
+Walking the AST for every reference to a platform, credential or TTY concern OUTSIDE the seam
+functions returns four things, and none is a logic leak:
+
+| Where | What | Disposition |
+|---|---|---|
+| module top | `KEYCHAIN_SERVICE`, `SECURITY_BIN`, `SECRET_TOOL_PATHS`, `DEFAULT_DIR`, `CONFIG_PATH` | constants; move to the policy |
+| `default_output` | `stdout.isatty()` chooses text or json | presentation, legitimately shared |
+| `invocation_source` | `stdin.isatty()` recorded in the audit | core RECORDS the environment; stays |
+| `send_request` | `read_token()`, `check_provenance()` | the only two seam calls in the core |
+
+Total coupling between core and policy: **8 call sites and 5 constants.**
+
+    read_token()               1 (a second and third live inside set_token, itself a seam)
+    check_provenance()         1
+    refuse_unconfirmed_write() 1
+    confirm()                  3 (the three write paths)
+    trusted_path()             2
+
+That is a mechanical extraction, not a redesign, which is why Stage 2 is justified rather than
+speculative.
+
+## The axis is host vs agent, NOT mac vs linux
+
+`credential_command()` already branches `darwin` to the keychain and `linux` to `secret-tool`
+**inside** the credential seam. A Linux workstation with a keyring and a human at a terminal wants
+the same edge a Mac wants. What separates our container is not its OS: it has no keyring and no
+human. So the cut is:
+
+- **core** — pinning, audit, evidence, refusals, request path, level-2 operations
+- **host policy** — a keyring (macOS Keychain *or* Linux secret service), a TTY or `--yes`,
+  root-owned `/usr/local`, login-shell provenance
+- **agent policy** — no credential held, an external approver receipt, self-approval refused,
+  image-baked trust, supervised-runner provenance
+
+Splitting mac from linux would divide the one policy that already handles both and leave the real
+difference unexpressed.
+
+## The interface
+
+```python
+class Policy:
+    def read_credential(self):    ...  # None means: attach no header, something upstream injects it
+    def confirm_write(self, cfg, lines): ...  # returns the recorded confirmation kind, or refuses
+    def check_provenance(self):   ...  # what may legitimately have invoked this
+    def trust_rules(self):        ...  # ownership and mode expected of config, log and executable
+```
+
+Plus the five constants. The entry point reads the config, selects a policy, and calls core.
+
 ## Stages
 
 **Stage 0 — done.** Both behaviours reachable, seam list proven, Mac record unchanged, 203 tests.
