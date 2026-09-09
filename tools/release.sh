@@ -29,9 +29,12 @@ sh -n install-from-github.sh
 # RELEASE.md rides in the pin commit: what is released and what changed since the previous
 # release, at a fixed public address Codex can read to tell a person an update is waiting.
 PREVIOUS=$(git rev-parse --quiet --verify "origin/release~1^{commit}" 2>/dev/null || true)
+GUARD_VERSION=$(sed -n 's|^USER_AGENT = "canvas-api-guard/\(.*\)"|\1|p' canvas_api_guard.py)
+LEVEL2_VERSION=$(sed -n 's|^USER_AGENT = "canvas-api-operations/\(.*\)"|\1|p' level2/canvas_api_operations.py)
+[ -n "$GUARD_VERSION" ] && [ -n "$LEVEL2_VERSION" ] || die "could not read the version constants"
 {
-    printf '# canvas-api-guard release\n\nCommit: %s\nDate: %s\n\nInstall or update: paste into Terminal\n\n' \
-        "$TARGET" "$(date -u +%Y-%m-%d)"
+    printf '# canvas-api-guard release\n\nGuard: %s\nSpecialized Functions: %s\nCommit: %s\nDate: %s\n\nInstall or update: paste into Terminal\n\n' \
+        "$GUARD_VERSION" "$LEVEL2_VERSION" "$TARGET" "$(date -u +%Y-%m-%d)"
     printf '    curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/release/install-from-github.sh | sh\n\n'
     printf '## Changes since the previous release\n\n'
     if [ -n "$PREVIOUS" ]; then git log --format='- %s' "$PREVIOUS..$TARGET"; else echo "- first release"; fi
