@@ -155,6 +155,12 @@ for; the tool schemas carry the argument contract. The container's Canvas skill 
 host directory the service owns, mounted read-only into the container as a DIRECTORY: Apple
 Container silently drops a nested file mount, so a file mount here would vanish without error.
 
+**Bind address.** A host-side edge serving containers must not listen on loopback only: on
+Apple Container a container reaches the host over the vmnet bridge gateway, so a loopback-only
+listener is invisible to every agent while looking healthy from the host. The server's bind
+setting is a list, and it refuses to start unless every listed address binds, rather than
+silently serving a subset. (Found when the read-only edge first went live.)
+
 **Known limits of the runtime, recorded so nothing depends on them.** `container.json` is
 not immutable inside the container on Apple Container; the pin holds because the host
 re-materializes it from the database at every spawn and the runner reads it once. Per-group
