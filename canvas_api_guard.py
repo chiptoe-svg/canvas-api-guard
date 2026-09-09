@@ -42,12 +42,21 @@
 # READ TOP TO BOTTOM: constants, provenance, token, logging, host pinning,
 # the one request function, attachment downloads, confirmation, evidence helpers, verbs,
 # argparse.
+#
+# EDGE SEAM. This file is also importable. An edge that runs the guard somewhere else - the
+# NanoClaw host service in docs/superpowers/specs/2026-09-08-shared-core-host-and-agent-design.md -
+# replaces exactly six module names and nothing else: read_token (the credential, or None when
+# the edge's transport carries it), build_opener (the transport: it installs its own with
+# urllib.request.install_opener), confirm (how a person approves a write), check_provenance (what
+# "installed correctly" means there), and the two paths CONFIG_PATH and DEFAULT_DIR. Every other
+# property - host pinning, refusal before credential, the audit lines, evidence read-back - is
+# shared and must not diverge. tools/replay-probe.py proves the host is unchanged.
 
 import argparse, datetime, getpass, hashlib, json, os, pty, pwd, re, stat, subprocess, sys, tempfile
 import urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
-USER_AGENT = "canvas-api-guard/1.14.0"
+USER_AGENT = "canvas-api-guard/1.15.0"
 KEYCHAIN_SERVICE = "canvas-api-guard"
 SECURITY_BIN = "/usr/bin/security"
 SECRET_TOOL_PATHS = ("/usr/bin/secret-tool", "/usr/local/bin/secret-tool")
@@ -137,7 +146,8 @@ def check_provenance():
 # header for a pinned Canvas API request or a pinned Canvas attachment-download first hop; it is
 # never printed, logged, echoed, stored in a file, or taken from argv or the environment. Under
 # --dry-run, or on a refused write, it is never read. It lives in the macOS keychain or the Linux
-# secret service; any other platform is refused.
+# secret service; any other platform is refused. It returns the token, or None when an edge
+# supplies the credential in transport; the host implementation never returns None.
 def account_name():
     """The OS account running the guard, independent of forgeable USER/LOGNAME variables."""
     return pwd.getpwuid(os.getuid()).pw_name
@@ -345,7 +355,14 @@ class RefuseRedirects(urllib.request.HTTPRedirectHandler):
         raise GuardError("refusing to follow a redirect (%s) to %r: the token is sent only to "
                          "the pinned URL" % (code, newurl))
 
-urllib.request.install_opener(urllib.request.build_opener(RefuseRedirects))
+def build_opener():
+    """The opener every pinned API call goes through: no environment proxy, and no redirect.
+
+    An edge that fronts the guard with its own transport (a credential-injecting gateway with
+    a pinned address and CA bundle) installs its own opener in place of this one."""
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), RefuseRedirects)
+
+urllib.request.install_opener(build_opener())
 
 class AttachmentRedirects(urllib.request.HTTPRedirectHandler):
     """Follow a Canvas attachment redirect over HTTPS only, carrying no credential.
@@ -466,7 +483,9 @@ def send_request(cfg, method, path, body=None):
         os.close(secure_log_fd(cfg.log_path))  # a read logs nothing yet, but must still be
                                                 # gated on a secure log before the network call
     check_provenance()                       # before the keychain, before the network
-    headers["Authorization"] = "Bearer " + read_token()                   # the only use
+    token = read_token()                     # the only credential read; None = an edge's
+    if token is not None:                    # transport carries the credential instead
+        headers["Authorization"] = "Bearer " + token                       # the only use
     request = urllib.request.Request(url, data=payload, headers=headers, method=method)
     event = "response" if is_write else "read"
     try:

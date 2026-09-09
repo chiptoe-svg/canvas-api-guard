@@ -203,6 +203,13 @@ Actual installation:
 
 The user separately enters the token through hidden terminal input after installation.
 
+### Edge seam
+
+The API opener now disables environment proxies (`ProxyHandler({})`), as attachment downloads
+already did: the pinned host is reached directly or not at all. The importable edge seam is six
+named module attributes; the host path never branches on them, and the replay probe pins the
+stock audit format.
+
 ### Optional macOS GitHub bootstrap
 
 `install-from-github.sh` requires a full 40-character commit SHA and the Canvas host. It clones

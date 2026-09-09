@@ -985,6 +985,75 @@ class TestRedirectsAreRefused(unittest.TestCase):
         self.assertIsNone(guard.safe_download_failure(OSError("unavailable"))["http_status"])
 
 
+class TestEdgeSeam(GuardTestCase):
+    """The six names an importing edge replaces. Each is looked up on the module at call time,
+    so replacing it changes what the guard does; nothing else about the host path moves."""
+
+    SEAM = ("read_token", "build_opener", "confirm", "check_provenance", "CONFIG_PATH", "DEFAULT_DIR")
+
+    def test_the_seam_names_exist_and_are_named_in_the_header(self):
+        for name in self.SEAM:
+            self.assertTrue(hasattr(guard, name), name)
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "canvas_api_guard.py")) as handle:
+            header = handle.read().split("import argparse")[0]
+        self.assertIn("EDGE SEAM", header)
+        for name in self.SEAM:
+            self.assertIn(name, header, "%s is not named in the header's edge seam paragraph" % name)
+
+    def test_the_installed_opener_refuses_redirects_and_uses_no_environment_proxy(self):
+        # A ProxyHandler built with an explicit {} registers no protocol hooks, so the stdlib
+        # OpenerDirector never lists it in .handlers - inspect what build_opener() constructs
+        # with instead, the same way test_attachment_opener_disables_proxy_use does.
+        opener = urllib.request._opener
+        self.assertTrue(any(isinstance(h, guard.RefuseRedirects) for h in opener.handlers))
+        with mock.patch("urllib.request.build_opener") as build:
+            guard.build_opener()
+        handlers = build.call_args[0]
+        proxy = next(h for h in handlers if isinstance(h, urllib.request.ProxyHandler))
+        self.assertEqual(proxy.proxies, {})
+        self.assertIn(guard.RefuseRedirects, handlers)
+
+    def test_a_credential_read_of_none_sends_no_bearer_and_logs_the_same_line(self):
+        with mock.patch.object(guard, "read_token", lambda: None), \
+                mock.patch("urllib.request.urlopen", return_value=FakeResponse(payload={"id": 1})) as urlopen:
+            code, _ = self.run_main(["get", "courses/1"])
+        self.assertEqual(code, 0)
+        sent = urlopen.call_args[0][0]
+        self.assertNotIn("authorization", {name.lower() for name, _ in sent.header_items()})
+        line = self.log_lines()[-1]
+        self.assertEqual(sorted(line), ["bytes", "event", "ok", "path", "pid", "source",
+                                        "status", "timestamp", "verb"])
+
+    def test_the_host_credential_read_is_still_the_bearer(self):
+        with mock.patch("urllib.request.urlopen", return_value=FakeResponse(payload={"id": 1})) as urlopen:
+            self.run_main(["get", "courses/1"])
+        sent = urlopen.call_args[0][0]
+        self.assertEqual(sent.get_header("Authorization"), "Bearer " + TOKEN)
+
+    def test_check_provenance_and_confirm_are_looked_up_at_call_time(self):
+        def refuse():
+            raise guard.GuardError("edge provenance refused")
+        with mock.patch.object(guard, "check_provenance", refuse), \
+                mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "courses/1"])
+        self.assertEqual(code, 2)
+        self.assertIn("edge provenance refused", self.last_stderr)
+        urlopen.assert_not_called()
+
+        def approve(cfg, lines):
+            return "edge:test"
+        responses = [FakeResponse(payload={"id": 1, "name": "A"}),
+                     FakeResponse(payload={"id": 1, "name": "X"}),
+                     FakeResponse(payload={"id": 1, "name": "X"})]
+        with mock.patch.object(guard, "confirm", approve), \
+                mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, _ = self.run_main(["put", "courses/1", "--yes",
+                                     "-d", '{"course": {"name": "X"}}'])
+        self.assertEqual(code, 0)
+        self.assertEqual([l["confirmation"] for l in self.log_lines() if l["event"] == "request"],
+                         ["edge:test"])
+
+
 class TestAttachmentDownload(GuardTestCase):
     def test_attachment_opener_disables_proxy_use(self):
         request = urllib.request.Request("https://%s/files/9/download" % HOST)
@@ -1752,8 +1821,8 @@ class TestGuardHeader(unittest.TestCase):
         with open(self.SOURCE) as handle:
             return handle.read()
 
-    def test_the_version_is_1_14_0(self):
-        self.assertEqual(guard.USER_AGENT, "canvas-api-guard/1.14.0")
+    def test_the_version_is_1_15_0(self):
+        self.assertEqual(guard.USER_AGENT, "canvas-api-guard/1.15.0")
 
     def test_the_header_reading_order_matches_the_files_banners_exactly(self):
         """The map must be derived truth, not a copy that can silently go stale."""

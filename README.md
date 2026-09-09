@@ -8,6 +8,12 @@ The review surface is deliberately small: one Python 3.9+ standard-library progr
 one Codex rules file, two Codex skills, the optional Specialized Functions program in
 `level2/`, and two stdlib test suites - 173 offline tests, all run by `python3 -m unittest`.
 
+The guard is also importable. A host-side agent service (see the shared-core spec) replaces
+six module names, listed under "EDGE SEAM" in the file header, and nothing else: the credential
+read, the transport opener, the write confirmation, the provenance check, and two paths.
+`tools/replay-probe.py main` shows that a stock installation's audit records, output, exit codes
+and help are byte-identical before and after a change; it runs on every change to the guard.
+
 ## The two-profile design
 
 **API Only** provides safer raw Canvas API access:
