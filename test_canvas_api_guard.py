@@ -2531,6 +2531,25 @@ class TestInstallerPlan(unittest.TestCase):
             script = handle.read()
         self.assertIn("In Canvas, what are my current classes?", script)
 
+    def test_github_bootstrap_warms_terminal_and_retries_the_launcher_once_under_a_lock(self):
+        """Seen live on two Macs: a cold-launched Terminal typed the launcher path into a shell
+        that was still starting, and zsh got i/tmp/... . The bootstrap launches Terminal first,
+        waits for it, opens the launcher, and reopens it once if "running" never appears; the
+        launcher's atomic mkdir lock makes a second copy exit without doing anything."""
+        with open(self.BOOTSTRAP) as handle:
+            script = handle.read()
+        warm = script.index('"$OPEN_BIN" -g -j -a "$TERMINAL_APP"')
+        wait_for_app = script.index("/usr/bin/pgrep -xq Terminal")
+        first_open = script.index('"$OPEN_BIN" -a "$TERMINAL_APP" "$LAUNCHER"')
+        self.assertLess(warm, wait_for_app)
+        self.assertLess(wait_for_app, first_open)
+        self.assertIn("open_launcher\nif ! launcher_running; then", script)
+        self.assertEqual(script.count("open_launcher\n"), 2)              # one call, one retry
+        self.assertIn("launcher_running() { grep -q '\"state\":\"running\"' \"$STATUS_FILE\"", script)
+        lock = script.index('mkdir "$INSTALL_ROOT/running.lock" 2>/dev/null || exit 0')
+        self.assertLess(script.index('cat > "$LAUNCHER" <<EOF'), lock)
+        self.assertLess(lock, script.index('"state":"running"'))         # lock before the status write
+
     def test_github_bootstrap_tells_the_person_how_to_run_the_launcher_by_hand(self):
         """Terminal types the launcher path into a login shell; a slow shell startup can eat
         the first characters (seen live: zsh received i/tmp/... for /private/tmp/...). The

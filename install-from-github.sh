@@ -109,6 +109,9 @@ chmod 0600 "$STATUS_FILE"
 cat > "$LAUNCHER" <<EOF
 #!/bin/sh
 set -eu
+# One run only: the bootstrap may open this launcher twice if Terminal's first attempt lost
+# the path while the shell was starting. mkdir is atomic; a second copy exits quietly.
+mkdir "$INSTALL_ROOT/running.lock" 2>/dev/null || exit 0
 settings=ok
 
 finish() {
@@ -203,10 +206,29 @@ EOF
 
 chmod 0700 "$LAUNCHER"
 trap - EXIT HUP INT TERM
-"$OPEN_BIN" -a "$TERMINAL_APP" "$LAUNCHER" || {
-    rm -f "$LAUNCHER"
-    die "macOS could not open the Terminal launcher. If Codex ran this command, it must be rerun with host/GUI execution permission; checkout retained at $CHECKOUT"
+# Terminal runs a .command file by starting a login shell and typing the file's path into it.
+# On a cold launch of Terminal the shell can still be starting when the path is typed, and
+# characters are lost (seen live on two Macs: zsh received i/tmp/... for /private/tmp/...).
+# So: launch Terminal first and wait for it, then open the launcher, then confirm the
+# launcher reported "running"; if it did not, open it once more. The launcher's lock makes a
+# second copy exit without doing anything.
+"$OPEN_BIN" -g -j -a "$TERMINAL_APP" 2>/dev/null || true
+waited=0
+until /usr/bin/pgrep -xq Terminal || [ "$waited" -ge 20 ]; do sleep 0.5; waited=$((waited + 1)); done
+launcher_running() { grep -q '"state":"running"' "$STATUS_FILE" 2>/dev/null; }
+open_launcher() {
+    "$OPEN_BIN" -a "$TERMINAL_APP" "$LAUNCHER" || {
+        rm -f "$LAUNCHER"
+        die "macOS could not open the Terminal launcher. If Codex ran this command, it must be rerun with host/GUI execution permission; checkout retained at $CHECKOUT"
+    }
+    waited=0
+    until launcher_running || [ "$waited" -ge 30 ]; do sleep 0.5; waited=$((waited + 1)); done
 }
+open_launcher
+if ! launcher_running; then
+    printf 'Terminal did not start the launcher on the first try; opening it again.\n'
+    open_launcher
+fi
 
 printf 'Opened a visible macOS Terminal installation window.\n'
 # Terminal types the launcher's path into a fresh login shell. A slow or interactive shell
