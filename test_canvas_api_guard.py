@@ -792,6 +792,28 @@ class TestEvidence(GuardTestCase):
         self.assertEqual(code, 3)
         self.assertIn("did not match", output)
 
+    def test_delete_of_a_soft_deleted_object_is_verified_by_its_deleted_state(self):
+        """Seen live: Canvas returned the deleted quiz and its assignment on the read-back,
+        marked deleted, and the guard called a completed deletion uncertain."""
+        for marker in ({"workflow_state": "deleted"}, {"deleted_at": "2026-09-09T22:10:00Z"}):
+            with self.subTest(marker=marker):
+                responses = [FakeResponse(payload={"id": 2, "name": "Lab 4", "workflow_state": "published"}),
+                             FakeResponse(status=200, payload={"id": 2}),
+                             FakeResponse(payload=dict({"id": 2, "name": "Lab 4"}, **marker))]
+                with mock.patch("urllib.request.urlopen", side_effect=responses):
+                    code, output = self.run_main(["delete", "courses/1/assignments/2", "--yes"])
+                self.assertEqual(code, 0, output)
+                self.assertIn("object marked deleted", output)
+
+    def test_delete_whose_read_back_is_still_live_is_uncertain(self):
+        responses = [FakeResponse(payload={"id": 2, "name": "Lab 4", "workflow_state": "published"}),
+                     FakeResponse(status=200, payload={"id": 2}),
+                     FakeResponse(payload={"id": 2, "name": "Lab 4", "workflow_state": "published"})]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, output = self.run_main(["delete", "courses/1/assignments/2", "--yes"])
+        self.assertEqual(code, 3)
+        self.assertIn("not marked deleted (workflow_state 'published')", output)
+
     def test_delete_transport_failure_is_not_reported_as_gone(self):
         responses = [FakeResponse(payload={"id": 2, "name": "Lab 4"}),
                      FakeResponse(status=200, payload={"id": 2}),
@@ -2034,8 +2056,8 @@ class TestGuardHeader(unittest.TestCase):
         with open(self.SOURCE) as handle:
             return handle.read()
 
-    def test_the_version_is_1_16_0(self):
-        self.assertEqual(guard.USER_AGENT, "canvas-api-guard/1.16.0")
+    def test_the_version_is_1_16_1(self):
+        self.assertEqual(guard.USER_AGENT, "canvas-api-guard/1.16.1")
 
     def test_the_header_reading_order_matches_the_files_banners_exactly(self):
         """The map must be derived truth, not a copy that can silently go stale."""

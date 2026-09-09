@@ -60,7 +60,7 @@ import argparse, datetime, getpass, hashlib, json, os, pwd, re, stat, subprocess
 import urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
-USER_AGENT = "canvas-api-guard/1.16.0"
+USER_AGENT = "canvas-api-guard/1.16.1"
 KEYCHAIN_SERVICE = "canvas-api-guard"
 SECURITY_BIN = "/usr/bin/security"
 SECRET_TOOL_PATHS = ("/usr/bin/secret-tool", "/usr/local/bin/secret-tool")
@@ -1058,14 +1058,23 @@ def do_delete(cfg, path, body):
         emit(cfg, evidence)
         return
     try:
-        send_request(cfg, "GET", path)
+        after = send_request(cfg, "GET", path)
     except RequestFailure as err:
         if err.status == 404:
             evidence.update({"verification": "passed", "note": "read-back after delete: 404 gone"})
             emit(cfg, evidence)
             return
         uncertain(cfg, evidence, "the delete returned, but read-back failed with %s" % err)
-    uncertain(cfg, evidence, "read-back after delete still returned the object")
+    # Canvas soft-deletes quizzes, assignments, pages and more: the object still reads back,
+    # marked deleted. That is the deletion, proved; only a live object is uncertain.
+    after_obj = after["data"] if after and isinstance(after.get("data"), dict) else {}
+    if after_obj.get("workflow_state") == "deleted" or after_obj.get("deleted_at"):
+        evidence.update({"verification": "passed",
+                         "note": "read-back after delete: object marked deleted"})
+        emit(cfg, evidence)
+        return
+    uncertain(cfg, evidence, "read-back after delete still returned the object, not marked "
+                             "deleted (workflow_state %r)" % after_obj.get("workflow_state"))
 
 VERBS = {"get": do_get, "post": do_post, "delete": do_delete,
          "put": lambda c, p, b: do_update(c, "PUT", p, b),
