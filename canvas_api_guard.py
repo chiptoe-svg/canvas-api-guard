@@ -502,7 +502,16 @@ def send_request(cfg, method, path, body=None):
 def refuse_unconfirmed_write(cfg, verb, path):
     """Refuse an unconfirmable write BEFORE the keychain is touched, before the pre-read and
     before any network call - so the refusal can be demonstrated with no token at all."""
-    if verb.upper() not in WRITE_METHODS or cfg.dry_run or cfg.yes or sys.stdin.isatty():
+    if verb.upper() not in WRITE_METHODS or cfg.dry_run:
+        return
+    if cfg.yes and not cfg.allow_yes_flag:
+        log_event(cfg.log_path, {"event": "refusal", "verb": verb.upper(), "kind": "write",
+                                 "path": normalise_path(path),
+                                 "confirmation": "refused-self-approval"})
+        raise GuardError("refusing to write: --yes is disabled by allow_yes_flag in %s; this "
+                         "installation accepts only a terminal or a configured external approver"
+                         % CONFIG_PATH)
+    if cfg.yes or sys.stdin.isatty():
         return
     if external_confirmation(cfg):
         return
@@ -544,6 +553,8 @@ def confirm(cfg, lines):
               % (cfg.external_confirmation, cfg.confirmed_by), file=shown)
         return external
     if cfg.yes:
+        if not cfg.allow_yes_flag:      # unreachable from the CLI: main() refuses earlier
+            raise GuardError("refusing to write: --yes is disabled by allow_yes_flag")
         print("confirmation: --yes was passed explicitly", file=shown)
         return "yes-flag"
     if not sys.stdin.isatty():          # unreachable from the CLI: main() refuses earlier
@@ -1059,6 +1070,7 @@ def make_config(args):
                               created_id=getattr(args, "created_id", None),
                               token_source=configured["token_source"],
                               external_confirmation=configured["external_confirmation"],
+                              allow_yes_flag=configured["allow_yes_flag"],
                               confirmed_by=getattr(args, "confirmed_by", None),
                               dry_run_request=None)
 
@@ -1114,13 +1126,19 @@ def read_config():
     # The label of an external approver permitted to confirm writes, or absent for none. This
     # lives in the ROOT-OWNED config on purpose: --confirmed-by is worthless as evidence if the
     # caller can also decide that external confirmation is allowed.
+    # Whether --yes may confirm a write. An installation with a real approver, or one whose
+    # callers are automated, sets this false: self-approval is then impossible and the only
+    # confirmations left are a human at a TTY and a configured external approver.
+    allow_yes = configured.get("allow_yes_flag", True)
+    if not isinstance(allow_yes, bool):
+        raise GuardError("allow_yes_flag must be true or false")
     approver = configured.get("external_confirmation")
     if approver is not None and not (isinstance(approver, str)
                                      and re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$", approver)):
         raise GuardError("external_confirmation must be a short label of letters, digits, "
                          "'.', '_' or '-'")
     return {"host": host, "profile": profile, "token_source": source,
-            "external_confirmation": approver}
+            "external_confirmation": approver, "allow_yes_flag": allow_yes}
 
 def build_parser():
     parser = argparse.ArgumentParser(prog="canvas_api_guard.py", description=(

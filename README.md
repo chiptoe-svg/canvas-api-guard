@@ -310,6 +310,7 @@ historical behaviour, so an existing installation is unchanged by upgrading.
 |---|---|---|
 | `token_source` | `"keyring"` | `"gateway"` reads no token and attaches no `Authorization`; the proxy injects the credential at the TLS boundary. The request leaves this process bearer-free. |
 | `external_confirmation` | absent | A short approver label, e.g. `"nanoclaw"`. Enables `--confirmed-by RECEIPT` on writes; the write is logged as `confirmation: "external:<label>"` with the receipt beside it. |
+| `allow_yes_flag` | `true` | `false` refuses `--yes`, logged `refused-self-approval`. An installation with a real approver, or one whose callers are automated, sets this: self-approval then becomes impossible. |
 
 `token_source: "gateway"` narrows what this process holds rather than widening it: it never reads a
 token at all, which is the same property `follow_redirect()` already preserves by stripping
@@ -322,6 +323,12 @@ in the root-owned config, which the caller cannot write, and the receipt is supp
 invocation. A caller that can set only the flag gets a refusal, logged as
 `refused-external-not-configured`. A named approver outside the process, recorded with its receipt,
 is stronger evidence than "somebody was at a terminal".
+
+`allow_yes_flag: false` is what makes that guarantee hold. Without it the pair above is advisory:
+any caller that can pass `--confirmed-by` can pass `--yes` instead and approve itself. Setting the
+three together — `token_source: "gateway"`, an `external_confirmation` label, and
+`allow_yes_flag: false` — leaves a write with exactly two ways through: a human at a terminal, or a
+receipt from the named approver.
 
 ## Fail-closed write evidence
 
