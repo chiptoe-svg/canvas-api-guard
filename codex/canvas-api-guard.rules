@@ -19,7 +19,7 @@ DOWNLOADS = ["download-submission-file"]
 OPERATION_READS = ["student-attention"]
 OPERATION_PROMPTS = ["prepare-submission-review", "download-assignment-submissions",
                      "create-rubric", "grade-with-rubric", "bulk-grade-with-rubric",
-                     "regrade-quiz-question"]
+                     "regrade-quiz-question", "run-plan"]
 
 prefix_rule(
     pattern = [GUARD, READS],
@@ -76,7 +76,8 @@ prefix_rule(
              "/usr/local/libexec/canvas_api_operations.py bulk-grade-with-rubric --course-id 1 --assignment-id 2 --definition grades.json --yes",
              "/usr/local/libexec/canvas_api_operations.py prepare-submission-review --course-id 1 --assignment-id 2 --student-id 3",
              "/usr/local/libexec/canvas_api_operations.py download-assignment-submissions --course-id 1 --assignment-id 2",
-             "/usr/local/libexec/canvas_api_operations.py regrade-quiz-question --course-id 1 --definition regrade.json --yes"],
+             "/usr/local/libexec/canvas_api_operations.py regrade-quiz-question --course-id 1 --definition regrade.json --yes",
+             "/usr/local/libexec/canvas_api_operations.py run-plan --course-id 1 --definition plan.json --yes"],
     not_match = ["./level2/canvas_api_operations.py create-rubric --course-id 1 --definition rubric.json --yes"],
 )
 

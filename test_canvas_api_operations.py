@@ -210,11 +210,11 @@ class TestLevel2Operations(unittest.TestCase):
         self.assertIn("--dry-run", command)
         self.assertNotIn("--yes", command)
 
-    def test_only_the_six_computing_operations_remain(self):
+    def test_only_the_eight_operations_remain(self):
         self.assertEqual(sorted(operations.OPERATIONS), [
             "bulk-grade-with-rubric", "create-rubric",
             "download-assignment-submissions", "grade-with-rubric",
-            "prepare-submission-review", "regrade-quiz-question", "student-attention"])
+            "prepare-submission-review", "regrade-quiz-question", "run-plan", "student-attention"])
         with open(SOURCE) as handle:
             source = handle.read()
         for gone in ("def attach_rubric", "def current_courses", "def roster_count", "def find_student",
@@ -320,6 +320,96 @@ class TestLevel2Operations(unittest.TestCase):
         assignment = {"html_url": "https://canvas.example.edu/courses/12/assignments/22"}
         self.assertEqual(operations.speedgrader_url(assignment),
                          "https://canvas.example.edu/courses/12/gradebook/speed_grader?assignment_id=22")
+
+    def plan_args(self, dry_run):
+        args = Args()
+        args.definition, args.dry_run, args.yes = "unused", dry_run, not dry_run
+        return args
+
+    SURVEY_PLAN = {"steps": [
+        {"verb": "post", "path": "courses/12/quizzes",
+         "body": {"quiz": {"title": "Speaker Survey", "quiz_type": "graded_survey", "published": False}},
+         "capture": {"quiz": "id"}},
+        {"verb": "post", "path": "courses/12/quizzes/{quiz}/questions",
+         "body": {"question": {"question_text": "Rate the talk", "question_type": "multiple_choice_question"}}},
+        {"verb": "put", "path": "courses/12/quizzes/{quiz}", "body": {"quiz": {"published": True}}}]}
+
+    def test_a_plan_is_validated_before_anything_is_shown(self):
+        bad = [
+            ({"steps": []}, "non-empty"),
+            ({"steps": [{"verb": "get", "path": "courses/12", "body": {}}]}, "verb must be one of"),
+            ({"steps": [{"verb": "post", "path": "courses/12/quizzes"}]}, "needs an object body"),
+            ({"steps": [{"verb": "put", "path": "courses/12/quizzes/5", "body": {}, "capture": {"q": "id"}}]},
+             "only a post can capture"),
+            ({"steps": [{"verb": "post", "path": "courses/12/quizzes/{quiz}/questions", "body": {}}]},
+             "refers to {quiz}, which no earlier step captures"),
+            ({"steps": [{"verb": "post", "path": "courses/12/quizzes", "body": {}, "capture": {"Quiz": "id"}}]},
+             "capture must map"),
+            ({"steps": [{"verb": "post", "path": "courses/12/x", "body": {}}] * 51}, "limited to 50 steps"),
+        ]
+        for definition, message in bad:
+            with self.subTest(message=message):
+                with self.assertRaises(operations.OperationError) as caught:
+                    operations.plan_steps(definition)
+                self.assertIn(message, str(caught.exception))
+
+    def test_a_dry_run_shows_every_step_with_its_placeholder_and_writes_nothing(self):
+        with mock.patch.object(operations, "definition_file", return_value=self.SURVEY_PLAN), \
+                mock.patch.object(operations, "guard_write", return_value=None) as write, \
+                mock.patch("sys.stdout", io.StringIO()) as out:
+            operations.run_plan(self.plan_args(dry_run=True))
+        self.assertEqual([call[0][3] for call in write.call_args_list], ["dry-run"] * 3)
+        self.assertEqual(write.call_args_list[1][0][1], "courses/12/quizzes/{quiz}/questions")
+        self.assertIn('"steps_total": 3', out.getvalue())
+        self.assertIn('"steps_written": 0', out.getvalue())
+
+    def test_an_approved_plan_runs_in_order_and_later_steps_use_what_earlier_ones_created(self):
+        def write(verb, path, body, phase, extra=None):
+            return {"verification": "passed", "object": {"id": 77} if verb == "post" else {}}
+        with mock.patch.object(operations, "definition_file", return_value=self.SURVEY_PLAN), \
+                mock.patch.object(operations, "guard_write", side_effect=write) as written, \
+                mock.patch("sys.stdout", io.StringIO()) as out:
+            operations.run_plan(self.plan_args(dry_run=False))
+        self.assertEqual([call[0][1] for call in written.call_args_list],
+                         ["courses/12/quizzes", "courses/12/quizzes/77/questions", "courses/12/quizzes/77"])
+        self.assertEqual([call[0][3] for call in written.call_args_list], ["yes"] * 3)
+        self.assertIn('"steps_written": 3', out.getvalue())
+        self.assertIn('"quiz": 77', out.getvalue())
+
+    def test_a_plan_stops_at_the_first_uncertain_step_and_says_which_ran(self):
+        def write(verb, path, body, phase, extra=None):
+            if path.endswith("/questions"):
+                raise operations.GuardUncertain("WRITE STATUS UNCERTAIN: read-back mismatch")
+            return {"verification": "passed", "object": {"id": 77}}
+        with mock.patch.object(operations, "definition_file", return_value=self.SURVEY_PLAN), \
+                mock.patch.object(operations, "guard_write", side_effect=write) as written, \
+                mock.patch("sys.stdout", io.StringIO()):
+            with self.assertRaises(operations.GuardUncertain) as caught:
+                operations.run_plan(self.plan_args(dry_run=False))
+        self.assertIn("stopped after 1 of 3 steps", str(caught.exception))
+        self.assertEqual(len(written.call_args_list), 2)           # the publish step never ran
+
+    def test_a_created_object_that_does_not_read_back_its_id_stops_the_plan(self):
+        def write(verb, path, body, phase, extra=None):
+            return {"verification": "passed", "object": {"title": "no id here"}}
+        with mock.patch.object(operations, "definition_file", return_value=self.SURVEY_PLAN), \
+                mock.patch.object(operations, "guard_write", side_effect=write) as written, \
+                mock.patch("sys.stdout", io.StringIO()):
+            with self.assertRaises(operations.GuardUncertain) as caught:
+                operations.run_plan(self.plan_args(dry_run=False))
+        self.assertIn("did not read back 'id'", str(caught.exception))
+        self.assertEqual(len(written.call_args_list), 1)
+
+    def test_a_refusal_before_any_write_is_an_ordinary_refusal(self):
+        """The guard refuses create-and-publish at the dry run; a plan that publishes first is
+        refused whole, and nothing was written, so it is not uncertain."""
+        with mock.patch.object(operations, "definition_file", return_value=self.SURVEY_PLAN), \
+                mock.patch.object(operations, "guard_write",
+                                  side_effect=operations.OperationError("API Only guard failed: refusing to create a quiz already published")), \
+                mock.patch("sys.stdout", io.StringIO()):
+            with self.assertRaises(operations.OperationError) as caught:
+                operations.run_plan(self.plan_args(dry_run=False))
+        self.assertNotIn("stopped after", str(caught.exception))
 
     def grade_args(self):
         args = Args()

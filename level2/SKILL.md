@@ -9,7 +9,7 @@ description: Use named Canvas Specialized Functions for rubric creation and rubr
 token and opens no network connection. Every Canvas request it makes goes through the
 root-owned API Only guard, with the same host pinning, approval, and audit record.
 
-There are seven operations, and each one exists because it computes something across several
+There are eight operations, and each one exists because it computes something across several
 Canvas calls or validates structured input. **Anything else - any documented Canvas endpoint,
 any one-off read, any write these do not cover - belongs to the `canvas-api-guard` skill, which
 can do all of it.** A missing named operation is never a reason to decline a Canvas task.
@@ -69,9 +69,18 @@ which is enough for OCR and reading handwriting. Otherwise render once per page 
 /usr/local/libexec/canvas_api_operations.py grade-with-rubric --course-id 123 --assignment-id 20 --definition grade.json --dry-run
 /usr/local/libexec/canvas_api_operations.py bulk-grade-with-rubric --course-id 123 --assignment-id 20 --definition grades.json --dry-run
 /usr/local/libexec/canvas_api_operations.py regrade-quiz-question --course-id 123 --definition regrade.json --dry-run
+/usr/local/libexec/canvas_api_operations.py run-plan --course-id 123 --definition plan.json --dry-run
 /usr/local/libexec/canvas_api_operations.py regrade-quiz-question --course-id 123 --definition regrade.json --expect-plan DIGEST --yes
 ```
 
+- `run-plan` is how anything that takes more than one write gets ONE approval. Put the writes
+  in order in `plan.json` as `{"steps": [{"verb": "post", "path": "courses/123/quizzes", "body":
+  {...}, "capture": {"quiz": "id"}}, {"verb": "post", "path": "courses/123/quizzes/{quiz}/questions",
+  "body": {...}}, ..., {"verb": "put", "path": "courses/123/quizzes/{quiz}", "body": {"quiz":
+  {"published": true}}}]}`. The dry run shows every step; the instructor approves once; each step
+  is still its own audited, read-back write, later steps use what earlier ones created, and the
+  plan stops at the first uncertain result and says which steps ran. Build unpublished and put
+  the publish step last; the guard refuses a plan that publishes first. Up to 50 steps.
 - `create-rubric` turns a flat criteria list into Canvas’s indexed rubric shape and reads every
   criterion and rating back after the create - which one API call cannot prove. With
   `--assignment-id` the same single write also attaches the rubric to that assignment with

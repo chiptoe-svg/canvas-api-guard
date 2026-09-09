@@ -17,7 +17,7 @@ import sys
 import time
 
 GUARD = "/usr/local/libexec/canvas_api_guard.py"
-USER_AGENT = "canvas-api-operations/0.14.0"
+USER_AGENT = "canvas-api-operations/0.15.0"
 MAX_REVIEW_ATTACHMENTS = 500
 SCORE_TOLERANCE = 0.005        # API Only's own tolerance: Canvas rounds a score to two decimals
 
@@ -747,7 +747,95 @@ def student_attention(args):
 
 # Each of these computes across several Canvas calls or validates structured input. An
 # operation that is one API call belongs in API Only, with the Canvas documentation.
-OPERATIONS = {"create-rubric": create_rubric, "grade-with-rubric": grade_with_rubric,
+PLAN_STEP_LIMIT = 50
+PLAN_VERBS = ("post", "put", "patch", "delete")
+PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9_]*)\}")
+
+
+def plan_steps(value):
+    """A plan is an ordered list of writes reviewed and approved as one. Each step is a verb,
+    a path and a body; a post may capture a field of what it creates (`"capture": {"quiz":
+    "id"}`), and later steps may refer to it as {quiz} in a path or body. Every step is still
+    its own audited, read-back write; the plan only changes how many times a person is asked."""
+    definition = exact_object(value, ("steps",), ())
+    steps = definition["steps"]
+    if not isinstance(steps, list) or not steps:
+        raise OperationError("plan steps must be a non-empty array")
+    if len(steps) > PLAN_STEP_LIMIT:
+        raise OperationError("a plan is limited to %d steps; this one has %d" % (PLAN_STEP_LIMIT, len(steps)))
+    known, result = set(), []
+    for index, item in enumerate(steps, 1):
+        step = exact_object(item, ("verb", "path"), ("body", "capture"))
+        verb = str(step["verb"]).lower()
+        if verb not in PLAN_VERBS:
+            raise OperationError("step %d: verb must be one of %s" % (index, ", ".join(PLAN_VERBS)))
+        path = text(step["path"], "step %d path" % index)
+        body = step.get("body")
+        if body is None and verb != "delete":
+            raise OperationError("step %d: %s needs an object body" % (index, verb))
+        if body is not None and not isinstance(body, dict):
+            raise OperationError("step %d: body must be a JSON object" % index)
+        capture = step.get("capture") or {}
+        if capture and verb != "post":
+            raise OperationError("step %d: only a post can capture what it creates" % index)
+        if not isinstance(capture, dict) or any(
+                not PLACEHOLDER.fullmatch("{%s}" % name) or not isinstance(field, str) or not field
+                for name, field in capture.items()):
+            raise OperationError("step %d: capture must map {name} placeholders to field names" % index)
+        for name in PLACEHOLDER.findall(path + json.dumps(body or {})):
+            if name not in known:
+                raise OperationError("step %d refers to {%s}, which no earlier step captures" % (index, name))
+        known.update(capture)
+        result.append({"index": index, "verb": verb, "path": path, "body": body, "capture": capture})
+    return result
+
+
+def resolve(value, captured):
+    if isinstance(value, str):
+        return PLACEHOLDER.sub(lambda match: str(captured[match.group(1)]), value)
+    if isinstance(value, dict):
+        return {key: resolve(item, captured) for key, item in value.items()}
+    if isinstance(value, list):
+        return [resolve(item, captured) for item in value]
+    return value
+
+
+def run_plan(args):
+    """Show every step as one dry run, then, on --yes, send them in order through API Only,
+    capturing created ids for later steps and stopping at the first uncertain result."""
+    steps = plan_steps(definition_file(args.definition))
+    phase = operation_phase(args)
+    print(json.dumps({"operation": "run-plan", "phase": phase, "course_id": args.course_id,
+                      "steps": steps}, indent=2, sort_keys=True))
+    captured, done = {}, []
+    try:
+        for step in steps:
+            path, body = step["path"], step["body"] if step["body"] is not None else {}
+            if phase != "dry-run":
+                path, body = resolve(path, captured), resolve(body, captured)
+            evidence = guard_write(step["verb"], path, body, phase)
+            if phase == "dry-run":
+                continue
+            done.append(step["index"])
+            created = (evidence or {}).get("object") or {}
+            for name, field in step["capture"].items():
+                if created.get(field) is None:
+                    raise GuardUncertain("step %d created the object but it did not read back %r, "
+                                         "which later steps need" % (step["index"], field))
+                captured[name] = created[field]
+    except GuardUncertain as err:
+        raise GuardUncertain("plan stopped after %d of %d steps; the writes already made stand: %s"
+                             % (len(done), len(steps), err))
+    except OperationError as err:
+        if not done:
+            raise                 # nothing was written: an ordinary refusal
+        raise GuardUncertain("plan stopped after %d of %d steps; the writes already made stand "
+                             "and are not retried: %s" % (len(done), len(steps), err))
+    print(json.dumps({"operation": "run-plan", "phase": phase, "steps_written": len(done),
+                      "steps_total": len(steps), "captured": captured}, indent=2, sort_keys=True))
+
+
+OPERATIONS = {"run-plan": run_plan, "create-rubric": create_rubric, "grade-with-rubric": grade_with_rubric,
               "bulk-grade-with-rubric": bulk_grade_with_rubric,
               "prepare-submission-review": prepare_submission_review,
               "download-assignment-submissions": download_assignment_submissions,
@@ -781,6 +869,7 @@ def parser():
     for name in ("grade-with-rubric", "bulk-grade-with-rubric"):
         grade = subs.add_parser(name, parents=[write])
         grade.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)
+    subs.add_parser("run-plan", parents=[write])
     regrade = subs.add_parser("regrade-quiz-question", parents=[write])
     regrade.add_argument("--expect-plan", metavar="DIGEST",
                          help="the plan_digest the dry run printed; the write is refused if the "
