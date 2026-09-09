@@ -478,6 +478,166 @@ class TestLevel2Operations(unittest.TestCase):
         self.assertNotIn("null", out.getvalue())
 
 
+QUESTION = {"id": 789, "quiz_id": 5, "question_type": "multiple_choice_question",
+            "points_possible": 2.0,
+            "answers": [{"id": 1001, "text": "A", "weight": 100},
+                        {"id": 1002, "text": "B", "weight": 0},
+                        {"id": 1003, "text": "C", "weight": 0},
+                        {"id": 1004, "text": "D", "weight": 0}]}
+QUIZ = {"id": 5, "title": "Unit 2 Quiz", "quiz_type": "assignment", "assignment_id": 77,
+        "points_possible": 10.0}
+SUBMISSIONS = {"quiz_submissions": [
+    {"id": 55, "user_id": 34, "attempt": 1, "score": 6.0, "workflow_state": "complete"},
+    {"id": 56, "user_id": 35, "attempt": 2, "score": 8.0, "workflow_state": "complete"},
+    {"id": 57, "user_id": 36, "attempt": 1, "score": 4.0, "workflow_state": "untaken"}]}
+HISTORY = {
+    "34": {"id": 900, "user_id": 34, "attempt": 1, "score": 6.0, "submission_history": [
+        {"attempt": 1, "score": 6.0, "submission_data": [
+            {"question_id": 789, "answer_id": 1003, "correct": False, "points": 0.0},
+            {"question_id": 790, "answer_id": 2001, "correct": True, "points": 6.0}]}]},
+    "35": {"id": 901, "user_id": 35, "attempt": 2, "score": 8.0, "submission_history": [
+        {"attempt": 1, "score": 5.0, "submission_data": [
+            {"question_id": 789, "answer_id": 1001, "correct": True, "points": 2.0}]},
+        {"attempt": 2, "score": 8.0, "submission_data": [
+            {"question_id": 789, "answer_id": 1001, "correct": True, "points": 2.0}]}]}}
+
+
+class QuizRegradeFixtures(object):
+    """Shared fixtures for the regrade tests. A plain mixin, not a TestCase: subclassing a
+    TestCase would rerun every inherited test under the child's name."""
+
+    def args(self, dry_run=True):
+        args = Args()
+        args.definition, args.dry_run, args.yes = "unused", dry_run, not dry_run
+        return args
+
+    def reads(self, path):
+        if path.startswith("courses/12/quizzes/5/questions/789"):
+            return {"object": QUESTION}
+        if path == "courses/12/quizzes/5":
+            return {"object": QUIZ}
+        if path.startswith("courses/12/quizzes/5/submissions?page=1"):
+            return {"object": SUBMISSIONS}
+        if path.startswith("courses/12/quizzes/5/submissions?page="):
+            return {"object": {"quiz_submissions": []}}
+        if path.startswith("courses/12/assignments/77/submissions/"):
+            return {"object": HISTORY[path.split("/")[5].split("?")[0]]}
+        if path == "courses/12":
+            return {"object": {"id": 12}}
+        raise AssertionError("unexpected read %r" % path)
+
+    def plan(self, definition=None):
+        definition = definition or {"quiz_id": 5, "question_id": 789,
+                                    "correct_answer_ids": [1003, 1004]}
+        names = [{"id": 34, "name": "Jordan Lee", "sortable_name": "Lee, Jordan"},
+                 {"id": 35, "name": "Casey Kim", "sortable_name": "Kim, Casey"}]
+        with mock.patch.object(operations, "definition_file", return_value=definition), \
+                mock.patch.object(operations, "guard_get", side_effect=self.reads), \
+                mock.patch.object(operations, "all_items", return_value=names):
+            return operations.regrade_plan(self.args())
+
+
+
+class TestQuizRegradePlan(QuizRegradeFixtures, unittest.TestCase):
+    """The read side: what would change, before anything is sent."""
+
+    def test_the_plan_names_every_attempt_and_both_directions_of_the_delta(self):
+        _, _, _, question, rows, changed = self.plan()
+        self.assertEqual(question["id"], 789)
+        # the untaken submission is never a candidate
+        self.assertEqual([row["user_id"] for row in rows], [34, 35])
+        gained, lost = rows[0], rows[1]
+        self.assertEqual((gained["name"], gained["attempt"], gained["old_points"],
+                          gained["new_points"], gained["delta"], gained["expected_score"]),
+                         ("Jordan Lee", 1, 0.0, 2.0, 2.0, 8.0))
+        # C and D are now correct, so A is not: this student loses the points
+        self.assertEqual((lost["name"], lost["attempt"], lost["old_points"],
+                          lost["new_points"], lost["delta"], lost["expected_score"]),
+                         ("Casey Kim", 2, 2.0, 0.0, -2.0, 6.0))
+        self.assertEqual(len(changed), 2)
+
+    def test_the_new_answer_key_keeps_every_answer_and_only_changes_the_weights(self):
+        answers = operations.regrade_answer_key(QUESTION, ["1003", "1004"])
+        self.assertEqual(answers, [{"id": 1001, "text": "A", "weight": 0},
+                                   {"id": 1002, "text": "B", "weight": 0},
+                                   {"id": 1003, "text": "C", "weight": 100},
+                                   {"id": 1004, "text": "D", "weight": 100}])
+
+    def test_an_unsupported_question_type_is_refused_before_anything_is_read_back(self):
+        with self.assertRaises(operations.OperationError) as caught:
+            operations.regrade_answer_key(dict(QUESTION, question_type="essay_question"),
+                                          ["1003"])
+        self.assertEqual(str(caught.exception),
+                         "regrade supports multiple_choice_question and true_false_question; "
+                         "question 789 is essay_question")
+
+    def test_an_answer_that_is_not_on_the_question_is_refused(self):
+        with self.assertRaises(operations.OperationError) as caught:
+            operations.regrade_answer_key(QUESTION, ["9999"])
+        self.assertEqual(str(caught.exception),
+                         "answer 9999 is not an answer of question 789 "
+                         "(available: 1001, 1002, 1003, 1004)")
+
+    def test_a_quiz_that_is_not_a_graded_classic_quiz_is_refused(self):
+        def reads(path):
+            return {"object": dict(QUIZ, quiz_type="practice_quiz", assignment_id=None)}
+        with mock.patch.object(operations, "definition_file",
+                               return_value={"quiz_id": 5, "question_id": 789,
+                                             "correct_answer_ids": [1003]}), \
+                mock.patch.object(operations, "guard_get", side_effect=reads):
+            with self.assertRaises(operations.OperationError) as caught:
+                operations.regrade_plan(self.args())
+        self.assertIn("only a graded classic quiz", str(caught.exception))
+        self.assertIn("New Quizzes", str(caught.exception))
+
+    def test_the_definition_takes_ids_only_and_refuses_anything_else(self):
+        for bad in ({"quiz_id": 5, "question_id": 789, "correct_answer_ids": ["C"]},
+                    {"quiz_id": 5, "question_id": 789, "correct_answer_ids": []},
+                    {"quiz_id": 5, "question_id": 789, "correct_answer_ids": [1003, 1003]},
+                    {"quiz_id": 5, "question_id": 789, "correct_answer_ids": [1003],
+                     "comment": "hi"}):
+            with self.assertRaises(operations.OperationError):
+                operations.regrade_definition(bad)
+
+    def test_the_submission_list_envelope_is_paged_explicitly(self):
+        pages = []
+
+        def reads(path):
+            pages.append(path)
+            return self.reads(path)
+
+        with mock.patch.object(operations, "guard_get", side_effect=reads):
+            found = operations.quiz_submissions("12", "5")
+        self.assertEqual([row["id"] for row in found], [55, 56, 57])
+        self.assertEqual(pages, ["courses/12/quizzes/5/submissions?page=1&per_page=100",
+                                 "courses/12/quizzes/5/submissions?page=2&per_page=100"])
+
+    def test_more_attempts_than_the_cap_is_refused_before_any_write(self):
+        many = {"quiz_submissions": [
+            dict(SUBMISSIONS["quiz_submissions"][0], id=100 + n, user_id=100 + n)
+            for n in range(operations.QUIZ_REGRADE_LIMIT + 1)]}
+        history = {"attempt": 1, "score": 6.0, "submission_history": [
+            {"attempt": 1, "score": 6.0, "submission_data": [
+                {"question_id": 789, "answer_id": 1003, "points": 0.0}]}]}
+
+        def reads(path):
+            if path.startswith("courses/12/quizzes/5/submissions?page=1"):
+                return {"object": many}
+            if path.startswith("courses/12/assignments/77/submissions/"):
+                return {"object": history}
+            return self.reads(path)
+
+        with mock.patch.object(operations, "definition_file",
+                               return_value={"quiz_id": 5, "question_id": 789,
+                                             "correct_answer_ids": [1003, 1004]}), \
+                mock.patch.object(operations, "guard_get", side_effect=reads), \
+                mock.patch.object(operations, "guard_write") as write:
+            with self.assertRaises(operations.OperationError) as caught:
+                operations.regrade_plan(self.args())
+        self.assertIn("refuses more than 100 attempts", str(caught.exception))
+        write.assert_not_called()
+
+
 class TestGuardWriteContract(GuardTestCase):
     """The one contract between the layers: what the real guard prints for a `-o json` write
     is exactly what guard_write parses. Mocked stdout shapes cannot prove this."""

@@ -13,9 +13,10 @@ import re
 import stat
 import subprocess
 import sys
+import time
 
 GUARD = "/usr/local/libexec/canvas_api_guard.py"
-USER_AGENT = "canvas-api-operations/0.13.0"
+USER_AGENT = "canvas-api-operations/0.14.0"
 MAX_REVIEW_ATTACHMENTS = 500
 SCORE_TOLERANCE = 0.005        # API Only's own tolerance: Canvas rounds a score to two decimals
 
@@ -443,6 +444,124 @@ def bulk_grade_with_rubric(args):
                              % (len(results), len(definition["grades"]), err))
     print(json.dumps({"operation": "bulk-grade-with-rubric", "phase": operation_phase(args),
                       "results": results}, indent=2, sort_keys=True))
+
+
+QUIZ_REGRADE_LIMIT = 100       # attempts in one reviewed batch: one section, refused whole
+QUIZ_PAGE_CAP = 10             # 100 per page; past this the batch cap has already refused
+CLASSIC_QUESTION_TYPES = ("multiple_choice_question", "true_false_question")
+# The update REPLACES the answer set, so every answer is sent back as Canvas returned it with
+# only its weight changed. These are the fields canvas-cli round-trips (internal/api
+# QuizAnswer); anything else Canvas returns is not sent back.
+ANSWER_FIELDS = ("id", "text", "html", "comments", "comments_html")
+
+
+def regrade_definition(value):
+    """Answer IDs only: a Canvas answer's identity is its ID, its text is instructor HTML that
+    is not unique and that this write has to round-trip untouched."""
+    definition = exact_object(value, ("quiz_id", "question_id", "correct_answer_ids"), ())
+    ids = definition["correct_answer_ids"]
+    if not isinstance(ids, list) or not ids:
+        raise OperationError("correct_answer_ids must be a non-empty array of Canvas answer IDs")
+    answer_ids = [canvas_id(str(answer_id), "answer ID") for answer_id in ids]
+    if len(set(answer_ids)) != len(answer_ids):
+        raise OperationError("correct_answer_ids contains a duplicate answer ID")
+    return (canvas_id(str(definition["quiz_id"]), "quiz ID"),
+            canvas_id(str(definition["question_id"]), "question ID"), answer_ids)
+
+
+def regrade_answer_key(question, answer_ids):
+    """Canvas encodes correctness as weight: 100 correct, 0 wrong. Every answer not listed
+    drops to 0, so a student who picked the old answer loses those points - the plan shows it."""
+    if question.get("question_type") not in CLASSIC_QUESTION_TYPES:
+        raise OperationError("regrade supports multiple_choice_question and true_false_question; "
+                             "question %s is %s" % (question.get("id"),
+                                                    question.get("question_type")))
+    available = [str(answer.get("id")) for answer in question.get("answers") or []]
+    missing = [answer_id for answer_id in answer_ids if answer_id not in available]
+    if missing:
+        raise OperationError("answer %s is not an answer of question %s (available: %s)"
+                             % (", ".join(missing), question.get("id"), ", ".join(available)))
+    answers = []
+    for answer in question["answers"]:
+        kept = dict((field, answer[field]) for field in ANSWER_FIELDS if field in answer)
+        kept["weight"] = 100 if str(answer.get("id")) in answer_ids else 0
+        answers.append(kept)
+    return answers
+
+
+def quiz_submissions(course_id, quiz_id):
+    """Canvas answers this list in a {"quiz_submissions": [...]} envelope, not a JSON array, so
+    API Only reports one object with no rel="next" and the pages are walked here. A short page
+    is not the end - an admin can cap per_page below the request - but a page that adds no new
+    submission is."""
+    found, seen = [], set()
+    for page in range(1, QUIZ_PAGE_CAP + 1):
+        response = guard_get("courses/%s/quizzes/%s/submissions?page=%d&per_page=100"
+                             % (course_id, quiz_id, page))
+        rows = (response.get("object") or {}).get("quiz_submissions")
+        if not isinstance(rows, list):
+            raise OperationError("Canvas did not return a quiz_submissions list for quiz %s"
+                                 % quiz_id)
+        added = [row for row in rows if str(row.get("id")) not in seen]
+        seen.update(str(row.get("id")) for row in added)
+        found.extend(added)
+        if not added:
+            return found
+    raise OperationError("quiz %s lists more submission pages than this operation reads" % quiz_id)
+
+
+def attempt_row(course_id, assignment_id, submission, question, answer_ids):
+    """One attempt's before/after, from the assignment submission's history - the per-question
+    record a grader can see. Only answer_id and points are trusted: Canvas does not recompute
+    submission_data's "correct" flag when an answer key changes (canvas-cli observed correct:
+    true with points 0 after a regrade), so correctness is always answer_id against the key."""
+    row = {"submission_id": submission.get("id"), "user_id": submission.get("user_id"),
+           "attempt": submission.get("attempt"), "old_score": number(submission.get("score")),
+           "selected_answer_id": None, "old_points": None, "new_points": None, "delta": 0}
+    history = guard_get("courses/%s/assignments/%s/submissions/%s?include[]=submission_history"
+                        % (course_id, assignment_id, submission.get("user_id"))).get("object") or {}
+    entry = next((item for item in history.get("submission_history") or []
+                  if item.get("attempt") == row["attempt"] and item.get("submission_data")), None)
+    answered = next((item for item in (entry or {}).get("submission_data") or []
+                     if str(item.get("question_id")) == str(question.get("id"))), None)
+    if answered is None or answered.get("answer_id") in (None, ""):
+        row["skipped"] = ("no graded answer record for attempt %s" % row["attempt"]
+                          if entry is None else "the student did not answer this question")
+        return row
+    row["old_score"] = number(entry.get("score"))
+    row["selected_answer_id"] = str(answered["answer_id"])
+    row["old_points"] = number(answered.get("points"))
+    row["new_points"] = (number(question.get("points_possible"))
+                         if row["selected_answer_id"] in answer_ids else 0.0)
+    row["delta"] = row["new_points"] - row["old_points"]
+    row["expected_score"] = row["old_score"] + row["delta"]
+    return row
+
+
+def regrade_plan(args):
+    """Read everything the regrade depends on and work out, per attempt, what would change.
+    Nothing is written here, and the cap refuses the whole batch rather than part of a class."""
+    quiz_id, question_id, answer_ids = regrade_definition(definition_file(args.definition))
+    quiz = guard_get("courses/%s/quizzes/%s" % (args.course_id, quiz_id)).get("object") or {}
+    if quiz.get("quiz_type") != "assignment" or not quiz.get("assignment_id"):
+        raise OperationError("quiz %s is quiz_type %s with assignment_id %s; only a graded "
+                             "classic quiz can be regraded, and a New Quizzes quiz is not in "
+                             "this API at all" % (quiz_id, quiz.get("quiz_type"),
+                                                  quiz.get("assignment_id")))
+    question = guard_get("courses/%s/quizzes/%s/questions/%s"
+                         % (args.course_id, quiz_id, question_id)).get("object") or {}
+    regrade_answer_key(question, answer_ids)        # refuse an unsupported question first
+    rows = [attempt_row(args.course_id, quiz["assignment_id"], submission, question, answer_ids)
+            for submission in quiz_submissions(args.course_id, quiz_id)
+            if submission.get("workflow_state") == "complete"]
+    changed = [row for row in rows if abs(row["delta"]) > SCORE_TOLERANCE]
+    if len(changed) > QUIZ_REGRADE_LIMIT:
+        raise OperationError("regrade refuses more than %s attempts in one reviewed batch; %s "
+                             "attempts would change" % (QUIZ_REGRADE_LIMIT, len(changed)))
+    identities = student_identities(args.course_id, [row["user_id"] for row in rows])
+    for row in rows:
+        row.update(identities.get(str(row["user_id"]), {}))
+    return quiz_id, question_id, answer_ids, question, rows, changed
 
 
 def all_items(path):
