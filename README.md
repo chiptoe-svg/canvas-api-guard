@@ -160,7 +160,9 @@ Opening a macOS application is outside Codex's normal filesystem sandbox. When C
 bootstrap, it must run the exact pinned command with host/GUI execution permission. This is the
 normal scoped command approval needed to open Terminal, not a second installation-phase approval.
 Running the command without that permission can make Launch Services report the misleading
-`kLSNoExecutableErr` even though Terminal is installed.
+`kLSNoExecutableErr` even though Terminal is installed. On a Mac where Xcode is installed but
+its license was never accepted, the system `git` refuses to run; the bootstrap says so and
+names the fix, `sudo xcodebuild -license accept`, before touching the network.
 
 To install a specific reviewed commit instead of the release, fetch the bootstrap from that
 commit and name it with `--ref`; an explicit `--ref` always wins over the pin:

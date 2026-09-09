@@ -2478,6 +2478,34 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("full lowercase hexadecimal commit SHA", proc.stderr)
 
+    def test_github_bootstrap_names_the_xcode_fix_when_git_cannot_run(self):
+        """On a Mac, /usr/bin/git is a shim that refuses until the command line tools exist and,
+        with Xcode installed, until its license is accepted. Faculty must be told the one
+        command, not shown git's message. A scratch copy points GIT_BIN at a fake git."""
+        import subprocess
+        directory = tempfile.mkdtemp(prefix="cag-xcode-")
+        self.addCleanup(shutil.rmtree, directory, True)
+        with open(self.BOOTSTRAP) as handle:
+            script = handle.read()
+        for message, expected in (
+                ("Agreeing to the Xcode/iOS license requires admin privileges, please run 'sudo xcodebuild -license'",
+                 "sudo xcodebuild -license accept"),
+                ("xcode-select: note: no developer tools were found", "xcode-select --install")):
+            with self.subTest(expected=expected):
+                fake = os.path.join(directory, "git")
+                with open(fake, "w") as handle:
+                    handle.write("#!/bin/sh\necho %s >&2\nexit 1\n" % shlex.quote(message))
+                os.chmod(fake, 0o755)
+                copy = os.path.join(directory, "bootstrap.sh")
+                with open(copy, "w") as handle:
+                    handle.write(script.replace("GIT_BIN=/usr/bin/git", "GIT_BIN=%s" % fake, 1))
+                os.chmod(copy, 0o755)
+                proc = subprocess.run([copy, "--ref", "a" * 40, "--host", HOST], stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, universal_newlines=True)
+                self.assertEqual(proc.returncode, 1)
+                self.assertIn(expected, proc.stderr)
+                self.assertNotIn("clone", proc.stderr)          # it never reached the network
+
     def test_github_bootstrap_refuses_an_invalid_host_before_network(self):
         proc = self.run_bootstrap("--ref", "a" * 40, "--host", "https://evil.example/x")
         self.assertEqual(proc.returncode, 1)

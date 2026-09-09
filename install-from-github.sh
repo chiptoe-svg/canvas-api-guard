@@ -70,6 +70,15 @@ esac
 
 [ "$(uname -s)" = Darwin ] || die "the .command workflow is available only on macOS"
 [ -x "$GIT_BIN" ] || die "git is required at $GIT_BIN"
+# On a Mac, /usr/bin/git is a shim for the Xcode command line tools: it refuses to run until
+# the tools are installed and, when Xcode itself is present, until its license is accepted.
+# Say which, and the one command that fixes it, instead of surfacing git's own message.
+GIT_CHECK=$("$GIT_BIN" --version 2>&1) || {
+    case "$GIT_CHECK" in
+        *icense*) die "the Xcode license has not been accepted; in Terminal run: sudo xcodebuild -license accept   then rerun this command" ;;
+        *) die "the Xcode command line tools are not usable ($GIT_CHECK); run: xcode-select --install   then rerun this command" ;;
+    esac
+}
 [ -x "$OPEN_BIN" ] || die "the macOS open command is required at $OPEN_BIN"
 [ -d "$TERMINAL_APP" ] || die "macOS Terminal is required at $TERMINAL_APP"
 
