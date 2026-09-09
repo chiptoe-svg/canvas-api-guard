@@ -561,7 +561,8 @@ def prove_draft(cfg, method, path, body):
                   % " or ".join(unsafe))
     elif not match.group(3):
         course, kind = match.group(1), match.group(2)
-        params = body.get(WRAPPER[kind]) if WRAPPER[kind] else body
+        params = body if not WRAPPER[kind] else (
+            body.get(WRAPPER[kind]) if isinstance(body, dict) else None)
         if not isinstance(params, dict) or params.get("published") is not False:
             reason = ('a draft create must say "published": false %s'
                       % ('inside "%s"' % WRAPPER[kind] if WRAPPER[kind] else "at the top level"))

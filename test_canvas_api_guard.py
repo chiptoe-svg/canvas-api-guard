@@ -2189,6 +2189,17 @@ class TestDraft(GuardTestCase):
         self.assertIn("not proved unpublished", self.last_stderr)
         self.assertEqual(self.refusal()["verb"], "PUT")
 
+    def test_a_missing_or_non_object_body_is_a_refusal_not_a_traceback(self):
+        for argv in (["draft", "post", "courses/1/quizzes"],
+                     ["draft", "post", "courses/1/quizzes", "-d", '[{"published": false}]'],
+                     ["draft", "post", "courses/1/discussion_topics"]):
+            with mock.patch("urllib.request.urlopen") as urlopen:
+                code, _ = self.run_main(argv)
+            self.assertEqual(code, 2, argv)
+            self.assertIn('"published": false', self.last_stderr)
+            urlopen.assert_not_called()
+            self.refusal()
+
     def test_created_id_works_on_a_draft_create(self):
         quiz = {"id": 5, "published": False}
         responses = [FakeResponse(status=201, payload={"quiz": quiz}), FakeResponse(payload=quiz)]
