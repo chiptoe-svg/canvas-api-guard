@@ -1843,7 +1843,7 @@ class TestSkillDocuments(unittest.TestCase):
 
     def test_the_level_1_skill_stays_short_enough_to_be_read(self):
         with open(self.GUARD_SKILL) as handle:
-            self.assertLess(len(handle.read().splitlines()), 110)  # was 90; publishing and updates earned theirs
+            self.assertLess(len(handle.read().splitlines()), 120)  # was 90; publishing, updates and the failure rules earned theirs
 
     def test_the_level_1_skill_shows_only_verbs_the_guard_has(self):
         known = set(subcommand_names(guard.build_parser()))

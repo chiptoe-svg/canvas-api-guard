@@ -12,6 +12,8 @@ so you never see it, logs every call, requires approval for every write, and rea
 what Canvas stored is printed beside what was asked for. It adds no permission beyond the token's own,
 and it is the ONLY way you talk to Canvas: never curl, urllib, or a browser against the host; never read
 the credential store (`security`, `secret-tool`); never ask for or write a token anywhere.
+Every documented Canvas endpoint works through it as documented, with `get`, `put`, `post`, `patch`
+and `delete`; the Canvas API documentation is your reference, and a named operation is never required.
 
 ## How to call it
 
@@ -70,7 +72,8 @@ posted_grade (read entered_score)   88.0 -> 90.0   (requested 90, match: True)
 `match: True` on every row Canvas proved, and exit 0, is done. A requested field Canvas does not return
 at all reads `match: None`: it proves nothing, so it cannot fail - but a write with nothing proved is
 still exit 3. Exit 2 was refused or failed before anything was sent; exit 3 means the write WAS sent and
-could not be verified (`WRITE STATUS UNCERTAIN`). Never retry a 3: quote it, say what is uncertain, stop.
+could not be verified (`WRITE STATUS UNCERTAIN`). On a 3, do not send the same write again: `get` the
+object, tell the instructor what Canvas now holds and what is uncertain, and ask how to proceed.
 
 **4. Nothing goes live half-built.** Create quizzes and assignments unpublished (never
 `"published": true` in the create). Add the questions, then `get courses/123/quizzes/5 --fields
@@ -100,5 +103,10 @@ Terminal, then to quit and reopen the ChatGPT app:
 
 ## When something fails
 
-`canvas-api-guard: ...` on stderr is the guard refusing or failing, with the reason. Show it to
-the instructor verbatim. Do not retry a write on your own.
+`canvas-api-guard: ...` on stderr is the reason. Three cases, three responses:
+- **Canvas answered 4xx (exit 2):** nothing was written. Canvas rejected that request, so check the
+  API documentation for the right endpoint and parameters, then propose a new dry run. A different
+  request is not a retry.
+- **The guard refused (exit 2):** it says why (no confirmation, off-host, create-and-publish, an empty
+  body). Fix the cause and propose again; quote the reason if it is the instructor's call.
+- **Exit 3:** a write was sent and not proven. Read the object back, report, ask. Never resend it as is.

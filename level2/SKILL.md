@@ -99,7 +99,8 @@ which is enough for OCR and reading handwriting. Otherwise render once per page 
 Put the requested content in one reviewed local JSON definition file; it is data, never code.
 Show the instructor the exact dry-run plan. Only after they approve it, rerun that same command
 with `--yes`; Codex prompts for the write. A failed command, `WRITE STATUS UNCERTAIN`, or exit
-3 is not a completed write: report it verbatim and stop. Never retry it.
+3 is not a completed write: read the object back, report what Canvas holds, and ask; never resend the
+same write. A refusal or a Canvas 4xx wrote nothing: fix the request and propose a new dry run.
 
 Definitions are deliberately narrow: a rubric has `title` and criteria/rating points; an
 individual grade has `student_id` plus points and comments keyed by the live rubric criterion
