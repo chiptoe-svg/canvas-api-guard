@@ -218,6 +218,13 @@ Actual installation:
 
 The user separately enters the token through hidden terminal input after installation.
 
+### Publishing
+
+A write that would publish a quiz or assignment in the same call that creates it is refused,
+as is publishing a quiz whose pre-read shows no questions; both are logged refusals
+(`refused-premature-publish`) before confirmation. Seen live: a quiz published before its
+questions existed was a 0-point quiz students could take.
+
 ### Edge seam
 
 The API opener now disables environment proxies (`ProxyHandler({})`), as attachment downloads

@@ -60,7 +60,7 @@ import argparse, datetime, getpass, hashlib, json, os, pwd, re, stat, subprocess
 import urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
-USER_AGENT = "canvas-api-guard/1.15.0"
+USER_AGENT = "canvas-api-guard/1.16.0"
 KEYCHAIN_SERVICE = "canvas-api-guard"
 SECURITY_BIN = "/usr/bin/security"
 SECRET_TOOL_PATHS = ("/usr/bin/secret-tool", "/usr/local/bin/secret-tool")
@@ -513,6 +513,35 @@ def refuse_unconfirmed_write(cfg, verb, path):
     raise GuardError("refusing to write without confirmation: stdin is not a terminal; pass "
                      "--yes to confirm non-interactively, which will be recorded in the log")
 
+PUBLISHABLE = re.compile(r"^/api/v1/courses/\d+/(quizzes|assignments)(/\d+)?(\?.*)?$")
+
+def refuse_premature_publish(cfg, verb, path, body, before=None):
+    """A quiz or assignment must not go live in the call that creates it, and a quiz with no
+    questions must not be published at all: students would see and take a 0-point quiz. Create
+    unpublished, finish it, read it back, then publish with a separate update."""
+    if not isinstance(body, dict):
+        return
+    leaves = flatten_leaves(body)
+    if not any(name.split(".")[-1] == "published" and value is True for name, value in leaves.items()):
+        return
+    npath = normalise_path(path)
+    match = PUBLISHABLE.match(npath)
+    if not match:
+        return
+    kind, item = match.group(1), match.group(2)
+    reason = None
+    if verb.upper() == "POST" and not item:
+        reason = ("refusing to create a %s already published: create it unpublished, finish it, "
+                  "read it back, then publish with a separate put" % kind[:-1])
+    elif kind == "quizzes" and item and isinstance(before, dict) and not before.get("question_count"):
+        reason = ("refusing to publish a quiz with no questions (question_count %r): add the "
+                  "questions and read them back first" % before.get("question_count"))
+    if reason is None:
+        return
+    log_event(cfg.log_path, {"event": "refusal", "verb": verb.upper(), "kind": "write",
+                             "path": npath, "confirmation": "refused-premature-publish"})
+    raise GuardError(reason)
+
 def confirm(cfg, lines):
     """Show the change and record how it was confirmed. Under -o json stdout is machine-read -
     Specialized Functions parse it - so the preamble goes to stderr, where a person still sees
@@ -912,6 +941,7 @@ def do_update(cfg, method, path, body):
         raise GuardError("%s needs a JSON object body: -d '{\"...\": ...}'" % method)
     before = send_request(cfg, "GET", path)
     before_obj = before["data"] if before else None
+    refuse_premature_publish(cfg, method, path, body, before_obj)
     lines = ["about to %s %s" % (method, canvas_url(cfg.host, path)), "requested changes:"]
     for row in compare_fields(body, before_obj, None):
         lines.append("  %-22s %s -> %s" % (row["field"], json.dumps(row["before"], default=str),
@@ -973,6 +1003,7 @@ def do_post(cfg, path, body):
     """POST: nothing exists before, so show the body, confirm, write, read the new object."""
     if body is None:
         raise GuardError("post needs a JSON body: -d '{\"...\": ...}'")
+    refuse_premature_publish(cfg, "POST", path, body)
     cfg.confirmation = confirm(cfg, [
         "about to POST %s" % canvas_url(cfg.host, path), "request body:",
         "  " + json.dumps(body, sort_keys=True),

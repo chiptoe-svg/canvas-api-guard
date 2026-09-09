@@ -1843,7 +1843,7 @@ class TestSkillDocuments(unittest.TestCase):
 
     def test_the_level_1_skill_stays_short_enough_to_be_read(self):
         with open(self.GUARD_SKILL) as handle:
-            self.assertLess(len(handle.read().splitlines()), 90)
+            self.assertLess(len(handle.read().splitlines()), 100)  # was 90; the publish rule earned five
 
     def test_the_level_1_skill_shows_only_verbs_the_guard_has(self):
         known = set(subcommand_names(guard.build_parser()))
@@ -1964,6 +1964,67 @@ class TestStructuredReadBack(GuardTestCase):
         self.assertIsNone(guard.matches([{"a": 1}], "not a list"))
 
 
+class TestPrematurePublish(GuardTestCase):
+    """Seen live: a quiz created and published before its questions existed was a 0-point quiz
+    students could open. The guard refuses create-and-publish, and refuses publishing a quiz
+    that has no questions; both are logged refusals before any confirmation."""
+
+    def test_creating_a_quiz_already_published_is_refused_before_the_network(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["post", "courses/1/quizzes", "--yes",
+                                     "-d", '{"quiz": {"title": "Week 3", "published": true}}'])
+        self.assertEqual(code, 2)
+        self.assertIn("create it unpublished", self.last_stderr)
+        urlopen.assert_not_called()
+        refusal = self.log_lines()[-1]
+        self.assertEqual((refusal["event"], refusal["confirmation"]),
+                         ("refusal", "refused-premature-publish"))
+
+    def test_creating_an_assignment_already_published_is_refused_too(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["post", "courses/1/assignments", "--dry-run",
+                                     "-d", '{"assignment": {"name": "Lab", "published": true}}'])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+
+    def test_creating_a_quiz_unpublished_proceeds(self):
+        responses = [FakeResponse(status=201, payload={"id": 5, "title": "Week 3", "published": False}),
+                     FakeResponse(payload={"id": 5, "title": "Week 3", "published": False})]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, _ = self.run_main(["post", "courses/1/quizzes", "--yes",
+                                     "-d", '{"quiz": {"title": "Week 3", "published": false}}'])
+        self.assertEqual(code, 0)
+
+    def test_publishing_a_quiz_with_no_questions_is_refused_after_the_pre_read(self):
+        with mock.patch("urllib.request.urlopen",
+                        return_value=FakeResponse(payload={"id": 5, "question_count": 0,
+                                                           "published": False})) as urlopen:
+            code, _ = self.run_main(["put", "courses/1/quizzes/5", "--yes",
+                                     "-d", '{"quiz": {"published": true}}'])
+        self.assertEqual(code, 2)
+        self.assertIn("no questions", self.last_stderr)
+        self.assertEqual(urlopen.call_count, 1)                  # the pre-read only
+        self.assertEqual(self.log_lines()[-1]["confirmation"], "refused-premature-publish")
+
+    def test_publishing_a_quiz_with_questions_proceeds(self):
+        quiz = {"id": 5, "question_count": 4, "points_possible": 10, "published": False}
+        responses = [FakeResponse(payload=quiz), FakeResponse(payload=dict(quiz, published=True)),
+                     FakeResponse(payload=dict(quiz, published=True))]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, _ = self.run_main(["put", "courses/1/quizzes/5", "--yes",
+                                     "-d", '{"quiz": {"published": true}}'])
+        self.assertEqual(code, 0)
+
+    def test_other_writes_and_other_paths_are_untouched(self):
+        page = {"id": 9, "published": True}
+        responses = [FakeResponse(payload=dict(page, published=False)), FakeResponse(payload=page),
+                     FakeResponse(payload=page)]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, _ = self.run_main(["put", "courses/1/pages/9", "--yes",
+                                     "-d", '{"wiki_page": {"published": true}}'])
+        self.assertEqual(code, 0)
+
+
 class TestGuardHeader(unittest.TestCase):
     """The header is the map a reviewer reads first; it must describe the file that exists."""
 
@@ -1973,8 +2034,8 @@ class TestGuardHeader(unittest.TestCase):
         with open(self.SOURCE) as handle:
             return handle.read()
 
-    def test_the_version_is_1_15_0(self):
-        self.assertEqual(guard.USER_AGENT, "canvas-api-guard/1.15.0")
+    def test_the_version_is_1_16_0(self):
+        self.assertEqual(guard.USER_AGENT, "canvas-api-guard/1.16.0")
 
     def test_the_header_reading_order_matches_the_files_banners_exactly(self):
         """The map must be derived truth, not a copy that can silently go stale."""
