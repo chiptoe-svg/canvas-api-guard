@@ -129,6 +129,12 @@ correlation sources.
   match it. A requested field the object does not expose is reported with `match: null` and
   cannot fail, because it proves nothing either way; a write whose read-back proved none of the
   requested fields is uncertain.
+- The same rule applies one level deeper when a write body carries a list or an object: it is
+  compared member by member, a member the read-back does not expose is unknown and disproves
+  nothing, and the value counts as proved when at least one comparable member is proved and none
+  is disproved. For a quiz-submission score write this means the guard's `verification: passed`
+  proves only that the named attempt number was accepted, not the score itself; the Level 2
+  regrade operation proves each score by its own read-back of the resulting attempt.
 - `POST` must locate the created object first, in this order: the response field named by
   `--created-id`, which defaults to the response's own top-level `id`; then, only when
   `--created-id` was not given and no `id` came back, a usable same-host `Location` header. An

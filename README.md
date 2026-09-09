@@ -6,7 +6,7 @@ putting a Canvas token in `.env`, a repository, a command, or agent-visible outp
 The review surface is deliberately small: one Python 3.9+ standard-library program
 (`canvas_api_guard.py`, about 1,100 lines), one POSIX system installer, one macOS bootstrap,
 one Codex rules file, two Codex skills, the optional Specialized Functions program in
-`level2/`, and two stdlib test suites - 173 offline tests, all run by `python3 -m unittest`.
+`level2/`, and two stdlib test suites - the offline test suite, all run by `python3 -m unittest`.
 
 The guard is also importable. A host-side agent service (see the shared-core spec) replaces
 six module names, listed under "EDGE SEAM" in the file header, and nothing else: the credential
@@ -312,7 +312,9 @@ Every `POST`, `PUT` and `PATCH` is verified by one rule. Each requested leaf fie
 by name with the field of the read-back object that proves it: a field the object exposes must
 match, and any mismatch is `WRITE STATUS UNCERTAIN`. A requested field the object does not
 expose at all is reported with `match: null` and cannot fail, because it proves nothing either
-way; a write whose read-back proved nothing at all is uncertain too.
+way; a write whose read-back proved nothing at all is uncertain too. A field whose value is a
+list or an object is compared the same way one level deeper, member by member, and counts as
+proved when at least one comparable member is proved and none is disproved.
 
 A `POST` must locate the created object first, in this order: the response field named by
 `--created-id`, which defaults to the response's own top-level `id`; then, only when

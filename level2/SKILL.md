@@ -92,9 +92,9 @@ which is enough for OCR and reading handwriting. Otherwise render once per page 
   IDs only, because answer text is instructor HTML this write has to round-trip untouched.
   **Every answer not listed becomes worth 0**, so a student who picked the previously correct
   answer loses those points - the dry run shows each attempt's old points, new points and
-  delta, negative ones included, and the instructor approves that table. Up to 100 attempts,
-  refused whole above that; the answer key is written and read back first, then each attempt
-  is its own audited write, read back at its own attempt number.
+  delta, negative ones included, and the instructor approves that table. Up to 100 attempts
+  that would change, refused whole above that; the answer key is written and read back first,
+  then each attempt is its own audited write, read back at its own attempt number.
 
 Put the requested content in one reviewed local JSON definition file; it is data, never code.
 Show the instructor the exact dry-run plan. Only after they approve it, rerun that same command
