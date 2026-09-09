@@ -93,6 +93,25 @@ path and a body summary, waits for the verdict within the approval's TTL, and re
 reject or expiry. The verdict never leaves the host; the audit line records
 `confirmation: "telegram:<approval row id>"`, a new value of an existing field.
 
+**What the agent may write.** The owner's requirement: reads, plus limited writes around
+course administration. The service therefore carries an allowlist of write shapes, checked
+before any approval is requested, so an approver never sees a card for a write that is not on
+it. A write is allowed only if the verb, path and body match one entry exactly; the body may
+carry no keys beyond those listed.
+
+| Purpose | Shape | Verification |
+|---|---|---|
+| Excuse an absence | `put courses/C/assignments/A/submissions/U` body `{"submission": {"excuse": true}}` | the guard's read-back of `excused` |
+| Regrade a quiz question | Level 2 `regrade-quiz-question` (to be built, shared with the host; see the quiz-regrade note) | per-attempt read-back |
+| Change dates | `put courses/C/assignments/A` body with only `due_at`, `lock_at`, `unlock_at` | the guard's read-back |
+| Make an announcement | `post courses/C/discussion_topics` body with `is_announcement: true`, `title`, `message`, optional `delayed_post_at` | `--created-id id` read-back |
+
+Everything else, including grading and rubric writes, is refused by the service with a
+message naming the allowlist; it can be extended later by editing one table in the service,
+with the owner's review. Each allowed write costs exactly one Telegram approval, which shows
+the dry-run plan; a Level 2 operation that makes several individually audited writes is
+approved once, as its plan, not once per write.
+
 **Identity and credential.** The service holds one OneCLI agent identity, `canvas-guard`,
 granted the Canvas secret with selective scope. No agent-group identity is granted Canvas. The
 service's OneCLI token is host-side only, readable by the service user, never mounted or
@@ -105,6 +124,14 @@ spawn; the service maps it to the approver and refuses unknown clients.
 verbs and flags match the guard's so the existing skills apply. The container's Canvas skill
 replaces the "curl the real URL through the gateway" instruction for this host. Review
 downloads land in a host directory the service owns and mounts read-only into the container.
+
+**More than one agent group.** The service never trusts the network. Each container presents a
+per-group client token minted by NanoClaw at spawn and present only in that container; unknown
+callers are refused first. Each group maps to its own OneCLI identity `canvas-guard:<group>`,
+granted only that group's Canvas secret, so a group can act only as the account it was given.
+Approver, audit log and download directory are per group. Today the map has one row. If
+stronger isolation is ever wanted, one service process per group is the same code on another
+port.
 
 **NanoClaw change.** `requestApproval` becomes reachable from a host process over the existing
 `ncl.sock` admin socket. Small work by the agent's own account.
@@ -130,7 +157,9 @@ downloads land in a host directory the service owns and mounts read-only into th
 | Stage | Where | Who | Gate |
 |---|---|---|---|
 | A. Seam in the guard | this repository, one PR | the agent session proposes; this session reviews | acceptance 1–3, then the owner merges |
-| B. Service, client, skill, NanoClaw socket endpoint | the agent's repository | the agent session; this session reviews the guard-facing parts | acceptance 4 |
+| 0. Revoke the Canvas grant from every agent-group identity in OneCLI | NanoClaw host | the agent session, now | a direct curl through the gateway returns 401 |
+| B1. Read-only service, client, skill, launchd, `canvas-guard` identity | the agent's repository | the agent session; this session reviews the guard-facing parts | acceptance 4 for reads |
+| B2. Writes: NanoClaw socket endpoint, allowlist, once-per-operation approval, download directories; `regrade-quiz-question` in this repository | agent repository and this one | the agent session proposes; this session reviews | acceptance 4 for writes |
 | C. Cutover: `canvas-guard` identity granted, group grants removed, skill swapped | NanoClaw host | the agent session with the owner present | acceptance 5 |
 
 Nothing merges without the owner's word. The agent works in its own clone. The faculty release
@@ -140,6 +169,8 @@ moves only when Stage A has been reviewed and the replay probe is byte-identical
 
 - Codex execution rules for the agent: NanoClaw has no command-line matcher, and one inside the
   container would be editable by the model. The service is the gate instead.
+- Writes before the approval endpoint exists: until NanoClaw exposes `requestApproval` on its
+  socket, the service refuses every write and says why. Reads work from Stage B1.
 - A receipt argument on the guard. The model can forge anything it can read, so approval is
   requested by the service and never handled by the model.
 - File-splitting the guard into core and edges. The seam is six names; a split earns nothing.
