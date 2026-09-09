@@ -811,6 +811,30 @@ class TestQuizRegradeWrites(QuizRegradeFixtures, unittest.TestCase):
         self.assertEqual((gained["selected_answer_id"], gained["old_points"], gained["new_points"]),
                          ("1003", 0.0, 2.0))
 
+    def test_a_selected_answer_id_is_normalised_before_comparison(self):
+        """Canvas may send the selected answer id as an int, a whole-number float, or a numeric
+        string, whitespace and all; anything else, None, or a value <= 0 means unanswered -
+        mirroring the live-tested Go decoder (canvas-cli's selectedAnswerID)."""
+        submission = {"id": 900, "user_id": 34, "attempt": 1, "score": 6.0}
+
+        def row_for(raw_answer_id):
+            history = {"submission_history": [
+                {"attempt": 1, "score": 6.0, "submission_data": [
+                    {"question_id": 789, "answer_id": raw_answer_id, "points": 0.0}]}]}
+            with mock.patch.object(operations, "guard_get", return_value={"object": history}):
+                return operations.attempt_row("12", "77", submission, QUESTION, ["1003", "1004"])
+
+        for raw in (1003, 1003.0, " 1003"):
+            row = row_for(raw)
+            self.assertNotIn("skipped", row)
+            self.assertEqual(row["selected_answer_id"], "1003")
+            self.assertEqual(row["new_points"], 2.0)
+
+        for raw in ("1003.5", 0, None):
+            row = row_for(raw)
+            self.assertIn("skipped", row)
+            self.assertIsNone(row["selected_answer_id"])
+
 
 class TestGuardWriteContract(GuardTestCase):
     """The one contract between the layers: what the real guard prints for a `-o json` write

@@ -510,6 +510,24 @@ def quiz_submissions(course_id, quiz_id):
     raise OperationError("quiz %s lists more submission pages than this operation reads" % quiz_id)
 
 
+def selected_answer_id(value):
+    """Canvas may deliver the selected answer id as a JSON number, a whole-number float, or a
+    numeric string (surrounding whitespace stripped). Anything else - including None or a value
+    <= 0 - means unanswered. Mirrors the live-tested Go decoder (canvas-cli's selectedAnswerID)."""
+    if isinstance(value, bool):
+        parsed = None
+    elif isinstance(value, int):
+        parsed = value
+    elif isinstance(value, float):
+        parsed = int(value) if value == int(value) else None
+    elif isinstance(value, str):
+        stripped = value.strip()
+        parsed = int(stripped) if stripped.isdigit() else None
+    else:
+        parsed = None
+    return str(parsed) if parsed is not None and parsed > 0 else None
+
+
 def attempt_row(course_id, assignment_id, submission, question, answer_ids):
     """One attempt's before/after, from the assignment submission's history - the per-question
     record a grader can see. Only answer_id and points are trusted: Canvas does not recompute
@@ -524,12 +542,13 @@ def attempt_row(course_id, assignment_id, submission, question, answer_ids):
                   if item.get("attempt") == row["attempt"] and item.get("submission_data")), None)
     answered = next((item for item in (entry or {}).get("submission_data") or []
                      if str(item.get("question_id")) == str(question.get("id"))), None)
-    if answered is None or answered.get("answer_id") in (None, ""):
+    selected = selected_answer_id((answered or {}).get("answer_id")) if answered else None
+    if answered is None or selected is None:
         row["skipped"] = ("no graded answer record for attempt %s" % row["attempt"]
                           if entry is None else "the student did not answer this question")
         return row
     row["old_score"] = number(entry.get("score"))
-    row["selected_answer_id"] = str(answered["answer_id"])
+    row["selected_answer_id"] = selected
     row["old_points"] = number(answered.get("points"))
     row["new_points"] = (number(question.get("points_possible"))
                          if row["selected_answer_id"] in answer_ids else 0.0)
