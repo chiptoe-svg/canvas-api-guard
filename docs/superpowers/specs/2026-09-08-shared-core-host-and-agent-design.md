@@ -134,7 +134,13 @@ with the owner's review. Each allowed write costs exactly one Telegram approval,
 the dry-run plan; a Level 2 operation that makes several individually audited writes is
 approved once, as its plan, not once per write.
 
-**Identity and credential.** The server holds one OneCLI agent identity, `canvas-guard`,
+**Identity and credential.** Decided 2026-09-09: each person uses their own Canvas account, so
+the server holds one OneCLI identity per person, `canvas-guard-<person>`, each granted only that
+person's Canvas secret; the group's bearer maps to the person, and the audit line names them.
+OneCLI identifies a client by HTTP Basic credentials in the proxy URL (`http://x:<token>@host`),
+so the worker for a call carries that person's proxy URL in its environment only, never argv;
+the file holding those URLs is 0600, and the gateway CA reaches Python through `SSL_CERT_FILE`.
+The earlier single identity, `canvas-guard`,
 granted the Canvas secret with selective scope. No agent-group identity is granted Canvas. The
 service's OneCLI token is host-side only, readable by the service user, never mounted or
 exported into any container. A direct curl from the model through the gateway therefore gets
@@ -164,8 +170,14 @@ Approver, audit log and download directory are per group. Today the map has one 
 stronger isolation is ever wanted, one service process per group is the same code on another
 port.
 
-**NanoClaw change.** `requestApproval` becomes reachable from a host process over the existing
-`ncl.sock` admin socket. Small work by the agent's own account.
+**NanoClaw change.** No approval endpoint exists for a separate process today: `requestApproval`
+is an in-process host function and `ncl.sock` carries CLI commands. B2 is built in two slices:
+the guard-side half against an approval-client interface with a fake (the server refuses every
+write while the fake is in use unless a development variable is set, and refuses to start if
+that variable is set in a launchd plist), then the real NanoClaw transport implementing the same
+interface. The reference is minted and matched server-side; a restart mid-wait fails closed; a
+verdict for an unknown or expired reference is discarded; the card shows the guard's own dry-run
+plan.
 
 ## Acceptance
 
