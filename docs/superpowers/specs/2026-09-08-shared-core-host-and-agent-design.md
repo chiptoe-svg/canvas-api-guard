@@ -50,7 +50,7 @@ and replaces exactly the names listed under *The seam*.
 ## The seam in `canvas_api_guard.py` (this repository)
 
 The edge replaces module-level names; the core never branches on where it runs. The suite has
-patched these names by attribute for weeks, which proves the seam grips. Six names:
+patched these names by attribute for weeks, which proves the seam grips. Seven names:
 
 | Name | Host meaning | Agent edge |
 |---|---|---|
@@ -58,7 +58,12 @@ patched these names by attribute for weeks, which proves the seam grips. Six nam
 | `build_opener()` | `ProxyHandler({})` + `RefuseRedirects` (no proxy, system CAs) | OneCLI proxy address and CA bundle from the service's root-owned config; the edge installs its opener with `urllib.request.install_opener` |
 | `confirm(cfg, lines)` | TTY prompt or `--yes` | a NanoClaw approval request; blocks for the verdict |
 | `check_provenance()` | installed path root-owned, ancestors clean | the service's own installed path and config |
-| `CONFIG_PATH`, `DEFAULT_DIR` | `/usr/local/etc/...`, `~/.canvas-api-guard` | the service's paths |
+| `CONFIG_PATH`, `DEFAULT_LOG`, `REVIEW_DIR` | `/usr/local/etc/...`, `~/.canvas-api-guard/audit.jsonl`, `~/.canvas-api-guard/submission-reviews` | the service's paths |
+
+`build_opener()` is called once at import, so it is not patched by attribute like the other six
+names: the edge installs its own opener with `urllib.request.install_opener` instead of replacing
+the name. `DEFAULT_DIR` is not in this list - it is inert, read only once at import to derive
+`DEFAULT_LOG` and `REVIEW_DIR`, so patching it after import has no effect.
 
 Two small code changes make this real, and neither changes host behaviour:
 
@@ -81,7 +86,7 @@ Not in the file: no policy class, no `token_source` or approver keys in the conf
 receipt argument, no new fields on any audit line. The host's audit format, prompts, exit codes
 and help are byte-identical before and after (see *Acceptance*).
 
-A test class, `TestEdgeSeam`, pins the six names and their signatures and proves each one is
+A test class, `TestEdgeSeam`, pins the seven names and their signatures and proves each one is
 looked up by module attribute at call time (replacing `guard.read_token` changes what
 `send_request` sends). The file header gains a short "Edge seam" paragraph naming them.
 
@@ -95,7 +100,7 @@ host-gateway address. This is the only MCP shape in use on that install (seven s
 `url`-configured, none spawned inside a container), so NanoClaw's client, per-group bearer
 headers and URL discovery are inherited rather than written; the container needs nothing
 added to its image. The server vendors `canvas_api_guard.py` at a pinned release commit and
-refuses to start unless the file's SHA-256 matches the pin, then replaces the six seam names.
+refuses to start unless the file's SHA-256 matches the pin, then replaces the seven seam names.
 
 Its tools are the allowlist made typed. Reads: `canvas_get(path, fields, all_pages)` for any
 documented endpoint, plus `student_attention`, `prepare_submission_review` and
@@ -173,7 +178,7 @@ port.
 4. **Edge conformance.** In the agent repository, the service's tests drive the same guard
    assertions the host suite uses for pinning, redirects, refusal-before-credential and
    evidence read-back, against a fake OneCLI and a fake approval endpoint, so a behavioural
-   difference between host and agent must be one of the six names or the build fails.
+   difference between host and agent must be one of the seven names or the build fails.
 5. **Cutover proof.** From a container: the `canvas_get` tool lists courses; a direct
    `curl https://<canvas>/api/v1/users/self` through the gateway returns 401; an
    `excuse_absence` tool call produces a Telegram card and nothing reaches Canvas until it is
@@ -200,4 +205,4 @@ moves only when Stage A has been reviewed and the replay probe is byte-identical
   socket, the service refuses every write and says why. Reads work from Stage B1.
 - A receipt argument on the guard. The model can forge anything it can read, so approval is
   requested by the service and never handled by the model.
-- File-splitting the guard into core and edges. The seam is six names; a split earns nothing.
+- File-splitting the guard into core and edges. The seam is seven names; a split earns nothing.

@@ -45,12 +45,16 @@
 #
 # EDGE SEAM. This file is also importable. An edge that runs the guard somewhere else - the
 # NanoClaw host service in docs/superpowers/specs/2026-09-08-shared-core-host-and-agent-design.md -
-# replaces exactly six module names and nothing else: read_token (the credential, or None when
-# the edge's transport carries it), build_opener (the transport: it installs its own with
-# urllib.request.install_opener), confirm (how a person approves a write), check_provenance (what
-# "installed correctly" means there), and the two paths CONFIG_PATH and DEFAULT_DIR. Every other
-# property - host pinning, refusal before credential, the audit lines, evidence read-back - is
-# shared and must not diverge. tools/replay-probe.py proves the host is unchanged.
+# replaces exactly seven module names and nothing else: read_token (the credential, or None when
+# the edge's transport carries it), confirm (how a person approves a write), and check_provenance
+# (what "installed correctly" means there) are looked up at call time; so are the three paths
+# CONFIG_PATH, DEFAULT_LOG, and REVIEW_DIR, which are also read at call time. DEFAULT_DIR is
+# inert: DEFAULT_LOG and REVIEW_DIR are derived from it once at import and nothing reads
+# DEFAULT_DIR again, so replacing it after import does nothing. build_opener is different: it is
+# called once at import to install urllib's opener, so an edge does not replace the name - it
+# installs its own opener with urllib.request.install_opener. Every other property - host
+# pinning, refusal before credential, the audit lines, evidence read-back - is shared and must
+# not diverge. tools/replay-probe.py proves the host is unchanged.
 
 import argparse, datetime, getpass, hashlib, json, os, pty, pwd, re, stat, subprocess, sys, tempfile
 import urllib.parse, urllib.request

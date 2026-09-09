@@ -986,10 +986,14 @@ class TestRedirectsAreRefused(unittest.TestCase):
 
 
 class TestEdgeSeam(GuardTestCase):
-    """The six names an importing edge replaces. Each is looked up on the module at call time,
-    so replacing it changes what the guard does; nothing else about the host path moves."""
+    """The seven names an importing edge replaces. read_token, confirm, check_provenance,
+    CONFIG_PATH, DEFAULT_LOG, and REVIEW_DIR are each looked up on the module at call time, so
+    replacing one changes what the guard does; build_opener is called once at import instead, so
+    an edge installs its own opener with urllib.request.install_opener rather than replacing the
+    name. Nothing else about the host path moves."""
 
-    SEAM = ("read_token", "build_opener", "confirm", "check_provenance", "CONFIG_PATH", "DEFAULT_DIR")
+    SEAM = ("read_token", "confirm", "check_provenance", "CONFIG_PATH", "DEFAULT_LOG",
+            "REVIEW_DIR", "build_opener")
 
     def test_the_seam_names_exist_and_are_named_in_the_header(self):
         for name in self.SEAM:
@@ -1052,6 +1056,27 @@ class TestEdgeSeam(GuardTestCase):
         self.assertEqual(code, 0)
         self.assertEqual([l["confirmation"] for l in self.log_lines() if l["event"] == "request"],
                          ["edge:test"])
+
+    def test_the_path_seam_is_read_at_call_time(self):
+        """DEFAULT_LOG and REVIEW_DIR are looked up when they are used, not captured once at
+        import - an edge that patches them after import still lands its log lines and its
+        review directory in the patched locations."""
+        log_path = os.path.join(self.state_dir, "edge-audit.jsonl")
+        with open(log_path, "w"):
+            pass
+        os.chmod(log_path, 0o600)
+        review_dir = os.path.join(self.state_dir, "edge-reviews")
+        with mock.patch.object(guard, "DEFAULT_LOG", log_path), \
+                mock.patch.object(guard, "REVIEW_DIR", review_dir), \
+                mock.patch("urllib.request.urlopen",
+                          return_value=FakeResponse(payload={"id": 1})):
+            code, _ = self.run_main(["get", "courses/1"])
+            self.assertEqual(code, 0)
+            self.assertEqual(guard.secure_review_dir(), review_dir)
+        with open(log_path) as handle:
+            lines = [json.loads(line) for line in handle if line.strip()]
+        self.assertTrue(lines)
+        self.assertEqual(lines[-1]["event"], "read")
 
 
 class TestAuditFormat(GuardTestCase):
