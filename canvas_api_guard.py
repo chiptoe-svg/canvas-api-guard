@@ -516,8 +516,22 @@ def refuse_unconfirmed_write(cfg, verb, path):
 PUBLISHABLE = re.compile(r"^/api/v1/courses/\d+/(quizzes|assignments)(/\d+)?(\?.*)?$")
 
 DRAFTABLE = re.compile(r"^/api/v1/courses/(\d+)/(quizzes|assignments|pages|discussion_topics)"
-                       r"(?:/([^/?]+))?(?:/[^?]*)?(?:\?.*)?$")
+                       r"(?:/([^/?]+))?(?:/[^?]*)?$")           # no query string: Canvas reads params there too
 LIVE_SWITCHES = ("published", "is_announcement")
+
+def live_switches(obj):
+    """Every (key, value) at any depth of a body, lists included, whose key can make something
+    visible to students. flatten_leaves stops at lists; this must not."""
+    found = []
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key in LIVE_SWITCHES:
+                found.append((key, value))
+            found.extend(live_switches(value))
+    elif isinstance(obj, list):
+        for item in obj:
+            found.extend(live_switches(item))
+    return found
 
 def prove_draft(cfg, method, path, body):
     """The draft verb writes without a person's approval, so it may only touch what no student
@@ -528,17 +542,16 @@ def prove_draft(cfg, method, path, body):
     or the parent of a nested path, reads back published == false right now. Anything else is a
     normal write - the person's approval is the one gate, and it comes at publish time."""
     match = DRAFTABLE.match(normalise_path(path))
-    leaves = flatten_leaves(body) if isinstance(body, dict) else {}
-    switches = dict((name, value) for name, value in leaves.items()
-                    if name.split(".")[-1] in LIVE_SWITCHES)
+    switches = live_switches(body)
     reason = None
     if not match:
         reason = ("draft only writes under courses/N/quizzes, assignments, pages or "
-                  "discussion_topics; anything else is a normal write with approval")
-    elif any(value is not False for value in switches.values()):
+                  "discussion_topics, with no query string; anything else is a normal write "
+                  "with approval")
+    elif any(value is not False for _, value in switches):
         reason = ("draft never turns %s on; publishing is a normal write with approval"
-                  % " or ".join(sorted(name for name, value in switches.items() if value is not False)))
-    elif not match.group(3) and "published" not in [n.split(".")[-1] for n in switches]:
+                  % " or ".join(sorted(set(key for key, value in switches if value is not False))))
+    elif not match.group(3) and "published" not in [key for key, _ in switches]:
         reason = 'a draft create must say "published": false in the body'
     elif match.group(3) and not cfg.dry_run:     # a dry run sends nothing, reads included
         course, kind, item = match.groups()

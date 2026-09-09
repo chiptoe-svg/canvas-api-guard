@@ -2085,6 +2085,7 @@ class TestDraft(GuardTestCase):
 
     def test_a_body_that_publishes_is_refused_before_any_request(self):
         for body in ('{"quiz": {"published": true}}', '{"quiz": {"published": "true"}}',
+                     '{"quiz": {"published": 1}}', '{"quiz": {"items": [{"published": true}]}}',
                      '{"title": "Hi", "is_announcement": true, "published": false}'):
             with mock.patch("urllib.request.urlopen") as urlopen:
                 code, _ = self.run_main(["draft", "put", "courses/1/quizzes/5", "-d", body])
@@ -2137,7 +2138,8 @@ class TestDraft(GuardTestCase):
 
     def test_paths_outside_the_draftable_kinds_are_refused(self):
         for path in ("courses/1", "courses/1/modules/3", "courses/1/announcements",
-                     "users/self/files", "courses/1/enrollments/2"):
+                     "users/self/files", "courses/1/enrollments/2",
+                     "courses/1/quizzes/5?quiz[published]=true"):   # Canvas reads params there too
             with mock.patch("urllib.request.urlopen") as urlopen:
                 code, _ = self.run_main(["draft", "put", path, "-d", '{"x": 1}'])
             self.assertEqual(code, 2, path)
