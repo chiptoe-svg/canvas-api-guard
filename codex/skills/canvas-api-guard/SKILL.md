@@ -89,6 +89,15 @@ Student names, grades, submissions and other education records may be processed 
 account, never a personal account or another service. The fixed local audit log persists student identity and before/after
 write evidence: treat it as confidential education data and do not copy it elsewhere.
 
+## Updates
+
+The installed release is the commit in `~/.canvas-api-guard/installed-commit`. The current one is
+in https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/release/RELEASE.md, which lists
+what changed; read it with your web access (Canvas is not involved). Once per conversation compare
+the two, and if they differ tell the instructor what changed and give them this line to paste into
+Terminal, then to quit and reopen the ChatGPT app:
+`curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/release/install-from-github.sh | sh`
+
 ## When something fails
 
 `canvas-api-guard: ...` on stderr is the guard refusing or failing, with the reason. Show it to

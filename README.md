@@ -86,6 +86,10 @@ review commands, and residual risks.
    conversation, and ask: "In Canvas, what are my current classes?" Do the same after an
    update that changed the rules or skills.
 
+Codex tells you when an update is waiting: the installer records the installed commit in
+`~/.canvas-api-guard/installed-commit`, every release carries a `RELEASE.md` with what changed,
+and the skill has Codex compare the two once per conversation and hand you the line above.
+
 Requirements: macOS with the Xcode Command Line Tools (macOS offers to install them the first
 time `git` runs) and `/usr/local` owned by root, which is the case on Apple silicon Macs.
 Other institutions add `--host school.instructure.com` after `sh -s --`.

@@ -206,6 +206,10 @@ else
     /usr/local/libexec/canvas_api_guard.py --set-token
 fi
 
+# Record what is installed where Codex can read it, so the skill can compare it with the
+# release note on GitHub and tell the person when an update is waiting.
+printf '%s\n' "$SOURCE_REF" > "\$HOME/.canvas-api-guard/installed-commit"
+
 printf '\nInstalled version:\n'
 /usr/local/libexec/canvas_api_guard.py --version
 

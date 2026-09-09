@@ -1843,7 +1843,7 @@ class TestSkillDocuments(unittest.TestCase):
 
     def test_the_level_1_skill_stays_short_enough_to_be_read(self):
         with open(self.GUARD_SKILL) as handle:
-            self.assertLess(len(handle.read().splitlines()), 100)  # was 90; the publish rule earned five
+            self.assertLess(len(handle.read().splitlines()), 110)  # was 90; publishing and updates earned theirs
 
     def test_the_level_1_skill_shows_only_verbs_the_guard_has(self):
         known = set(subcommand_names(guard.build_parser()))
@@ -2503,6 +2503,10 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("release ->", proc.stdout)
         self.assertEqual(git("rev-parse", "release~1", cwd=bare), main_sha)
+        note = git("show", "release:RELEASE.md", cwd=bare)
+        self.assertIn("Commit: %s" % main_sha, note)
+        self.assertIn("- first release", note)
+        self.assertIn("release/install-from-github.sh | sh", note)
         released = git("show", "release:install-from-github.sh", cwd=bare)
         self.assertIn("RELEASE_REF=%s   # pinned by tools/release.sh\n" % main_sha, released)
         self.assertEqual(git("rev-parse", "main", cwd=bare), main_sha)
@@ -2519,6 +2523,9 @@ class TestInstallerPlan(unittest.TestCase):
                               stderr=subprocess.PIPE, universal_newlines=True)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(git("rev-parse", "release~1", cwd=bare), git("rev-parse", "main"))
+        note = git("show", "release:RELEASE.md", cwd=bare)
+        self.assertIn("- later", note)                           # the change since the previous release
+        self.assertNotIn("first release", note)
         self.assertEqual(git("rev-list", "--count", "main..release", cwd=bare), "1")
 
         # the released copy runs without --ref, and stops at host validation before any network
@@ -2658,6 +2665,17 @@ class TestInstallerPlan(unittest.TestCase):
         lock = script.index('mkdir "$INSTALL_ROOT/running.lock" 2>/dev/null || exit 0')
         self.assertLess(script.index('cat > "$LAUNCHER" <<EOF'), lock)
         self.assertLess(lock, script.index('"state":"running"'))         # lock before the status write
+
+    def test_github_bootstrap_records_the_installed_commit_for_the_update_check(self):
+        with open(self.BOOTSTRAP) as handle:
+            script = handle.read()
+        record = script.index('printf \'%s\\n\' "$SOURCE_REF" > "\\$HOME/.canvas-api-guard/installed-commit"')
+        self.assertLess(script.index('cat > "$LAUNCHER" <<EOF'), record)     # inside the launcher
+        self.assertLess(record, script.index("Installed version:"))
+        with open(os.path.join(self.ROOT, "codex", "skills", "canvas-api-guard", "SKILL.md")) as handle:
+            skill = handle.read()
+        self.assertIn("installed-commit", skill)
+        self.assertIn("release/RELEASE.md", skill)
 
     def test_github_bootstrap_tells_the_person_how_to_run_the_launcher_by_hand(self):
         """Terminal types the launcher path into a login shell; a slow shell startup can eat
