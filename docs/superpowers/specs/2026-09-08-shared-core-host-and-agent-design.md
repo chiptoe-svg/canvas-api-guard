@@ -155,6 +155,17 @@ for; the tool schemas carry the argument contract. The container's Canvas skill 
 host directory the service owns, mounted read-only into the container as a DIRECTORY: Apple
 Container silently drops a nested file mount, so a file mount here would vanish without error.
 
+**The commit is the authority, not a version label.** An edge pins the exact files by
+sha256 at a named commit (the release branch's `RELEASE_REF`), never by the `USER_AGENT`
+version strings, which describe behaviour changes to the guard and may not move for every
+change to Level 2. A consumer pinning by label would keep an old operations file while
+believing it had a new flag.
+
+**Regrade approval binds to `plan_digest` in addition to the request set.** The set alone
+catches a newcomer only at that attempt's own write, by which point the answer key is
+rewritten and earlier attempts rescored; `--expect-plan` refuses before the answer key, so the
+same drift writes nothing. An approval with no digest is refused rather than falling back.
+
 **Bind address.** A host-side edge serving containers must not listen on loopback only: on
 Apple Container a container reaches the host over the vmnet bridge gateway, so a loopback-only
 listener is invisible to every agent while looking healthy from the host. The server's bind
