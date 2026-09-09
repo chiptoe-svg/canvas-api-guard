@@ -1307,42 +1307,47 @@ class TestCredentialStore(unittest.TestCase):
                 guard.read_token()
         self.assertIn("empty", str(caught.exception))
 
-    def test_set_token_on_macos_relays_the_tty_and_reads_the_item_back(self):
+    def test_set_token_on_macos_sends_the_secret_twice_over_stdin_and_reads_it_back(self):
+        """security(1) asks for a new item's password and a retype; both go over stdin, the
+        token never appears in argv, and the stored item is read back and compared."""
         with mock.patch.object(guard.sys, "platform", "darwin"), \
                 mock.patch.object(guard.os.path, "exists", return_value=True), \
-                mock.patch.object(guard, "_macos_store_token") as store_token, \
-                mock.patch.object(guard.getpass, "getpass",
-                                  side_effect=AssertionError("macOS token must go to security")), \
+                mock.patch.object(guard.sys.stdin, "isatty", return_value=True), \
+                mock.patch.object(guard.getpass, "getpass", return_value=" " + TOKEN + "\n"), \
                 mock.patch("sys.stdout", io.StringIO()):
             guard.set_token()
-        store_argv = store_token.call_args.args[0]
+        store_argv, store_input = self.calls[0]
         self.assertEqual(store_argv[:2], [guard.SECURITY_BIN, "add-generic-password"])
-        self.assertNotIn(TOKEN, store_argv)                      # never in argv
-        self.assertEqual(self.calls[0][0][:2], [guard.SECURITY_BIN, "find-generic-password"])
+        self.assertIn("-U", store_argv)
+        self.assertNotIn(TOKEN, " ".join(store_argv))            # never in argv
+        self.assertEqual(store_input, ((TOKEN + "\n") * 2).encode("utf-8"))   # stripped, twice
+        self.assertEqual(self.calls[1][0][:2], [guard.SECURITY_BIN, "find-generic-password"])
+        self.assertFalse(hasattr(guard, "pty"))                  # the pseudo-terminal path is gone
 
-    def test_macos_pty_rewrites_both_keychain_labels(self):
-        source = (b"password data for new item: \n"
-                  b"retype password for new item: ")
-        with mock.patch.object(guard.os, "read", return_value=source):
-            output = guard._macos_keychain_output(9)
-        self.assertEqual(output, (b"Canvas API token (hidden): \n"
-                                  b"Retype Canvas API token (hidden): "))
-
-    def test_macos_store_uses_the_display_filter_and_requires_a_tty(self):
-        command = [guard.SECURITY_BIN, "add-generic-password", "-w"]
-        with mock.patch.object(guard.sys.stdin, "isatty", return_value=True), \
-                mock.patch.object(guard.pty, "spawn", return_value=0) as spawn:
-            guard._macos_store_token(command)
-        spawn.assert_called_once_with(command, master_read=guard._macos_keychain_output)
-
-        with mock.patch.object(guard.sys.stdin, "isatty", return_value=False):
-            with self.assertRaises(guard.GuardError):
-                guard._macos_store_token(command)
+    def test_set_token_refuses_an_empty_entry_and_a_missing_terminal_before_storing(self):
+        with mock.patch.object(guard.sys, "platform", "darwin"), \
+                mock.patch.object(guard.os.path, "exists", return_value=True), \
+                mock.patch.object(guard.sys.stdin, "isatty", return_value=True), \
+                mock.patch.object(guard.getpass, "getpass", return_value="   \n"):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.set_token()
+        self.assertIn("empty token; nothing stored", str(caught.exception))
+        self.assertEqual(self.calls, [])                         # nothing reached the keychain
+        with mock.patch.object(guard.sys, "platform", "darwin"), \
+                mock.patch.object(guard.os.path, "exists", return_value=True), \
+                mock.patch.object(guard.sys.stdin, "isatty", return_value=False), \
+                mock.patch.object(guard.getpass, "getpass",
+                                  side_effect=AssertionError("must not prompt without a terminal")):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.set_token()
+        self.assertIn("visible terminal", str(caught.exception))
+        self.assertEqual(self.calls, [])
 
     def test_set_token_on_linux_sends_the_secret_once(self):
         with mock.patch.object(guard.sys, "platform", "linux"), \
                 mock.patch.object(guard, "trusted_linux_secret_tool",
                                   return_value="/usr/bin/secret-tool"), \
+                mock.patch.object(guard.sys.stdin, "isatty", return_value=True), \
                 mock.patch.object(guard.getpass, "getpass", return_value=TOKEN), \
                 mock.patch("sys.stdout", io.StringIO()):
             guard.set_token()
@@ -1350,17 +1355,19 @@ class TestCredentialStore(unittest.TestCase):
         self.assertEqual(store_argv[:2], ["/usr/bin/secret-tool", "store"])
         self.assertEqual(store_input, (TOKEN + "\n").encode("utf-8"))
 
-    def test_macos_store_requires_an_accessible_nonempty_readback(self):
+    def test_macos_store_requires_the_readback_to_equal_the_secret(self):
         self.run_patch.stop()
         self.addCleanup(self.run_patch.start)
         with mock.patch.object(guard.subprocess, "run",
                                return_value=FakeProc(stdout=b"a-different-token\n")), \
                 mock.patch.object(guard.sys, "platform", "darwin"), \
                 mock.patch.object(guard.os.path, "exists", return_value=True), \
+                mock.patch.object(guard.sys.stdin, "isatty", return_value=True), \
                 mock.patch.object(guard.getpass, "getpass", return_value=TOKEN), \
-                mock.patch.object(guard, "_macos_store_token"), \
                 mock.patch("sys.stdout", io.StringIO()):
-            guard.set_token()
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.set_token()
+        self.assertIn("did not read back as stored", str(caught.exception))
 
 
 class TestLinuxTokenNeverExposed(GuardTestCase):

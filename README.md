@@ -144,12 +144,11 @@ Then the user—not Codex—enters the token in a visible terminal with hidden i
 /usr/local/libexec/canvas_api_guard.py --set-token
 ```
 
-On macOS, the token goes directly from the user's terminal to `/usr/bin/security`; the guard uses
-a standard-library pseudoterminal only to rename Keychain's two generic-password labels to
-`Canvas API token (hidden):` and `Retype Canvas API token (hidden):`. The guard does not capture
-the token while it is being entered. On Linux, it writes the token to Secret Service through stdin.
-The stored item is read back for verification and the token is never accepted through argv, a file,
-or an environment variable.
+The guard reads the token once with a hidden prompt, refuses an empty entry before anything is
+stored, and hands it to the credential store over stdin: to `/usr/bin/security` on macOS (twice,
+because it asks for a password and a retype), to Secret Service on Linux. The stored item is read
+back and compared with what was typed. The token is never accepted through argv, a file, or an
+environment variable.
 
 ### The same bootstrap, driven by Codex
 

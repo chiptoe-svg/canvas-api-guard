@@ -56,7 +56,7 @@
 # pinning, refusal before credential, the audit lines, evidence read-back - is shared and must
 # not diverge. tools/replay-probe.py proves the host is unchanged.
 
-import argparse, datetime, getpass, hashlib, json, os, pty, pwd, re, stat, subprocess, sys, tempfile
+import argparse, datetime, getpass, hashlib, json, os, pwd, re, stat, subprocess, sys, tempfile
 import urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
@@ -198,38 +198,27 @@ def read_token():
         raise GuardError("the credential store returned an empty token; run --set-token again")
     return token
 
-def _macos_keychain_output(fd):
-    """Relay Keychain output while replacing its misleading generic-password labels."""
-    output = os.read(fd, 1024)
-    return output.replace(
-        b"retype password for new item:", b"Retype Canvas API token (hidden):").replace(
-        b"password data for new item:", b"Canvas API token (hidden):")
-
-def _macos_store_token(command):
-    """Let security(1) read directly from the TTY; rewrite display labels only."""
-    if not sys.stdin.isatty():
-        raise GuardError("macOS token entry requires a visible terminal")
-    status = pty.spawn(command, master_read=_macos_keychain_output)
-    if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
-        raise GuardError("the macOS Keychain refused the token")
-
 def set_token():
-    """Store a token through hidden terminal input, never argv, a file, or an env var."""
+    """Store a token through hidden terminal input, never argv, a file, or an env var.
+
+    The token is read here with a hidden prompt, refused if empty, and handed to the credential
+    store over stdin: twice on macOS, because security(1) asks for a new item's password and
+    then a retype. Letting security prompt on the terminal itself was fragile: it discards any
+    input that arrives before its prompt, so a quick paste plus Return stored an empty token."""
     command = credential_command("store")            # refuses an unsupported platform first
-    if sys.platform == "darwin":
-        _macos_store_token(command)
-        read_token()                                  # prove the new item is accessible and nonempty
-    else:
-        secret = getpass.getpass("Canvas API token (hidden): ").strip()
-        if not secret:
-            raise GuardError("empty token; nothing stored")
-        proc = subprocess.run(command, input=(secret + "\n").encode("utf-8"),
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if proc.returncode != 0:
-            raise GuardError("the credential store refused the token: %s"
-                             % proc.stderr.decode("utf-8", "replace").strip())
-        if read_token() != secret:
-            raise GuardError("the token did not read back as stored; nothing usable was stored")
+    if not sys.stdin.isatty():
+        raise GuardError("token entry requires a visible terminal")
+    secret = getpass.getpass("Canvas API token (hidden): ").strip()
+    if not secret:
+        raise GuardError("empty token; nothing stored")
+    entries = 2 if sys.platform == "darwin" else 1
+    proc = subprocess.run(command, input=((secret + "\n") * entries).encode("utf-8"),
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode != 0:
+        raise GuardError("the credential store refused the token: %s"
+                         % proc.stderr.decode("utf-8", "replace").strip())
+    if read_token() != secret:
+        raise GuardError("the token did not read back as stored; nothing usable was stored")
     print("stored for service=%s account=%s" % (KEYCHAIN_SERVICE, account_name()))
 
 # ----------------------------------------------------------------------------------- logging

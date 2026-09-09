@@ -69,10 +69,11 @@ is never printed or logged.
 
 ### Keep the token out of agent-controlled storage
 
-- macOS uses the fixed `/usr/bin/security` executable. A Python standard-library pseudoterminal
-  relays the user's keystrokes directly to `security` and rewrites only its two misleading display
-  labels as `Canvas API token (hidden):` and `Retype Canvas API token (hidden):`. The guard never
-  captures the token during entry; it does not enter argv, a file, or an environment variable.
+- macOS uses the fixed `/usr/bin/security` executable. The guard reads the token with a hidden
+  prompt, refuses an empty entry, and writes it to `security` over stdin (password and retype);
+  the stored item is read back and must equal what was typed. The token does not enter argv, a
+  file, or an environment variable. (Earlier, `security` prompted on the terminal itself; it
+  discards input typed before its prompt appears, so a quick paste stored an empty token.)
 - Linux accepts only a fixed, root-owned, non-group/world-writable `secret-tool` executable
   at `/usr/bin/secret-tool` or `/usr/local/bin/secret-tool`.
 - Account selection uses the effective UID's password-database entry rather than `USER` or
