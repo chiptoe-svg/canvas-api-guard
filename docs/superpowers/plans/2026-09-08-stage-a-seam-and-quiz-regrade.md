@@ -402,7 +402,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 4: Prove the probe discriminates, then that the tree is identical**
 
-Run: `tools/replay-probe.py HEAD~1` (the commit before Task 1) → expected `byte-identical` (Task 1 changed no stock behaviour; the proxy handler is invisible with `urlopen` mocked, and that is documented).
+Run: `tools/replay-probe.py HEAD~1` (the commit before Task 1) → expected `byte-identical` (the version string is normalised; Task 1 changed no stock behaviour, and the proxy handler is invisible with `urlopen` mocked).
 Run: `tools/replay-probe.py f61027e` → expected `DIFFERS` with `token_source` and `approval_receipt` in the diff (that commit is the one the probe was built to catch; it is in history).
 
 - [ ] **Step 5: A test that the probe runs**

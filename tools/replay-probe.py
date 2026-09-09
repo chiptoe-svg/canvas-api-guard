@@ -8,6 +8,7 @@ against both guards with urlopen and read_token replaced, the config exactly as 
 writes it, and diffs: audit records (timestamp and pid normalised), stdout, stderr, exit codes,
 --help and --version. Exit 0 = identical, 1 = differs (the diff is printed), 2 = usage.
 Nothing here touches the network, a credential store, or the installed guard.
+The version string is normalised; a release bump is not a behaviour change. Everything else must match.
 """
 import importlib.util
 import io
@@ -90,6 +91,10 @@ def probe(tree, tag):
         handle.write(CONFIG_TEXT)
     guard.CONFIG_PATH, guard.DEFAULT_LOG, guard.read_token = config, log, (lambda: "tok-test")
     results = {name: run(guard, argv, urlopen) for name, argv, urlopen in scenarios(guard)}
+    # Normalise version strings: replace this tree's USER_AGENT with canonical form
+    for result in results.values():
+        result["stdout"] = result["stdout"].replace(guard.USER_AGENT, "canvas-api-guard/<version>")
+        result["stderr"] = result["stderr"].replace(guard.USER_AGENT, "canvas-api-guard/<version>")
     with open(log) as handle:
         records = [json.loads(line) for line in handle if line.strip()]
     for record in records:
