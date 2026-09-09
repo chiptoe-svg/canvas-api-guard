@@ -209,6 +209,12 @@ trap - EXIT HUP INT TERM
 }
 
 printf 'Opened a visible macOS Terminal installation window.\n'
+# Terminal types the launcher's path into a fresh login shell. A slow or interactive shell
+# startup can swallow the first characters, and the shell then reports "no such file or
+# directory" for a truncated path. The launcher is untouched by that, so say how to run it.
+printf 'If that window shows "no such file or directory", or stays at a bare prompt, paste this\n'
+printf 'whole line into it and press Return (the launcher waits and deletes itself after running):\n'
+printf '  %s\n' "$LAUNCHER"
 printf 'Downloaded and verified commit: %s\n' "$SOURCE_REF"
 printf 'Completion status file: %s\n' "$STATUS_FILE"
 printf 'It contains only workflow state, commit, profile, and exit status; never a password, token, or Canvas data.\n'

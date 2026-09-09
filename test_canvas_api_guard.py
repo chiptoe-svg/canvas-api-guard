@@ -2531,6 +2531,18 @@ class TestInstallerPlan(unittest.TestCase):
             script = handle.read()
         self.assertIn("In Canvas, what are my current classes?", script)
 
+    def test_github_bootstrap_tells_the_person_how_to_run_the_launcher_by_hand(self):
+        """Terminal types the launcher path into a login shell; a slow shell startup can eat
+        the first characters (seen live: zsh received i/tmp/... for /private/tmp/...). The
+        bootstrap prints the launcher path as a paste-in fallback, after the open, before the
+        status-file line, so a person and Codex both see it."""
+        with open(self.BOOTSTRAP) as handle:
+            script = handle.read()
+        fallback = script.index('paste this')
+        self.assertLess(script.index('"$OPEN_BIN" -a "$TERMINAL_APP" "$LAUNCHER"'), fallback)
+        self.assertLess(fallback, script.index("Completion status file:"))
+        self.assertIn("printf '  %s\\n' \"$LAUNCHER\"", script)
+
     def test_github_bootstrap_emits_a_private_nonsecret_completion_status(self):
         with open(self.BOOTSTRAP) as handle:
             script = handle.read()
