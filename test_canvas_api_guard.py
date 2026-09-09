@@ -1850,6 +1850,85 @@ class TestSkillDocuments(unittest.TestCase):
                                   % (program, rest, stderr.getvalue()))
 
 
+class TestStructuredReadBack(GuardTestCase):
+    """Canvas's resource[][field] write shapes (quiz answers, quiz_submissions) send a list or
+    an object; the read-back holds the same shape. Comparing those as strings made every such
+    write unprovable, so a correct write reported WRITE STATUS UNCERTAIN."""
+
+    ANSWERS = [{"id": 1001, "text": "A", "weight": 100}, {"id": 1002, "text": "B", "weight": 0},
+               {"id": 1003, "text": "C", "weight": 0}, {"id": 1004, "text": "D", "weight": 0}]
+
+    def question(self, answers):
+        return {"id": 789, "quiz_id": 5, "question_type": "multiple_choice_question",
+                "points_possible": 2.0, "answers": answers}
+
+    def regraded(self):
+        return [dict(answer, weight=(100 if answer["id"] in (1003, 1004) else 0))
+                for answer in self.ANSWERS]
+
+    def test_an_answer_key_write_is_proved_answer_by_answer(self):
+        after = self.question(self.regraded())
+        body = {"question": {"answers": [{"id": a["id"], "text": a["text"], "weight": a["weight"]}
+                                         for a in self.regraded()]}}
+        with mock.patch("urllib.request.urlopen", side_effect=[
+                FakeResponse(payload=self.question(self.ANSWERS)),
+                FakeResponse(payload=after), FakeResponse(payload=after)]):
+            code, output = self.run_main(["put", "courses/12/quizzes/5/questions/789", "--yes",
+                                          "-o", "json", "-d", json.dumps(body)])
+        self.assertEqual(code, 0)
+        evidence = json.loads(output)
+        self.assertEqual(evidence["verification"], "passed")
+        self.assertIs(evidence["changes"][0]["match"], True)
+
+    def test_one_wrong_weight_still_disproves_the_whole_key(self):
+        wrong = self.regraded()
+        wrong[3] = dict(wrong[3], weight=0)
+        body = {"question": {"answers": [{"id": a["id"], "weight": a["weight"]}
+                                         for a in self.regraded()]}}
+        with mock.patch("urllib.request.urlopen", side_effect=[
+                FakeResponse(payload=self.question(self.ANSWERS)),
+                FakeResponse(payload=self.question(wrong)),
+                FakeResponse(payload=self.question(wrong))]):
+            code, output = self.run_main(["put", "courses/12/quizzes/5/questions/789", "--yes",
+                                          "-o", "json", "-d", json.dumps(body)])
+        self.assertEqual(code, 3)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+
+    def test_a_quiz_submission_score_write_is_proved_through_canvas_envelope(self):
+        before = {"quiz_submissions": [{"id": 55, "user_id": 34, "attempt": 1, "score": 6.0,
+                                        "workflow_state": "complete"}]}
+        after = {"quiz_submissions": [dict(before["quiz_submissions"][0], score=8.0)]}
+        body = {"quiz_submissions": [{"attempt": 1, "questions": {"789": {"score": 2.0}}}]}
+        with mock.patch("urllib.request.urlopen", side_effect=[
+                FakeResponse(payload=before), FakeResponse(payload=after),
+                FakeResponse(payload=after)]):
+            code, output = self.run_main(["put", "courses/12/quizzes/5/submissions/55", "--yes",
+                                          "-o", "json", "-d", json.dumps(body)])
+        self.assertEqual(code, 0)
+        evidence = json.loads(output)
+        self.assertEqual(evidence["verification"], "passed")
+        # attempt is echoed and proves the write reached the right attempt; the per-question
+        # score is not a field of the submission object, so it stays unknown here and is read
+        # back by Level 2 itself.
+        self.assertIs(evidence["changes"][0]["match"], True)
+
+    def test_the_wrong_attempt_read_back_is_uncertain(self):
+        before = {"quiz_submissions": [{"id": 55, "attempt": 1, "score": 6.0}]}
+        after = {"quiz_submissions": [{"id": 55, "attempt": 2, "score": 6.0}]}
+        body = {"quiz_submissions": [{"attempt": 1, "questions": {"789": {"score": 2.0}}}]}
+        with mock.patch("urllib.request.urlopen", side_effect=[
+                FakeResponse(payload=before), FakeResponse(payload=after),
+                FakeResponse(payload=after)]):
+            code, output = self.run_main(["put", "courses/12/quizzes/5/submissions/55", "--yes",
+                                          "-o", "json", "-d", json.dumps(body)])
+        self.assertEqual(code, 3)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+
+    def test_a_field_the_object_does_not_expose_still_proves_nothing(self):
+        self.assertIsNone(guard.matches({"questions": {"789": {"score": 2.0}}}, {"id": 55}))
+        self.assertIsNone(guard.matches([{"a": 1}], "not a list"))
+
+
 class TestGuardHeader(unittest.TestCase):
     """The header is the map a reviewer reads first; it must describe the file that exists."""
 

@@ -571,9 +571,29 @@ def read_field_for(leaf, requested):
                 else ("entered_grade", "grade"))
     return (leaf,)
 
+def combined_match(results):
+    """One verdict for a structured value: any disproved member disproves it; otherwise it is
+    proved when at least one member was proved, and unknown when none was."""
+    if any(result is False for result in results):
+        return False
+    return True if any(result is True for result in results) else None
+
 def matches(requested, got):
     """Whether a read-back value proves the requested one: numbers within Canvas's rounding,
-    letters case-insensitively, with posted_grade pass/fail read back as complete/incomplete."""
+    letters case-insensitively, with posted_grade pass/fail read back as complete/incomplete.
+    Canvas's resource[][field] write shapes (a quiz question's answers, a quiz_submissions
+    envelope) send a list or an object where the read-back holds the same shape, so those are
+    compared member by member: a key the read-back does not expose is unknown and disproves
+    nothing, exactly as an unexposed top-level field is."""
+    if isinstance(requested, dict):
+        if not isinstance(got, dict):
+            return None
+        return combined_match([matches(requested[key], got[key])
+                               for key in requested if key in got])
+    if isinstance(requested, list):
+        if not isinstance(got, list) or len(got) < len(requested):
+            return None
+        return combined_match([matches(requested[i], got[i]) for i in range(len(requested))])
     want, have = number_or_none(requested), number_or_none(got)
     if want is not None and have is not None:
         return abs(have - want) <= SCORE_TOLERANCE
