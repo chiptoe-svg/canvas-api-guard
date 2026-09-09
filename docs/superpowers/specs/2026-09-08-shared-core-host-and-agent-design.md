@@ -55,7 +55,7 @@ patched these names by attribute for weeks, which proves the seam grips. Six nam
 | Name | Host meaning | Agent edge |
 |---|---|---|
 | `read_token()` | Keychain / Secret Service | returns `None`: the request leaves bearer-free and OneCLI injects |
-| `build_opener()` | `ProxyHandler({})` + `RefuseRedirects` (no proxy, system CAs) | OneCLI proxy address and CA bundle from the service's root-owned config |
+| `build_opener()` | `ProxyHandler({})` + `RefuseRedirects` (no proxy, system CAs) | OneCLI proxy address and CA bundle from the service's root-owned config; the edge installs its opener with `urllib.request.install_opener` |
 | `confirm(cfg, lines)` | TTY prompt or `--yes` | a NanoClaw approval request; blocks for the verdict |
 | `check_provenance()` | installed path root-owned, ancestors clean | the service's own installed path and config |
 | `CONFIG_PATH`, `DEFAULT_DIR` | `/usr/local/etc/...`, `~/.canvas-api-guard` | the service's paths |
@@ -69,6 +69,13 @@ Two small code changes make this real, and neither changes host behaviour:
   opener, which honours `https_proxy` from the caller's environment. Closing that is the one
   behaviour change, and it is the direction IT expects: the pinned host is reached directly or
   not at all.
+
+`build_opener()` is the guard's own function and serves only the pinned API call. The
+attachment path (`open_attachment_request`) constructs its own opener with
+`urllib.request.build_opener(ProxyHandler({}), ...)` and calls it directly, so that a signed
+file URL never traverses any proxy; it is not part of the seam, an edge must not patch
+`urllib.request.build_opener`, and the agent server fetches attachments directly as the host
+does. The seam is deliberately one transport for the API call and none for attachments.
 
 Not in the file: no policy class, no `token_source` or approver keys in the config, no
 receipt argument, no new fields on any audit line. The host's audit format, prompts, exit codes
@@ -134,8 +141,8 @@ per-group bearer go into the group's MCP config in NanoClaw's database, which is
 into the container at spawn and read once at startup. A short skill says what the tools are
 for; the tool schemas carry the argument contract. The container's Canvas skill drops the
 "curl the real URL through the gateway" instruction for this host. Review downloads land in a
-host directory the service owns, mounted as a directory (not a nested file mount, which
-Apple Container drops) read-only into the container.
+host directory the service owns, mounted read-only into the container as a DIRECTORY: Apple
+Container silently drops a nested file mount, so a file mount here would vanish without error.
 
 **Known limits of the runtime, recorded so nothing depends on them.** `container.json` is
 not immutable inside the container on Apple Container; the pin holds because the host
