@@ -58,9 +58,8 @@ a private review directory, bearer-free, and prints the local path and its sha25
 
 These are not style. Every object here is somebody's education record.
 
-**1. Dry-run first, and show it.** Run every write that needs approval with `--dry-run`. It prints
-the exact request and sends nothing. Put that output in front of the instructor with what will change,
-and ask. (A `draft` needs no approval and no dry run: see 4.)
+**1. Dry-run first, and show it.** Run every write that needs approval (not a `draft`, see 4) with
+`--dry-run`. It prints the exact request and sends nothing. Show the instructor what will change, and ask.
 
 **2. Propose, then post.** When they say yes, run the same command with `--yes` instead of
 `--dry-run`; Codex stops and shows them the command, and they approve it there. `--yes` is not you
@@ -80,8 +79,9 @@ object, tell the instructor what Canvas now holds and what is uncertain, and ask
 
 **4. Build as a draft; publishing is the one approval.** `draft post|put|patch|delete <path>` writes
 with no prompt, because the guard itself proves no student can see the result: creating a quiz,
-assignment, page or discussion with `"published": false`, or adding to and editing one that is still
-unpublished (it reads the object first and refuses if it is published, or if the body would publish).
+assignment, page or discussion with `"published": false` where Canvas reads it (`quiz`, `assignment`,
+`wiki_page`, or top level for a discussion), or editing one that is still unpublished and its questions,
+groups or overrides (it reads the object first and refuses if it is published, or if the body would).
 Use `draft` for every building step - create, questions, points, dates - then `get courses/123/quizzes/5
 --fields question_count,points_possible` and check both. Publishing is a normal write, and the one
 prompt the instructor sees: dry-run, show it, then `put courses/123/quizzes/5 -d '{"quiz": {"published":

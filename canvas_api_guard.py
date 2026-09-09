@@ -515,9 +515,14 @@ def refuse_unconfirmed_write(cfg, verb, path):
 
 PUBLISHABLE = re.compile(r"^/api/v1/courses/\d+/(quizzes|assignments)(/\d+)?(\?.*)?$")
 
-DRAFTABLE = re.compile(r"^/api/v1/courses/(\d+)/(quizzes|assignments|pages|discussion_topics)"
-                       r"(?:/([^/?]+))?(?:/[^?]*)?$")           # no query string: Canvas reads params there too
-LIVE_SWITCHES = ("published", "is_announcement")
+# A draft path is exact, segment by segment: the kind, optionally one item, optionally one of
+# the nested collections a build needs (a submission is never one), optionally its id. Nothing
+# open-ended, no empty segment, no query string (Canvas reads parameters there too).
+DRAFTABLE = re.compile(r"^/api/v1/courses/([0-9]+)/(quizzes|assignments|pages|discussion_topics)"
+                       r"(?:/([^/?]+)(?:/(questions|groups|reorder|overrides)(?:/[0-9]+)?)?)?$")
+WRAPPER = {"quizzes": "quiz", "assignments": "assignment", "pages": "wiki_page",
+           "discussion_topics": None}       # where Canvas reads each kind's parameters
+SAFE_SWITCH = {"published": False, "is_announcement": False, "hide_from_students": True}
 
 def live_switches(obj):
     """Every (key, value) at any depth of a body, lists included, whose key can make something
@@ -525,7 +530,7 @@ def live_switches(obj):
     found = []
     if isinstance(obj, dict):
         for key, value in obj.items():
-            if key in LIVE_SWITCHES:
+            if key in SAFE_SWITCH:
                 found.append((key, value))
             found.extend(live_switches(value))
     elif isinstance(obj, list):
@@ -535,36 +540,47 @@ def live_switches(obj):
 
 def prove_draft(cfg, method, path, body):
     """The draft verb writes without a person's approval, so it may only touch what no student
-    can see: a new or existing UNPUBLISHED quiz, assignment, page or discussion, or anything
-    nested under one (questions, overrides). Three proofs, all before the write: the path is one
-    of those; the body never turns "published" or "is_announcement" on, and a create says
-    "published": false outright (Canvas publishes some kinds by default); and an existing object,
-    or the parent of a nested path, reads back published == false right now. Anything else is a
-    normal write - the person's approval is the one gate, and it comes at publish time."""
-    match = DRAFTABLE.match(normalise_path(path))
+    can see: a new or existing UNPUBLISHED quiz, assignment, page or discussion, or the
+    questions, groups or overrides under one. Three proofs, all before the write: the path is
+    exactly one of those; the body never turns "published" or "is_announcement" on anywhere
+    (nor "hide_from_students" off), and a create says "published": false where Canvas reads it
+    for that kind, because Canvas publishes pages and discussions by default; and an existing
+    object, or the parent of a nested path, reads back published == false right now. Anything
+    else is a normal write - the person's approval is the one gate, at publish time."""
+    npath = normalise_path(path)
+    match = DRAFTABLE.match(npath)
     switches = live_switches(body)
+    unsafe = sorted(set(key for key, value in switches if value is not SAFE_SWITCH[key]))
     reason = None
     if not match:
-        reason = ("draft only writes under courses/N/quizzes, assignments, pages or "
-                  "discussion_topics, with no query string; anything else is a normal write "
-                  "with approval")
-    elif any(value is not False for _, value in switches):
+        reason = ("draft only writes courses/N/quizzes, assignments, pages or discussion_topics, "
+                  "an item of one, or its questions, groups or overrides, with no query string; "
+                  "anything else is a normal write with approval")
+    elif unsafe:
         reason = ("draft never turns %s on; publishing is a normal write with approval"
-                  % " or ".join(sorted(set(key for key, value in switches if value is not False))))
-    elif not match.group(3) and "published" not in [key for key, _ in switches]:
-        reason = 'a draft create must say "published": false in the body'
-    elif match.group(3) and not cfg.dry_run:     # a dry run sends nothing, reads included
-        course, kind, item = match.groups()
-        parent = send_request(cfg, "GET", "/api/v1/courses/%s/%s/%s" % (course, kind, item))
+                  % " or ".join(unsafe))
+    elif not match.group(3):
+        course, kind = match.group(1), match.group(2)
+        params = body.get(WRAPPER[kind]) if WRAPPER[kind] else body
+        if not isinstance(params, dict) or params.get("published") is not False:
+            reason = ('a draft create must say "published": false %s'
+                      % ('inside "%s"' % WRAPPER[kind] if WRAPPER[kind] else "at the top level"))
+    elif not cfg.dry_run:                        # a dry run sends nothing, reads included
+        course, kind, item = match.group(1, 2, 3)
+        try:
+            parent = send_request(cfg, "GET", "/api/v1/courses/%s/%s/%s" % (course, kind, item))
+        except RequestFailure as err:
+            parent = None
+            reason = "%s/%s could not be read (%s), so it is not proved unpublished" % (kind, item, err)
         parent_obj = parent["data"] if parent and isinstance(parent.get("data"), dict) else {}
-        if parent_obj.get("published") is not False:
+        if reason is None and parent_obj.get("published") is not False:
             reason = ("%s/%s is published (published %r): a change students can see needs "
                       "approval - use %s with --dry-run, then --yes"
                       % (kind, item, parent_obj.get("published"), method))
     if reason is None:
         return
     log_event(cfg.log_path, {"event": "refusal", "verb": method.upper(), "kind": "write",
-                             "path": normalise_path(path), "confirmation": "refused-not-draft"})
+                             "path": npath, "confirmation": "refused-not-draft"})
     raise GuardError(reason)
 
 def do_draft(cfg, method, path, body):
@@ -1232,9 +1248,11 @@ def build_parser():
                                    "object's id, used to read it back (default: id)")
     method = argparse.ArgumentParser(add_help=False)
     method.add_argument("method", choices=sorted(set(VERBS) - {"get"}))
-    subs.add_parser("draft", parents=[method, common],
-                    help="write to an UNPUBLISHED quiz, assignment, page or discussion without "
-                         "asking: refused unless the guard can prove no student can see it")
+    draft = subs.add_parser("draft", parents=[method, common],
+                            help="write to an UNPUBLISHED quiz, assignment, page or discussion "
+                                 "without asking: refused unless the guard can prove no student "
+                                 "can see it")
+    draft.add_argument("--created-id", metavar="FIELD", help="as for post")
     download = subs.add_parser("download-submission-file", help="download one submitted attachment for local review")
     download.add_argument("--course-id", required=True)
     download.add_argument("--file-id", required=True)

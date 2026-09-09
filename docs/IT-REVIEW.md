@@ -230,12 +230,15 @@ questions existed was a 0-point quiz students could take.
 Nothing a student can see changes without a person's approval; building something they cannot
 see yet does not need one. `draft post|put|patch|delete <path>` performs the ordinary write with
 the confirmation recorded as `draft` instead of asked for, after three checks that all precede
-the request: the path is a quiz, assignment, page or discussion topic under a course (or nested
-under one, such as a quiz question); the body never sets `published` or `is_announcement` to
-anything but `false`, and a create states `"published": false` explicitly, because Canvas
-publishes pages and discussions by default; and an existing object, or the parent of a nested
-path, reads back `published: false` at that moment. Any failed check is a logged refusal
-(`refused-not-draft`) and nothing is sent. Publishing remains an ordinary write with the
+the request: the path is exactly a quiz, assignment, page or discussion topic under a course,
+one item of one, or that item's `questions`, `groups`, `reorder` or `overrides` (never a
+submission; no empty segment, no query string, since Canvas reads parameters there too); the
+body never sets `published` or `is_announcement` to anything but `false` at any depth (nor
+`hide_from_students` to anything but `true`), and a create states `"published": false` where
+Canvas reads it for that kind, because Canvas publishes pages and discussions by default; and an
+existing object, or the parent of a nested path, reads back `published: false` at that moment.
+Any failed check, including a proof read that fails, is a logged refusal (`refused-not-draft`)
+and nothing is sent. Unpublishing a live object is not a draft: students would see it vanish. Publishing remains an ordinary write with the
 prompt: the final chance to stop it, rather than a prompt at every building step.
 
 ### Edge seam

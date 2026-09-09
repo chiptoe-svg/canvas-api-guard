@@ -2137,14 +2137,65 @@ class TestDraft(GuardTestCase):
         self.assertIn("10 -> 20", out)
 
     def test_paths_outside_the_draftable_kinds_are_refused(self):
+        """The path grammar is exact: an empty segment (Canvas's nginx merges slashes, so
+        assignments//5 IS assignment 5) would otherwise read as a create and skip the pre-read,
+        an open suffix would let a grade through under an unpublished assignment, and a query
+        string carries parameters Canvas reads just like the body."""
         for path in ("courses/1", "courses/1/modules/3", "courses/1/announcements",
                      "users/self/files", "courses/1/enrollments/2",
-                     "courses/1/quizzes/5?quiz[published]=true"):   # Canvas reads params there too
+                     "courses/1/quizzes/5?quiz[published]=true",
+                     "courses/1/assignments//5",
+                     "courses/1/assignments/5/submissions/77",
+                     "courses/1/assignments/5/submissions/update_grades",
+                     "courses/1/pages/notes/revisions/3", "courses/１/quizzes"):
             with mock.patch("urllib.request.urlopen") as urlopen:
                 code, _ = self.run_main(["draft", "put", path, "-d", '{"x": 1}'])
             self.assertEqual(code, 2, path)
-            self.assertIn("draft only writes under", self.last_stderr)
+            self.assertIn("draft only writes", self.last_stderr)
             urlopen.assert_not_called()
+            self.refusal()
+
+    def test_published_false_counts_only_where_canvas_reads_it(self):
+        """A decoy {"x": {"published": false}} would pass an any-depth search while Canvas
+        created the topic live; the create check looks at that kind's own parameters."""
+        for path, body in (("courses/1/discussion_topics", '{"title": "T", "x": {"published": false}}'),
+                           ("courses/1/pages", '{"wiki_page": {"title": "T"}, "published": false}'),
+                           ("courses/1/quizzes", '{"quiz": {"title": "T"}, "published": false}')):
+            with mock.patch("urllib.request.urlopen") as urlopen:
+                code, _ = self.run_main(["draft", "post", path, "-d", body])
+            self.assertEqual(code, 2, body)
+            urlopen.assert_not_called()
+        topic = {"id": 3, "title": "T", "published": False}
+        with mock.patch("urllib.request.urlopen", side_effect=[
+                FakeResponse(status=201, payload=topic), FakeResponse(payload=topic)]):
+            code, _ = self.run_main(["draft", "post", "courses/1/discussion_topics",
+                                     "-d", '{"title": "T", "published": false}'])
+        self.assertEqual(code, 0)
+
+    def test_hiding_from_students_off_is_publishing(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["draft", "put", "courses/1/pages/notes",
+                                     "-d", '{"wiki_page": {"hide_from_students": false}}'])
+        self.assertEqual(code, 2)
+        self.assertIn("hide_from_students", self.last_stderr)
+        urlopen.assert_not_called()
+
+    def test_a_proof_read_that_fails_is_a_logged_refusal(self):
+        with mock.patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError(
+                "https://canvas.example.edu/x", 404, "Not Found", {}, io.BytesIO(b"{}"))):
+            code, _ = self.run_main(["draft", "put", "courses/1/assignments/bulk_update",
+                                     "-d", '{"assignment": {"name": "x"}}'])
+        self.assertEqual(code, 2)
+        self.assertIn("not proved unpublished", self.last_stderr)
+        self.assertEqual(self.refusal()["verb"], "PUT")
+
+    def test_created_id_works_on_a_draft_create(self):
+        quiz = {"id": 5, "published": False}
+        responses = [FakeResponse(status=201, payload={"quiz": quiz}), FakeResponse(payload=quiz)]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, _ = self.run_main(["draft", "post", "courses/1/quizzes", "--created-id", "quiz.id",
+                                     "-d", '{"quiz": {"title": "T", "published": false}}'])
+        self.assertEqual(code, 0)
 
     def test_dry_run_sends_nothing_and_the_body_checks_still_apply(self):
         """A dry run makes no request at all, reads included, so the published-state proof
