@@ -214,7 +214,7 @@ class TestLevel2Operations(unittest.TestCase):
         self.assertEqual(sorted(operations.OPERATIONS), [
             "bulk-grade-with-rubric", "create-rubric",
             "download-assignment-submissions", "grade-with-rubric",
-            "prepare-submission-review", "student-attention"])
+            "prepare-submission-review", "regrade-quiz-question", "student-attention"])
         with open(SOURCE) as handle:
             source = handle.read()
         for gone in ("def attach_rubric", "def current_courses", "def roster_count", "def find_student",
@@ -636,6 +636,180 @@ class TestQuizRegradePlan(QuizRegradeFixtures, unittest.TestCase):
                 operations.regrade_plan(self.args())
         self.assertIn("refuses more than 100 attempts", str(caught.exception))
         write.assert_not_called()
+
+
+class TestQuizRegradeWrites(QuizRegradeFixtures, unittest.TestCase):
+    """Every write goes through API Only. One at a time, and the attempt score is read back
+    here: it is not a field API Only can prove on the submission object."""
+
+    def run_regrade(self, dry_run=False, scores=(8.0, 6.0), key=(1003, 1004)):
+        """Returns (guard_get mock, guard_write mock). scores are what each read-back reports."""
+        # The fixture always returns 1003 and 1004 as correct after the write.
+        # For the normal case (key=(1003,1004)), this matches what we wrote.
+        # For the mismatch case (key=(1003,)), this simulates an unexpected response.
+        after = dict(QUESTION, answers=[dict(a, weight=(100 if a["id"] in (1003, 1004) else 0))
+                                        for a in QUESTION["answers"]])
+        read_backs = {"55": scores[0], "56": scores[1]}
+
+        def reads(path):
+            if "?attempt=" in path:
+                submission_id = path.split("/submissions/")[1].split("?")[0]
+                return {"object": {"quiz_submissions": [
+                    {"id": int(submission_id), "attempt": int(path.split("attempt=")[1]),
+                     "score": read_backs[submission_id]}]}}
+            if path.startswith("courses/12/quizzes/5/questions/789") and questions_written:
+                return {"object": after}
+            return self.reads(path)
+
+        questions_written = []
+
+        def write(verb, path, body, phase, extra=None):
+            if "/questions/" in path:
+                questions_written.append(body)
+            return {"verification": "passed"}
+
+        names = [{"id": 34, "name": "Jordan Lee"}, {"id": 35, "name": "Casey Kim"}]
+        with mock.patch.object(operations, "definition_file",
+                               return_value={"quiz_id": 5, "question_id": 789,
+                                             "correct_answer_ids": list(key)}), \
+                mock.patch.object(operations, "guard_get", side_effect=reads) as get, \
+                mock.patch.object(operations, "all_items", return_value=names), \
+                mock.patch.object(operations, "time") as clock, \
+                mock.patch.object(operations, "guard_write", side_effect=write) as written, \
+                mock.patch("sys.stdout", io.StringIO()) as out:
+            try:
+                operations.regrade_quiz_question(self.args(dry_run=dry_run))
+            finally:
+                self.clock, self.out = clock, out.getvalue()
+        return get, written
+
+    def test_the_answer_key_is_written_once_and_then_each_attempt_individually(self):
+        _, written = self.run_regrade()
+        paths = [call[0][1] for call in written.call_args_list]
+        self.assertEqual(paths, ["courses/12/quizzes/5/questions/789",
+                                 "courses/12/quizzes/5/submissions/55",
+                                 "courses/12/quizzes/5/submissions/56"])
+        self.assertEqual(written.call_args_list[0][0][2], {"question": {"answers": [
+            {"id": 1001, "text": "A", "weight": 0}, {"id": 1002, "text": "B", "weight": 0},
+            {"id": 1003, "text": "C", "weight": 100}, {"id": 1004, "text": "D", "weight": 100}]}})
+        # no fudge_points and no comment: canvas-cli's regrade sends neither
+        self.assertEqual(written.call_args_list[1][0][2],
+                         {"quiz_submissions": [{"attempt": 1,
+                                                "questions": {"789": {"score": 2.0}}}]})
+        self.assertEqual(written.call_args_list[2][0][2],
+                         {"quiz_submissions": [{"attempt": 2,
+                                                "questions": {"789": {"score": 0.0}}}]})
+        self.assertEqual([call[0][3] for call in written.call_args_list], ["yes"] * 3)
+
+    def test_each_attempt_is_read_back_at_its_own_attempt_number(self):
+        get, _ = self.run_regrade()
+        read_backs = [call[0][0] for call in get.call_args_list if "?attempt=" in call[0][0]]
+        self.assertEqual(read_backs, ["courses/12/quizzes/5/submissions/55?attempt=1",
+                                      "courses/12/quizzes/5/submissions/56?attempt=2"])
+        self.assertIn('"verified": true', self.out)
+
+    def test_a_score_that_does_not_read_back_is_uncertain_and_stops_the_batch(self):
+        with self.assertRaises(operations.GuardUncertain) as caught:
+            self.run_regrade(scores=(6.0, 6.0))
+        self.assertEqual(str(caught.exception),
+                         "WRITE STATUS UNCERTAIN: submission 55 attempt 1 read back score 6.0, "
+                         "expected 8.0")
+        # Canvas can lag, so the read is retried a bounded number of times before that is said
+        self.assertEqual(self.clock.sleep.call_count, operations.READ_BACK_READS - 1)
+
+    def test_an_answer_key_that_does_not_read_back_stops_before_any_attempt_is_written(self):
+        with self.assertRaises(operations.GuardUncertain) as caught:
+            self.run_regrade(key=(1003,))       # the fixture reads back 1003 and 1004
+        self.assertIn("WRITE STATUS UNCERTAIN", str(caught.exception))
+        self.assertIn("question 789 reports correct answer(s) 1003, 1004, not 1003",
+                      str(caught.exception))
+
+    def test_a_dry_run_writes_nothing_and_reads_nothing_back(self):
+        get, written = self.run_regrade(dry_run=True)
+        self.assertEqual([call[0][3] for call in written.call_args_list], ["dry-run"] * 3)
+        self.assertEqual([call[0][0] for call in get.call_args_list
+                          if "?attempt=" in call[0][0]], [])
+        self.assertIn('"phase": "dry-run"', self.out)
+        self.assertIn('"attempts_written": 0', self.out)
+
+    def test_a_refusal_after_the_first_written_attempt_becomes_uncertain(self):
+        calls = []
+
+        def write(verb, path, body, phase, extra=None):
+            calls.append(path)
+            if len(calls) == 3:
+                raise operations.OperationError("Canvas rejected the attempt")
+            return {"verification": "passed"}
+
+        with mock.patch.object(operations, "regrade_plan", return_value=(
+                "5", "789", ["1003"], QUESTION,
+                [], [{"submission_id": 55, "attempt": 1, "new_points": 2.0, "expected_score": 8.0,
+                      "user_id": 34, "delta": 2.0},
+                     {"submission_id": 56, "attempt": 2, "new_points": 0.0, "expected_score": 6.0,
+                      "user_id": 35, "delta": -2.0}])), \
+                mock.patch.object(operations, "guard_get"), \
+                mock.patch.object(operations, "verify_answer_key"), \
+                mock.patch.object(operations, "read_back_attempt"), \
+                mock.patch.object(operations, "guard_write", side_effect=write), \
+                mock.patch("sys.stdout", io.StringIO()):
+            with self.assertRaises(operations.GuardUncertain) as caught:
+                operations.regrade_quiz_question(self.args(dry_run=False))
+        self.assertIn("stopped after 1 of 2 attempts", str(caught.exception))
+        self.assertIn("are not retried", str(caught.exception))
+
+    def test_the_operation_is_registered_and_takes_only_the_reviewed_write_flags(self):
+        self.assertIs(operations.OPERATIONS["regrade-quiz-question"],
+                      operations.regrade_quiz_question)
+        parsed = operations.parser().parse_args(
+            ["regrade-quiz-question", "--course-id", "12", "--definition", "r.json", "--dry-run"])
+        self.assertTrue(parsed.dry_run)
+        with mock.patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(SystemExit):        # a phase is required, as for every write
+                operations.parser().parse_args(
+                    ["regrade-quiz-question", "--course-id", "12", "--definition", "r.json"])
+
+    def test_a_repeated_attempt_number_uses_the_later_history_entry(self):
+        """When an attempt number appears twice in the submission history, the later entry's
+        answer and points drive the row, matching the live-tested Go reference."""
+        # Modify HISTORY to have two entries for attempt 1 with different answers
+        modified_history = {
+            "34": {"id": 900, "user_id": 34, "attempt": 1, "score": 10.0, "submission_history": [
+                {"attempt": 1, "score": 6.0, "submission_data": [
+                    {"question_id": 789, "answer_id": 1001, "correct": True, "points": 2.0}]},
+                {"attempt": 1, "score": 10.0, "submission_data": [
+                    {"question_id": 789, "answer_id": 1003, "correct": False, "points": 0.0}]}]},
+            "35": {"id": 901, "user_id": 35, "attempt": 2, "score": 8.0, "submission_history": [
+                {"attempt": 2, "score": 8.0, "submission_data": [
+                    {"question_id": 789, "answer_id": 1001, "correct": True, "points": 2.0}]}]}}
+
+        def reads(path):
+            if path.startswith("courses/12/quizzes/5/questions/789"):
+                return {"object": QUESTION}
+            if path == "courses/12/quizzes/5":
+                return {"object": QUIZ}
+            if path.startswith("courses/12/quizzes/5/submissions?page=1"):
+                return {"object": {"quiz_submissions": [
+                    {"id": 55, "user_id": 34, "attempt": 1, "score": 10.0, "workflow_state": "complete"},
+                    {"id": 56, "user_id": 35, "attempt": 2, "score": 8.0, "workflow_state": "complete"}]}}
+            if path.startswith("courses/12/quizzes/5/submissions?page="):
+                return {"object": {"quiz_submissions": []}}
+            if path.startswith("courses/12/assignments/77/submissions/"):
+                return {"object": modified_history[path.split("/")[5].split("?")[0]]}
+            if path == "courses/12":
+                return {"object": {"id": 12}}
+            raise AssertionError("unexpected read %r" % path)
+
+        names = [{"id": 34, "name": "Jordan Lee"}, {"id": 35, "name": "Casey Kim"}]
+        with mock.patch.object(operations, "definition_file",
+                               return_value={"quiz_id": 5, "question_id": 789,
+                                             "correct_answer_ids": [1003, 1004]}), \
+                mock.patch.object(operations, "guard_get", side_effect=reads), \
+                mock.patch.object(operations, "all_items", return_value=names):
+            _, _, _, _, rows, _ = operations.regrade_plan(self.args())
+        # The second entry for attempt 1 should be used: answer 1003, points 0.0
+        gained = rows[0]  # user 34
+        self.assertEqual((gained["selected_answer_id"], gained["old_points"], gained["new_points"]),
+                         ("1003", 0.0, 2.0))
 
 
 class TestGuardWriteContract(GuardTestCase):

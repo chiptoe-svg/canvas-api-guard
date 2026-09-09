@@ -520,7 +520,7 @@ def attempt_row(course_id, assignment_id, submission, question, answer_ids):
            "selected_answer_id": None, "old_points": None, "new_points": None, "delta": 0}
     history = guard_get("courses/%s/assignments/%s/submissions/%s?include[]=submission_history"
                         % (course_id, assignment_id, submission.get("user_id"))).get("object") or {}
-    entry = next((item for item in history.get("submission_history") or []
+    entry = next((item for item in reversed(history.get("submission_history") or [])
                   if item.get("attempt") == row["attempt"] and item.get("submission_data")), None)
     answered = next((item for item in (entry or {}).get("submission_data") or []
                      if str(item.get("question_id")) == str(question.get("id"))), None)
@@ -562,6 +562,93 @@ def regrade_plan(args):
     for row in rows:
         row.update(identities.get(str(row["user_id"]), {}))
     return quiz_id, question_id, answer_ids, question, rows, changed
+
+
+READ_BACK_READS = 3            # Canvas applies a quiz score asynchronously (canvas-cli, live)
+READ_BACK_DELAY = 1.0
+
+
+def verify_answer_key(course_id, quiz_id, question_id, answer_ids):
+    """API Only proves the weights it sent, answer by answer. This checks the resulting KEY -
+    the set of answers Canvas now treats as correct - so neither the order Canvas returns
+    answers in nor an answer this write did not name can hide a wrong outcome."""
+    question = guard_get("courses/%s/quizzes/%s/questions/%s"
+                         % (course_id, quiz_id, question_id)).get("object") or {}
+    correct = sorted(str(answer.get("id")) for answer in question.get("answers") or []
+                     if number(answer.get("weight")) == 100)
+    if correct != sorted(answer_ids):
+        raise GuardUncertain("WRITE STATUS UNCERTAIN: question %s reports correct answer(s) %s, "
+                             "not %s" % (question_id, ", ".join(correct) or "none",
+                                         ", ".join(answer_ids)))
+
+
+def read_back_attempt(path, row):
+    """The attempt's own score, at ?attempt=N: the assignment submission's history lags this
+    write and must not be used. Canvas can still return the previous value on an immediate
+    read, so the read is repeated a bounded number of times before it is a mismatch."""
+    for read in range(READ_BACK_READS):
+        if read:
+            time.sleep(READ_BACK_DELAY)
+        found = (((guard_get("%s?attempt=%s" % (path, row["attempt"])).get("object") or {})
+                  .get("quiz_submissions") or [{}])[0])
+        row["new_score"] = number(found.get("score"))
+        if abs(row["new_score"] - row["expected_score"]) <= SCORE_TOLERANCE:
+            row["verified"] = True
+            return
+    raise GuardUncertain("WRITE STATUS UNCERTAIN: submission %s attempt %s read back score %s, "
+                         "expected %s" % (row["submission_id"], row["attempt"],
+                                          row["new_score"], row["expected_score"]))
+
+
+def write_attempt_score(args, quiz_id, question_id, row):
+    """One attempt's per-question score. canvas-cli sends attempt and questions[qid][score] and
+    nothing else - no fudge_points, no comment - so neither is sent here."""
+    path = "courses/%s/quizzes/%s/submissions/%s" % (args.course_id, quiz_id,
+                                                     row["submission_id"])
+    body = {"quiz_submissions": [{"attempt": row["attempt"],
+                                  "questions": {str(question_id): {"score": row["new_points"]}}}]}
+    guard_write("put", path, body, operation_phase(args))
+    if operation_phase(args) != "dry-run":
+        read_back_attempt(path, row)
+
+
+def regrade_quiz_question(args):
+    """Rewrite one classic-quiz question's answer key and rescore every completed attempt of
+    that question: the answer key first, so a failure there touches no score, then one audited
+    write per attempt, each read back at its own attempt number."""
+    quiz_id, question_id, answer_ids, question, rows, changed = regrade_plan(args)
+    print(json.dumps({"operation": "regrade-quiz-question", "phase": operation_phase(args),
+                      "course_id": args.course_id, "quiz_id": quiz_id,
+                      "question_id": question_id, "question_type": question.get("question_type"),
+                      "points_possible": number(question.get("points_possible")),
+                      "correct_answer_ids": answer_ids, "attempts_considered": len(rows),
+                      "attempts_changed": len(changed), "rows": rows,
+                      "warning": "every answer not listed is now worth 0; a student who picked "
+                                 "one of those loses the points, shown as a negative delta"},
+                     indent=2, sort_keys=True))
+    path = "courses/%s/quizzes/%s/questions/%s" % (args.course_id, quiz_id, question_id)
+    body = {"question": {"answers": regrade_answer_key(question, answer_ids)}}
+    write_plan("regrade-quiz-question", args, path, body)
+    guard_write("put", path, body, operation_phase(args))
+    written = []
+    if operation_phase(args) != "dry-run":
+        verify_answer_key(args.course_id, quiz_id, question_id, answer_ids)
+    try:
+        for row in changed:
+            write_attempt_score(args, quiz_id, question_id, row)
+            if operation_phase(args) != "dry-run":
+                written.append(row["submission_id"])
+    except GuardUncertain:
+        raise
+    except OperationError as err:
+        if not written or operation_phase(args) == "dry-run":
+            raise                 # nothing was written, so this is an ordinary refusal
+        raise GuardUncertain("regrade stopped after %d of %d attempts; the scores already "
+                             "written stand and are not retried: %s"
+                             % (len(written), len(changed), err))
+    print(json.dumps({"operation": "regrade-quiz-question", "phase": operation_phase(args),
+                      "attempts_written": len(written), "attempts_changed": len(changed),
+                      "rows": changed}, indent=2, sort_keys=True))
 
 
 def all_items(path):
@@ -629,7 +716,8 @@ OPERATIONS = {"create-rubric": create_rubric, "grade-with-rubric": grade_with_ru
               "bulk-grade-with-rubric": bulk_grade_with_rubric,
               "prepare-submission-review": prepare_submission_review,
               "download-assignment-submissions": download_assignment_submissions,
-              "student-attention": student_attention}
+              "student-attention": student_attention,
+              "regrade-quiz-question": regrade_quiz_question}
 
 
 def parser():
@@ -658,6 +746,7 @@ def parser():
     for name in ("grade-with-rubric", "bulk-grade-with-rubric"):
         grade = subs.add_parser(name, parents=[write])
         grade.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)
+    subs.add_parser("regrade-quiz-question", parents=[write])
     return result
 
 
