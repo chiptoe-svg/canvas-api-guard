@@ -162,6 +162,13 @@ bearers are static today; minting at spawn is new NanoClaw work and a later hard
 server that is down when a session starts leaves that group without Canvas tools until the
 next spawn; that is fail-closed and is the operational cost of the MCP form.
 
+**Embedding contract for Level 2.** The operations in `canvas_api_operations.py` are
+command-line programs: they print their plan and their outcome as JSON documents on stdout
+and return nothing (`regrade-quiz-question` prints two: the plan first, the outcome last). An
+edge that runs them in-process must capture stdout and parse those documents; forwarding the
+return value yields null and loses the rows, deltas and counts. Found by the agent edge's own
+tests.
+
 **More than one agent group.** The service never trusts the network. Each container presents a
 per-group client token minted by NanoClaw at spawn and present only in that container; unknown
 callers are refused first. Each group maps to its own OneCLI identity `canvas-guard:<group>`,
