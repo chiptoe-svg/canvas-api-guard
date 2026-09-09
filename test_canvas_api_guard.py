@@ -1867,9 +1867,12 @@ class TestStructuredReadBack(GuardTestCase):
                 for answer in self.ANSWERS]
 
     def test_an_answer_key_write_is_proved_answer_by_answer(self):
-        after = self.question(self.regraded())
+        regraded = self.regraded()
+        # Canvas returns extra fields (comments, html) that the request does not send; member-wise
+        # comparison still proves the write because only the sent fields are matched.
+        after = self.question([dict(a, comments="", html=None) for a in regraded])
         body = {"question": {"answers": [{"id": a["id"], "text": a["text"], "weight": a["weight"]}
-                                         for a in self.regraded()]}}
+                                         for a in regraded]}}
         with mock.patch("urllib.request.urlopen", side_effect=[
                 FakeResponse(payload=self.question(self.ANSWERS)),
                 FakeResponse(payload=after), FakeResponse(payload=after)]):

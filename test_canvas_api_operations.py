@@ -834,3 +834,45 @@ class TestGuardWriteContract(GuardTestCase):
             evidence = operations.guard_write("put", path, body, "yes")
         self.assertEqual(evidence["verification"], "passed")
         self.assertEqual(evidence["url"], "https://" + HOST + "/api/v1/" + path)
+
+    def test_the_real_guard_proves_both_regrade_writes(self):
+        """A regrade sends Canvas's resource[][field] shapes; the guard must prove them and
+        guard_write must parse the evidence it prints for them."""
+        answers = [{"id": 1001, "text": "A", "weight": 100}, {"id": 1002, "text": "B", "weight": 0},
+                   {"id": 1003, "text": "C", "weight": 0}, {"id": 1004, "text": "D", "weight": 0}]
+        regraded = [dict(a, weight=(100 if a["id"] in (1003, 1004) else 0)) for a in answers]
+        question = {"id": 789, "quiz_id": 5, "question_type": "multiple_choice_question",
+                    "points_possible": 2.0, "answers": answers}
+        key_body = {"question": {"answers": regraded}}
+        with mock.patch("urllib.request.urlopen", side_effect=[
+                FakeResponse(payload=question),
+                FakeResponse(payload=dict(question, answers=regraded)),
+                FakeResponse(payload=dict(question, answers=regraded))]):
+            code, captured = self.run_main(["put", "courses/12/quizzes/5/questions/789", "--yes",
+                                            "-o", "json", "-d", json.dumps(key_body)])
+        self.assertEqual(code, 0)
+        completed = mock.Mock(returncode=0, stdout=captured, stderr="")
+        with mock.patch.object(operations.subprocess, "run", return_value=completed), \
+                mock.patch("sys.stdout", io.StringIO()):
+            evidence = operations.guard_write("put", "courses/12/quizzes/5/questions/789",
+                                              key_body, "yes")
+        self.assertEqual(evidence["verification"], "passed")
+
+        before = {"quiz_submissions": [{"id": 55, "user_id": 34, "attempt": 1, "score": 6.0}]}
+        after = {"quiz_submissions": [dict(before["quiz_submissions"][0], score=8.0)]}
+        score_body = {"quiz_submissions": [{"attempt": 1,
+                                            "questions": {"789": {"score": 2.0}}}]}
+        with mock.patch("urllib.request.urlopen", side_effect=[
+                FakeResponse(payload=before), FakeResponse(payload=after),
+                FakeResponse(payload=after)]):
+            code, captured = self.run_main(["put", "courses/12/quizzes/5/submissions/55", "--yes",
+                                            "-o", "json", "-d", json.dumps(score_body)])
+        self.assertEqual(code, 0)
+        completed = mock.Mock(returncode=0, stdout=captured, stderr="")
+        with mock.patch.object(operations.subprocess, "run", return_value=completed), \
+                mock.patch("sys.stdout", io.StringIO()):
+            evidence = operations.guard_write("put", "courses/12/quizzes/5/submissions/55",
+                                              score_body, "yes")
+        self.assertEqual(evidence["verification"], "passed")
+        self.assertEqual(evidence["url"],
+                         "https://" + HOST + "/api/v1/courses/12/quizzes/5/submissions/55")
