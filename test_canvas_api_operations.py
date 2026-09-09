@@ -67,6 +67,11 @@ class TestLevel2Operations(unittest.TestCase):
                          {"0": {"description": "Complete", "points": 10},
                           "1": {"description": "Incomplete", "points": 0}})
         self.assertEqual(body["rubric_association"]["purpose"], "bookmark")
+        # false is not sent: Canvas stores it as null, which would read back as a mismatch
+        self.assertNotIn("free_form_criterion_comments", body["rubric"])
+        body = operations.rubric_body({"title": "Lab rubric", "free_form_criterion_comments": True, "criteria": [{
+            "description": "Craft", "points": 10, "ratings": [{"description": "Complete", "points": 10}]}]})
+        self.assertIs(body["rubric"]["free_form_criterion_comments"], True)
 
     def test_rubric_grade_uses_only_live_criterion_ids(self):
         rubric = {"data": [{"id": "criterion_1", "points": 10}]}

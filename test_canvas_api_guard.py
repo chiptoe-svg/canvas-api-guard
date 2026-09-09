@@ -659,8 +659,7 @@ class TestEvidence(GuardTestCase):
         rows = {row["field"]: row["match"] for row in json.loads(output)["changes"]}
         # ratings is an index-keyed hash now, so the guard descends into it: its leaves are
         # the same names as the criterion's, description and points
-        self.assertEqual(rows, {"title": True, "free_form_criterion_comments": True,
-                                "description": None, "points": None,
+        self.assertEqual(rows, {"title": True, "description": None, "points": None,
                                 "association_type": None, "purpose": None,
                                 "association_id": None, "use_for_grading": None})
 

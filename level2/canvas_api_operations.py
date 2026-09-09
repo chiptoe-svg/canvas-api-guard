@@ -187,9 +187,12 @@ def rubric_body(value):
     if not isinstance(definition["criteria"], list) or not definition["criteria"]:
         raise OperationError("rubric criteria must be a non-empty array")
     criteria = {str(index): criterion(item) for index, item in enumerate(definition["criteria"])}
-    return {"rubric": {"title": definition["title"], "criteria": criteria,
-                        "free_form_criterion_comments": bool(
-                            definition.get("free_form_criterion_comments", False))},
+    rubric = {"title": definition["title"], "criteria": criteria}
+    # Sent only when true: Canvas stores false as null, which API Only's strict read-back of
+    # an exposed field would report as a mismatch (seen live, rubric 138355).
+    if definition.get("free_form_criterion_comments"):
+        rubric["free_form_criterion_comments"] = True
+    return {"rubric": rubric,
             # a bookmark on the course is what lists the rubric on the course's Rubrics page
             "rubric_association": {"association_type": "Course", "purpose": "bookmark"}}
 
