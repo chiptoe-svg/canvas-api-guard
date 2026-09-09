@@ -1727,12 +1727,13 @@ def rule_lists(rules_path):
                 in re.findall(r"^([A-Z_]+) = \[(.*?)\]", text, re.S | re.M))
 
 
-# The only two commands that may run without a prompt: the guard's read verb and the Level 2
+# The only three commands that may run without a prompt: the guard's read verb, its draft verb
+# (a write the guard itself proves touches only unpublished content, TestDraft) and the Level 2
 # read operation. Pinning the allow side - rather than listing every name that must prompt -
 # means a new subcommand or operation defaults to prompt with no list here to update, and a
-# rules-file edit that promotes anything else to a read is caught both offline
-# (TestRulesCoverage) and by the real Codex matrix (TestCodexRules).
-ALLOWED_WITHOUT_PROMPT = ["get", "student-attention"]
+# rules-file edit that promotes anything else is caught both offline (TestRulesCoverage) and by
+# the real Codex matrix (TestCodexRules).
+ALLOWED_WITHOUT_PROMPT = ["get", "draft", "student-attention"]
 
 
 class TestCodexRules(unittest.TestCase):
@@ -1767,18 +1768,19 @@ class TestCodexRules(unittest.TestCase):
     # Which decision a list means, and which program its subcommands belong to. The rows below
     # are generated from these plus whatever the rules file's own lists currently declare, so a
     # subcommand nobody hand-copied into this test still gets checked against real Codex.
-    DECISION_FOR_LIST = {"READS": "allow", "WRITES": "prompt", "DOWNLOADS": "prompt",
-                         "OPERATION_READS": "allow", "OPERATION_PROMPTS": "prompt"}
+    DECISION_FOR_LIST = {"READS": "allow", "DRAFTS": "allow", "WRITES": "prompt",
+                         "DOWNLOADS": "prompt", "OPERATION_READS": "allow",
+                         "OPERATION_PROMPTS": "prompt"}
 
     def test_the_matrix(self):
-        program_for_list = {"READS": self.GUARD, "WRITES": self.GUARD, "DOWNLOADS": self.GUARD,
-                            "OPERATION_READS": self.OPERATIONS,
+        program_for_list = {"READS": self.GUARD, "DRAFTS": self.GUARD, "WRITES": self.GUARD,
+                            "DOWNLOADS": self.GUARD, "OPERATION_READS": self.OPERATIONS,
                             "OPERATION_PROMPTS": self.OPERATIONS}
         lists = rule_lists(self.RULES)
         rows = []
         for list_name, base_decision in self.DECISION_FOR_LIST.items():
             for name in lists[list_name]:
-                # Anything but the two pinned read commands must prompt, however the file
+                # Anything but the three pinned commands must prompt, however the file
                 # above has classified it - that mismatch is what should fail this test.
                 want = base_decision if name in ALLOWED_WITHOUT_PROMPT else "prompt"
                 rows.append(([program_for_list[list_name], name], want))
@@ -1805,7 +1807,7 @@ class TestRulesCoverage(unittest.TestCase):
 
     def test_every_guard_subcommand_is_classified_exactly_once(self):
         lists = rule_lists(self.RULES)
-        classified = lists["READS"] + lists["WRITES"] + lists["DOWNLOADS"]
+        classified = lists["READS"] + lists["DRAFTS"] + lists["WRITES"] + lists["DOWNLOADS"]
         self.assertEqual(sorted(classified), subcommand_names(guard.build_parser()))
         self.assertEqual(len(classified), len(set(classified)))
 
@@ -1815,16 +1817,17 @@ class TestRulesCoverage(unittest.TestCase):
         self.assertEqual(sorted(classified), subcommand_names(load_operations().parser()))
         self.assertEqual(len(classified), len(set(classified)))
 
-    def test_only_the_two_read_commands_are_allowed_without_a_prompt(self):
+    def test_only_the_three_unprompted_commands_are_allowed_without_a_prompt(self):
         """Classifying every subcommand exactly once (the tests above) still accepts a write
         landing in the wrong list, as long as it lands in some list. Pin the allow side: these
-        are the only two names the rules may allow, and every other subcommand and operation
+        are the only three names the rules may allow, and every other subcommand and operation
         must appear in a prompt list, so a promotion to allow fails offline too."""
         lists = rule_lists(self.RULES)
         self.assertEqual(lists["READS"], ALLOWED_WITHOUT_PROMPT[:1])
-        self.assertEqual(lists["OPERATION_READS"], ALLOWED_WITHOUT_PROMPT[1:])
+        self.assertEqual(lists["DRAFTS"], ALLOWED_WITHOUT_PROMPT[1:2])
+        self.assertEqual(lists["OPERATION_READS"], ALLOWED_WITHOUT_PROMPT[2:])
         for name in subcommand_names(guard.build_parser()):
-            if name not in lists["READS"]:
+            if name not in lists["READS"] + lists["DRAFTS"]:
                 self.assertIn(name, lists["WRITES"] + lists["DOWNLOADS"], name)
         for name in subcommand_names(load_operations().parser()):
             if name not in lists["OPERATION_READS"]:
@@ -2047,6 +2050,122 @@ class TestPrematurePublish(GuardTestCase):
         self.assertEqual(code, 0)
 
 
+class TestDraft(GuardTestCase):
+    """draft <method> <path>: a write the guard proves no student can see, so Codex's rules allow
+    it without a prompt and the log records confirmation "draft". The one prompt a person sees
+    while something is built is the publish - and that stays a normal write."""
+
+    def refusal(self):
+        line = self.log_lines()[-1]
+        self.assertEqual((line["event"], line["confirmation"]), ("refusal", "refused-not-draft"))
+        return line
+
+    def test_creating_a_quiz_unpublished_needs_no_approval_and_no_tty(self):
+        quiz = {"id": 5, "title": "Week 3", "published": False}
+        responses = [FakeResponse(status=201, payload=quiz), FakeResponse(payload=quiz)]
+        with mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen:
+            code, out = self.run_main(["draft", "post", "courses/1/quizzes",
+                                       "-d", '{"quiz": {"title": "Week 3", "published": false}}'])
+        self.assertEqual(code, 0)
+        self.assertEqual(urlopen.call_count, 2)                 # the create and its read-back
+        self.assertIn("confirmation: draft", out)
+        evidence = [line for line in self.log_lines() if line["event"] == "evidence"][-1]
+        self.assertEqual((evidence["verb"], evidence["confirmation"], evidence["verification"]),
+                         ("POST", "draft", "passed"))
+
+    def test_a_create_that_does_not_say_unpublished_is_refused(self):
+        """Canvas publishes a page or discussion by default; a draft create must say so."""
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["draft", "post", "courses/1/pages",
+                                     "-d", '{"wiki_page": {"title": "Notes"}}'])
+        self.assertEqual(code, 2)
+        self.assertIn('"published": false', self.last_stderr)
+        urlopen.assert_not_called()
+        self.assertEqual(self.refusal()["verb"], "POST")
+
+    def test_a_body_that_publishes_is_refused_before_any_request(self):
+        for body in ('{"quiz": {"published": true}}', '{"quiz": {"published": "true"}}',
+                     '{"title": "Hi", "is_announcement": true, "published": false}'):
+            with mock.patch("urllib.request.urlopen") as urlopen:
+                code, _ = self.run_main(["draft", "put", "courses/1/quizzes/5", "-d", body])
+            self.assertEqual(code, 2, body)
+            self.assertIn("never turns", self.last_stderr)
+            urlopen.assert_not_called()
+            self.refusal()
+
+    def test_adding_a_question_to_an_unpublished_quiz_reads_the_quiz_first(self):
+        quiz = {"id": 5, "published": False, "question_count": 0}
+        question = {"id": 9, "question_name": "Q1", "points_possible": 2}
+        responses = [FakeResponse(payload=quiz), FakeResponse(status=201, payload=question),
+                     FakeResponse(payload=question)]
+        with mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen:
+            code, _ = self.run_main(["draft", "post", "courses/1/quizzes/5/questions", "-d",
+                                     '{"question": {"question_name": "Q1", "points_possible": 2}}'])
+        self.assertEqual(code, 0)
+        self.assertEqual(urlopen.call_args_list[0][0][0].get_full_url(),
+                         "https://canvas.example.edu/api/v1/courses/1/quizzes/5")
+        self.assertEqual(urlopen.call_args_list[0][0][0].get_method(), "GET")
+
+    def test_a_published_parent_is_refused_and_nothing_is_written(self):
+        with mock.patch("urllib.request.urlopen",
+                        return_value=FakeResponse(payload={"id": 5, "published": True})) as urlopen:
+            code, _ = self.run_main(["draft", "post", "courses/1/quizzes/5/questions",
+                                     "-d", '{"question": {"question_name": "Q1"}}'])
+        self.assertEqual(code, 2)
+        self.assertIn("quizzes/5 is published", self.last_stderr)
+        self.assertEqual(urlopen.call_count, 1)                 # the proof read only
+        self.refusal()
+
+    def test_an_object_whose_state_cannot_be_read_is_refused(self):
+        with mock.patch("urllib.request.urlopen",
+                        return_value=FakeResponse(payload={"id": 5})) as urlopen:
+            code, _ = self.run_main(["draft", "delete", "courses/1/assignments/5"])
+        self.assertEqual(code, 2)
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertEqual(self.refusal()["verb"], "DELETE")
+
+    def test_editing_an_unpublished_assignment_is_verified_like_any_write(self):
+        before = {"id": 5, "name": "Lab", "points_possible": 10, "published": False}
+        after = dict(before, points_possible=20)
+        responses = [FakeResponse(payload=before), FakeResponse(payload=before),
+                     FakeResponse(payload=after), FakeResponse(payload=after)]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, out = self.run_main(["draft", "put", "courses/1/assignments/5",
+                                       "-d", '{"assignment": {"points_possible": 20}}'])
+        self.assertEqual(code, 0)
+        self.assertIn("10 -> 20", out)
+
+    def test_paths_outside_the_draftable_kinds_are_refused(self):
+        for path in ("courses/1", "courses/1/modules/3", "courses/1/announcements",
+                     "users/self/files", "courses/1/enrollments/2"):
+            with mock.patch("urllib.request.urlopen") as urlopen:
+                code, _ = self.run_main(["draft", "put", path, "-d", '{"x": 1}'])
+            self.assertEqual(code, 2, path)
+            self.assertIn("draft only writes under", self.last_stderr)
+            urlopen.assert_not_called()
+
+    def test_dry_run_sends_nothing_and_the_body_checks_still_apply(self):
+        """A dry run makes no request at all, reads included, so the published-state proof
+        waits for the real call; the body checks need no network and run either way."""
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, out = self.run_main(["draft", "put", "courses/1/quizzes/5", "--dry-run",
+                                       "-d", '{"quiz": {"title": "Renamed"}}'])
+            self.assertEqual(code, 0)
+            self.assertIn("dry-run", out)
+            code, _ = self.run_main(["draft", "put", "courses/1/quizzes/5", "--dry-run",
+                                     "-d", '{"quiz": {"published": true}}'])
+            self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+
+    def test_the_normal_verbs_are_untouched(self):
+        """A plain put still needs the person: no tty and no --yes is still refused."""
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["put", "courses/1/quizzes/5", "-d", '{"quiz": {"title": "x"}}'])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+        self.assertEqual(self.log_lines()[-1]["confirmation"], "refused-no-tty")
+
+
 class TestGuardHeader(unittest.TestCase):
     """The header is the map a reviewer reads first; it must describe the file that exists."""
 
@@ -2056,8 +2175,8 @@ class TestGuardHeader(unittest.TestCase):
         with open(self.SOURCE) as handle:
             return handle.read()
 
-    def test_the_version_is_1_16_1(self):
-        self.assertEqual(guard.USER_AGENT, "canvas-api-guard/1.16.1")
+    def test_the_version_is_1_17_0(self):
+        self.assertEqual(guard.USER_AGENT, "canvas-api-guard/1.17.0")
 
     def test_the_header_reading_order_matches_the_files_banners_exactly(self):
         """The map must be derived truth, not a copy that can silently go stale."""

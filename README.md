@@ -296,7 +296,10 @@ A dry run prints the exact request it did not send: as labelled lines for a pers
 one JSON object with `dry_run`, `method`, `url`, `headers` (the Authorization header redacted)
 and `body` whenever output is JSON. No token is read and nothing is sent either way.
 
-Codex's rules prompt the person for every installed-path write, including dry-runs. `--yes`
+Codex's rules prompt the person for every installed-path write, including dry-runs, except
+`draft`: a write the guard only performs on an unpublished quiz, assignment, page or discussion
+(proved by reading it first), so building something is unprompted and publishing it is the one
+approval. `--yes`
 records that the explicit Codex approval is being passed to the guard; it is not permission
 for Codex to approve its own request.
 

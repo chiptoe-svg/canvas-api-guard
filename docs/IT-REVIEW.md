@@ -15,7 +15,7 @@ The runtime and installation boundary consists of:
 | `canvas_api_guard.py` | credential retrieval, host/path validation, HTTP, audit, confirmation, and evidence |
 | `install.sh` | no-network plan and root-owned installation |
 | `install-from-github.sh` | immutable-commit download and visible macOS Terminal launcher |
-| `codex/canvas-api-guard.rules` | installed-path reads allowed; installed-path writes prompt; known credential reads forbidden |
+| `codex/canvas-api-guard.rules` | installed-path reads and drafts allowed; installed-path writes prompt; known credential reads forbidden |
 | `codex/config.toml` | recommended Codex sandbox and human-review settings |
 | `codex/skills/canvas-api-guard/SKILL.md` | operating procedure and data-handling instructions |
 | `test_canvas_api_guard.py` | offline API Only security and behavior tests, plus the rules and skill coverage tests |
@@ -116,7 +116,9 @@ is never printed or logged.
 - `POST`, `PUT`, `PATCH`, and `DELETE` require a TTY confirmation or explicit `--yes`.
 - A non-TTY write without `--yes` is refused before credential or network access.
 - The Codex rules authorize only `/usr/local/libexec/canvas_api_guard.py`.
-- Installed-path reads are allowed; installed-path writes prompt the user.
+- Installed-path reads are allowed; installed-path writes prompt the user. The `draft` verb is
+  allowed too: it is a write the guard refuses unless it can prove no student can see the result
+  (Publishing, below).
 - Source-tree copies, interpreter invocations, aliases, and wrappers match no allow rule.
 - Known direct Keychain/Secret Service read commands are forbidden by the rules file.
 
@@ -224,6 +226,17 @@ A write that would publish a quiz or assignment in the same call that creates it
 as is publishing a quiz whose pre-read shows no questions; both are logged refusals
 (`refused-premature-publish`) before confirmation. Seen live: a quiz published before its
 questions existed was a 0-point quiz students could take.
+
+Nothing a student can see changes without a person's approval; building something they cannot
+see yet does not need one. `draft post|put|patch|delete <path>` performs the ordinary write with
+the confirmation recorded as `draft` instead of asked for, after three checks that all precede
+the request: the path is a quiz, assignment, page or discussion topic under a course (or nested
+under one, such as a quiz question); the body never sets `published` or `is_announcement` to
+anything but `false`, and a create states `"published": false` explicitly, because Canvas
+publishes pages and discussions by default; and an existing object, or the parent of a nested
+path, reads back `published: false` at that moment. Any failed check is a logged refusal
+(`refused-not-draft`) and nothing is sent. Publishing remains an ordinary write with the
+prompt: the final chance to stop it, rather than a prompt at every building step.
 
 ### Edge seam
 
@@ -348,10 +361,12 @@ codex execpolicy check --rules codex/canvas-api-guard.rules -- \
   /usr/local/libexec/canvas_api_guard.py get courses
 codex execpolicy check --rules codex/canvas-api-guard.rules -- \
   /usr/local/libexec/canvas_api_guard.py put courses/1 -d '{}' --yes
+codex execpolicy check --rules codex/canvas-api-guard.rules -- \
+  /usr/local/libexec/canvas_api_guard.py draft post courses/1/quizzes -d '{}'
 ```
 
-Expected policy decisions are `allow` for the installed read and `prompt` for the installed
-write. A source-tree command such as `./canvas_api_guard.py get courses` should have no rule.
+Expected policy decisions are `allow` for the installed read and draft and `prompt` for the
+installed write. A source-tree command such as `./canvas_api_guard.py get courses` should have no rule.
 
 ## Pilot acceptance checks
 

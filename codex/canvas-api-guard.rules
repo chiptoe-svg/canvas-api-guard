@@ -14,6 +14,7 @@
 GUARD = "/usr/local/libexec/canvas_api_guard.py"
 OPERATIONS = "/usr/local/libexec/canvas_api_operations.py"
 READS = ["get"]
+DRAFTS = ["draft"]
 WRITES = ["post", "put", "patch", "delete"]
 DOWNLOADS = ["download-submission-file"]
 OPERATION_READS = ["student-attention"]
@@ -30,6 +31,20 @@ prefix_rule(
              "/usr/local/libexec/canvas_api_guard.py get courses/1/enrollments --all-pages --fields id"],
     not_match = ["/usr/local/libexec/canvas_api_guard.py put courses/1",
                  "./canvas_api_guard.py get courses"],
+)
+
+# A draft is a write the guard itself proves no student can see: a new or existing UNPUBLISHED
+# quiz, assignment, page or discussion, or something nested under one. The guard refuses it
+# otherwise (a published object, or a body that would publish), so the one prompt a person sees
+# while building something is the publish itself - the last chance to stop it.
+prefix_rule(
+    pattern = [GUARD, DRAFTS],
+    decision = "allow",
+    justification = "Canvas draft: the guard proves the object is unpublished before writing, and logs it",
+    match = ["/usr/local/libexec/canvas_api_guard.py draft post courses/1/quizzes -d {}",
+             "/usr/local/libexec/canvas_api_guard.py draft put courses/1/quizzes/5/questions/9 -d {}"],
+    not_match = ["/usr/local/libexec/canvas_api_guard.py put courses/1/quizzes/5 -d {} --yes",
+                 "./canvas_api_guard.py draft post courses/1/quizzes -d {}"],
 )
 
 prefix_rule(

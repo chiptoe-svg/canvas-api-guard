@@ -60,7 +60,7 @@ import argparse, datetime, getpass, hashlib, json, os, pwd, re, stat, subprocess
 import urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
-USER_AGENT = "canvas-api-guard/1.16.1"
+USER_AGENT = "canvas-api-guard/1.17.0"
 KEYCHAIN_SERVICE = "canvas-api-guard"
 SECURITY_BIN = "/usr/bin/security"
 SECRET_TOOL_PATHS = ("/usr/bin/secret-tool", "/usr/local/bin/secret-tool")
@@ -515,6 +515,53 @@ def refuse_unconfirmed_write(cfg, verb, path):
 
 PUBLISHABLE = re.compile(r"^/api/v1/courses/\d+/(quizzes|assignments)(/\d+)?(\?.*)?$")
 
+DRAFTABLE = re.compile(r"^/api/v1/courses/(\d+)/(quizzes|assignments|pages|discussion_topics)"
+                       r"(?:/([^/?]+))?(?:/[^?]*)?(?:\?.*)?$")
+LIVE_SWITCHES = ("published", "is_announcement")
+
+def prove_draft(cfg, method, path, body):
+    """The draft verb writes without a person's approval, so it may only touch what no student
+    can see: a new or existing UNPUBLISHED quiz, assignment, page or discussion, or anything
+    nested under one (questions, overrides). Three proofs, all before the write: the path is one
+    of those; the body never turns "published" or "is_announcement" on, and a create says
+    "published": false outright (Canvas publishes some kinds by default); and an existing object,
+    or the parent of a nested path, reads back published == false right now. Anything else is a
+    normal write - the person's approval is the one gate, and it comes at publish time."""
+    match = DRAFTABLE.match(normalise_path(path))
+    leaves = flatten_leaves(body) if isinstance(body, dict) else {}
+    switches = dict((name, value) for name, value in leaves.items()
+                    if name.split(".")[-1] in LIVE_SWITCHES)
+    reason = None
+    if not match:
+        reason = ("draft only writes under courses/N/quizzes, assignments, pages or "
+                  "discussion_topics; anything else is a normal write with approval")
+    elif any(value is not False for value in switches.values()):
+        reason = ("draft never turns %s on; publishing is a normal write with approval"
+                  % " or ".join(sorted(name for name, value in switches.items() if value is not False)))
+    elif not match.group(3) and "published" not in [n.split(".")[-1] for n in switches]:
+        reason = 'a draft create must say "published": false in the body'
+    elif match.group(3) and not cfg.dry_run:     # a dry run sends nothing, reads included
+        course, kind, item = match.groups()
+        parent = send_request(cfg, "GET", "/api/v1/courses/%s/%s/%s" % (course, kind, item))
+        parent_obj = parent["data"] if parent and isinstance(parent.get("data"), dict) else {}
+        if parent_obj.get("published") is not False:
+            reason = ("%s/%s is published (published %r): a change students can see needs "
+                      "approval - use %s with --dry-run, then --yes"
+                      % (kind, item, parent_obj.get("published"), method))
+    if reason is None:
+        return
+    log_event(cfg.log_path, {"event": "refusal", "verb": method.upper(), "kind": "write",
+                             "path": normalise_path(path), "confirmation": "refused-not-draft"})
+    raise GuardError(reason)
+
+def do_draft(cfg, method, path, body):
+    """draft <method> <path>: the write itself is the ordinary post/put/patch/delete, with the
+    confirmation recorded as "draft" instead of asked for, once prove_draft has shown that
+    nothing a student can see changes."""
+    prove_draft(cfg, method, path, body)
+    cfg.draft = True
+    VERBS[method](cfg, path, body)
+
 def refuse_premature_publish(cfg, verb, path, body, before=None):
     """A quiz or assignment must not go live in the call that creates it, and a quiz with no
     questions must not be published at all: students would see and take a 0-point quiz. Create
@@ -551,6 +598,9 @@ def confirm(cfg, lines):
     shown = sys.stderr if cfg.out == "json" else sys.stdout
     for line in lines:
         print(line, file=shown)
+    if cfg.draft:
+        print("confirmation: draft - unpublished content, no student can see it", file=shown)
+        return "draft"
     if cfg.yes:
         print("confirmation: --yes was passed explicitly", file=shown)
         return "yes-flag"
@@ -1096,7 +1146,7 @@ def make_config(args):
                               dry_run=args.dry_run, all_pages=args.all_pages,
                               fields=parse_fields(args.fields), yes=args.yes, confirmation=None,
                               created_id=getattr(args, "created_id", None),
-                              dry_run_request=None)
+                              dry_run_request=None, draft=False)
 
 def read_config():
     """Read the fixed config after checking that untrusted users cannot modify it."""
@@ -1167,6 +1217,11 @@ def build_parser():
             verb.add_argument("--created-id", metavar="FIELD",
                               help="dot-separated field of the POST response naming the created "
                                    "object's id, used to read it back (default: id)")
+    method = argparse.ArgumentParser(add_help=False)
+    method.add_argument("method", choices=sorted(set(VERBS) - {"get"}))
+    subs.add_parser("draft", parents=[method, common],
+                    help="write to an UNPUBLISHED quiz, assignment, page or discussion without "
+                         "asking: refused unless the guard can prove no student can see it")
     download = subs.add_parser("download-submission-file", help="download one submitted attachment for local review")
     download.add_argument("--course-id", required=True)
     download.add_argument("--file-id", required=True)
@@ -1193,6 +1248,9 @@ def main(argv=None):
         body = json.loads(args.data) if args.data else None
         cfg = make_config(args)
         canvas_url(cfg.host, args.path)              # fail before anything else happens
+        if args.verb == "draft":
+            do_draft(cfg, args.method, args.path, body)
+            return 0
         refuse_unconfirmed_write(cfg, args.verb, args.path)
         VERBS[args.verb](cfg, args.path, body)
         return 0
