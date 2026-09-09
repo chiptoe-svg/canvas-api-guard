@@ -310,6 +310,7 @@ historical behaviour, so an existing installation is unchanged by upgrading.
 |---|---|---|
 | `token_source` | `"keyring"` | `"gateway"` reads no token and attaches no `Authorization`; the proxy injects the credential at the TLS boundary. The request leaves this process bearer-free. |
 | `external_confirmation` | absent | A short approver label, e.g. `"nanoclaw"`. Enables `--confirmed-by RECEIPT` on writes; the write is logged as `confirmation: "external:<label>"` with the receipt beside it. |
+| `allow_yes_flag` | `true` | `false` refuses `--yes`, logged `refused-self-approval`. An installation with a real approver, or one whose callers are automated, sets this: self-approval then becomes impossible. |
 
 `token_source: "gateway"` narrows what this process holds rather than widening it: it never reads a
 token at all, which is the same property `follow_redirect()` already preserves by stripping
@@ -322,6 +323,12 @@ in the root-owned config, which the caller cannot write, and the receipt is supp
 invocation. A caller that can set only the flag gets a refusal, logged as
 `refused-external-not-configured`. A named approver outside the process, recorded with its receipt,
 is stronger evidence than "somebody was at a terminal".
+
+`allow_yes_flag: false` is what makes that guarantee hold. Without it the pair above is advisory:
+any caller that can pass `--confirmed-by` can pass `--yes` instead and approve itself. Setting the
+three together — `token_source: "gateway"`, an `external_confirmation` label, and
+`allow_yes_flag: false` — leaves a write with exactly two ways through: a human at a terminal, or a
+receipt from the named approver.
 
 ## Fail-closed write evidence
 
@@ -378,8 +385,13 @@ Events include:
 - `read`: one line per read, written after the response: verb, normalized path, status, and
   byte count or error type;
 - `request`: a write, recorded before it is sent: method, normalized path, URL, confirmation
-  mode, and the request body;
+  mode, and the request body, plus `token_source` and `approval_receipt` only where those
+  differ from a keychain-and-TTY installation;
 - `response`: that write's status, success, and byte count or error type;
+
+A `read`, `request` or `response` carries `token_source` only where the credential did NOT come
+from this host's keyring. On a keychain installation the value is a constant, so it is omitted and
+the record is exactly what it has always been; it appears only where it can vary.
 - `download`/`download-response`: one submission-file fetch attempt, recorded before and after -
   route, attempt number, and on failure whether it `will_retry` and the `next_route`; the
   metadata call that resolves each URL logs its own `read` line first;

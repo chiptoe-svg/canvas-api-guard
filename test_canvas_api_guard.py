@@ -2421,6 +2421,17 @@ class TestGatewayCredentialSource(NoSecretsMixin, GuardTestCase):
         self.assertEqual([e.get("token_source") for e in self.log_lines() if e["event"] == "read"],
                          ["gateway"])
 
+    def test_a_keychain_installation_logs_exactly_what_it_always_did(self):
+        """No new field reaches a keychain-and-TTY installation: its record is unchanged."""
+        self.pin_config(self.temp_config(HOST))
+        with mock.patch.object(guard, "read_token", lambda: "tok"), \
+                mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            self.run_argv(["get", "courses/1"])
+        for entry in self.log_lines():
+            self.assertNotIn("token_source", entry)
+            self.assertNotIn("approval_receipt", entry)
+
     def test_an_unknown_token_source_is_refused(self):
         self.pin_config(self.temp_config(HOST, token_source="environment"))
         with self.no_keychain(), self.no_network():
@@ -2462,6 +2473,42 @@ class TestExternalConfirmation(NoSecretsMixin, GuardTestCase):
         self.assertEqual(code, 2)
         self.assertEqual([e["confirmation"] for e in self.log_lines() if e["event"] == "refusal"],
                          ["refused-no-tty"])
+
+    def test_the_yes_flag_can_be_disabled_so_self_approval_is_impossible(self):
+        """The hole this closes: an automated caller can always pass --yes and approve itself."""
+        self.pin_config(self.temp_config(HOST, external_confirmation="nanoclaw",
+                                         allow_yes_flag=False))
+        with self.no_keychain(), self.no_network():
+            code, _ = self.run_argv(["put", "courses/1", "-d", "{}", "--yes"])
+        self.assertEqual(code, 2)
+        self.assertIn("--yes is disabled", self.last_stderr)
+        self.assertEqual([e["confirmation"] for e in self.log_lines() if e["event"] == "refusal"],
+                         ["refused-self-approval"])
+
+    def test_the_yes_flag_still_works_by_default(self):
+        self.pin_config(self.temp_config(HOST, token_source="gateway"))
+        with self.no_keychain(), mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            self.run_argv(["put", "courses/1", "-d", "{}", "--yes"])
+        request = [e for e in self.log_lines() if e["event"] == "request"][0]
+        self.assertEqual(request["confirmation"], "yes-flag")
+
+    def test_an_approver_receipt_still_confirms_when_the_yes_flag_is_disabled(self):
+        self.pin_config(self.temp_config(HOST, token_source="gateway",
+                                         external_confirmation="nanoclaw",
+                                         allow_yes_flag=False))
+        with self.no_keychain(), mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            self.run_argv(["put", "courses/1", "-d", "{}", "--confirmed-by", "appr-9"])
+        request = [e for e in self.log_lines() if e["event"] == "request"][0]
+        self.assertEqual(request["confirmation"], "external:nanoclaw")
+
+    def test_a_non_boolean_yes_flag_setting_is_refused(self):
+        self.pin_config(self.temp_config(HOST, allow_yes_flag="no"))
+        with self.no_keychain(), self.no_network():
+            code, _ = self.run_argv(["get", "courses"])
+        self.assertEqual(code, 2)
+        self.assertIn("allow_yes_flag must be true or false", self.last_stderr)
 
     def test_an_unusable_approver_label_is_refused(self):
         self.pin_config(self.temp_config(HOST, external_confirmation="not a label!"))
