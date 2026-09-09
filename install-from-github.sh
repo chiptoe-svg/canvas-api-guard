@@ -209,7 +209,7 @@ fi
 printf '\nInstalled version:\n'
 /usr/local/libexec/canvas_api_guard.py --version
 
-printf '\nDone. Now open Codex and ask it:\n'
+printf '\nDone. Quit and reopen the ChatGPT app, start a new conversation, and ask it:\n'
 printf '  In Canvas, what are my current classes?\n'
 EOF
 

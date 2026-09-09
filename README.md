@@ -82,7 +82,9 @@ review commands, and residual risks.
    root-owned file must change, and asks for the token only if none is stored. It also
    installs both Codex skills, the Codex execution rules, and the three Codex settings.
    Running the same line again is how you update; an up-to-date Mac is told so.
-3. Start a new Codex thread and ask: "In Canvas, what are my current classes?"
+3. Quit and reopen the ChatGPT app so Codex loads the new skills and settings, start a new
+   conversation, and ask: "In Canvas, what are my current classes?" Do the same after an
+   update that changed the rules or skills.
 
 Requirements: macOS with the Xcode Command Line Tools (macOS offers to install them the first
 time `git` runs) and `/usr/local` owned by root, which is the case on Apple silicon Macs.
