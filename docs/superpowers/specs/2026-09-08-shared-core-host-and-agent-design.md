@@ -1,0 +1,145 @@
+# Shared core for the Codex host and the NanoClaw agent
+
+Date: 2026-09-08. Status: proposal for the owner's review. Supersedes PR #4's staging plan and
+the reverted PR #2 (f61027e).
+
+## Goal
+
+One reviewed guard core serves two callers: a faculty member working interactively in Codex on
+a Mac (**host**), and a NanoClaw personal assistant that uses OpenAI as its model provider
+(**agent**). The vast majority of the code is shared. Only three things differ: where the
+credential lives, how a person approves a write, and how the software is installed.
+
+Two properties are non-negotiable in both environments:
+
+1. **The guard is the only credentialed path to Canvas.** Something the model cannot edit makes
+   every other path fail.
+2. **A person approves every write**, and the model cannot manufacture or replay that approval.
+
+## What the two environments already provide
+
+| | Host (Codex on a Mac) | Agent (NanoClaw, Apple Container) |
+|---|---|---|
+| Model's network | none inside the sandbox; escalation prompts a person | open egress from the container |
+| Credential | user Keychain, unreachable from the sandbox; keychain tools forbidden by rule | OneCLI gateway injects per client identity; the token never enters a container |
+| Per-command approval | Codex execution rules prompt on the guard's write verbs | none inside the container; a host-side Telegram approval exists for registered actions |
+| What the model can edit | the workspace only, everything else prompts | anything under `/workspace`, including its own mailbox |
+| Authoritative approval record | the person at the keyboard | `pending_approvals` in the host database, never mounted into a container |
+
+Consequence: on the host the guard file inside the sandbox is the chokepoint because Codex
+enforces it. In the agent's container nothing enforces anything, so the guard cannot live
+there. It runs on the NanoClaw host, outside every container, and OneCLI grants the Canvas
+credential to the guard's identity alone.
+
+## Architecture
+
+```
+HOST (Mac)                                AGENT (NanoClaw host)
+Codex sandbox                             container (model)            host processes
+  └─ canvas_api_guard.py ──Keychain──┐      └─ canvas (shell client)      guard service (python3, launchd)
+       TTY / --yes + execpolicy      │            │ local port/socket        ├─ imports canvas_api_guard
+                                     │            └──────────────────────►  ├─ OneCLI identity: canvas-guard
+                                  Canvas ◄──────────── OneCLI gateway ◄──── ├─ confirm(): NanoClaw approval
+                                                        (injects for the       │   over ncl.sock → Telegram card
+                                                         guard identity only)  └─ audit log, evidence, Level 2 ops
+```
+
+The core is the same file in both places. The host runs it as today. The agent edge imports it
+and replaces exactly the names listed under *The seam*.
+
+## The seam in `canvas_api_guard.py` (this repository)
+
+The edge replaces module-level names; the core never branches on where it runs. The suite has
+patched these names by attribute for weeks, which proves the seam grips. Six names:
+
+| Name | Host meaning | Agent edge |
+|---|---|---|
+| `read_token()` | Keychain / Secret Service | returns `None`: the request leaves bearer-free and OneCLI injects |
+| `build_opener()` | `ProxyHandler({})` + `RefuseRedirects` (no proxy, system CAs) | OneCLI proxy address and CA bundle from the service's root-owned config |
+| `confirm(cfg, lines)` | TTY prompt or `--yes` | a NanoClaw approval request; blocks for the verdict |
+| `check_provenance()` | installed path root-owned, ancestors clean | the service's own installed path and config |
+| `CONFIG_PATH`, `DEFAULT_DIR` | `/usr/local/etc/...`, `~/.canvas-api-guard` | the service's paths |
+
+Two small code changes make this real, and neither changes host behaviour:
+
+- `send_request` attaches `Authorization` only when `read_token()` returns a value. Today it
+  always returns one or raises, so the host path is unchanged.
+- The API path builds its opener through a named `build_opener()` that uses `ProxyHandler({})`,
+  the same choice the attachment path already makes. Today the API path uses urllib's default
+  opener, which honours `https_proxy` from the caller's environment. Closing that is the one
+  behaviour change, and it is the direction IT expects: the pinned host is reached directly or
+  not at all.
+
+Not in the file: no policy class, no `token_source` or approver keys in the config, no
+receipt argument, no new fields on any audit line. The host's audit format, prompts, exit codes
+and help are byte-identical before and after (see *Acceptance*).
+
+A test class, `TestEdgeSeam`, pins the six names and their signatures and proves each one is
+looked up by module attribute at call time (replacing `guard.read_token` changes what
+`send_request` sends). The file header gains a short "Edge seam" paragraph naming them.
+
+## The agent edge (the agent's repository)
+
+Three parts, all outside the model's container.
+
+**The guard service.** A Python 3 process on the NanoClaw host, its own launchd user agent
+like NanoClaw and OneCLI. It vendors `canvas_api_guard.py` at a pinned release commit and
+refuses to start unless the file's SHA-256 matches the pin. It replaces the six seam names,
+then serves the guard's verbs (`get`, `put`, `post`, `patch`, `delete`, `download-submission-file`)
+and the Level 2 operations over a local interface reachable from containers, the same shape
+OneCLI uses (host-gateway address and port). Reads run as they do on the host: audited, no
+approval. Writes run `confirm()`, which sends a NanoClaw approval request naming the verb,
+path and a body summary, waits for the verdict within the approval's TTL, and refuses on
+reject or expiry. The verdict never leaves the host; the audit line records
+`confirmation: "telegram:<approval row id>"`, a new value of an existing field.
+
+**Identity and credential.** The service holds one OneCLI agent identity, `canvas-guard`,
+granted the Canvas secret with selective scope. No agent-group identity is granted Canvas. The
+service's OneCLI token is host-side only, readable by the service user, never mounted or
+exported into any container. A direct curl from the model through the gateway therefore gets
+no injection. Each container that may use Canvas presents a per-group client token issued at
+spawn; the service maps it to the approver and refuses unknown clients.
+
+**The client and the skill.** The agent image has no Python, so the client is a shell script,
+`canvas`, that forwards its arguments to the service with curl and prints the response; the
+verbs and flags match the guard's so the existing skills apply. The container's Canvas skill
+replaces the "curl the real URL through the gateway" instruction for this host. Review
+downloads land in a host directory the service owns and mounts read-only into the container.
+
+**NanoClaw change.** `requestApproval` becomes reachable from a host process over the existing
+`ncl.sock` admin socket. Small work by the agent's own account.
+
+## Acceptance
+
+1. **Replay probe, byte-identical.** For a stock `{"host","profile"}` install: audit records,
+   stdout, stderr, exit codes and `--help` are identical before and after the seam change,
+   with `urlopen` and `read_token` mocked. This probe is run on every PR that touches the guard
+   and its result is quoted in the PR.
+2. **Existing tests pass unchanged.** Needing to edit a test is a signal something moved.
+3. **Seam test.** `TestEdgeSeam` as above.
+4. **Edge conformance.** In the agent repository, the service's tests drive the same guard
+   assertions the host suite uses for pinning, redirects, refusal-before-credential and
+   evidence read-back, against a fake OneCLI and a fake approval endpoint, so a behavioural
+   difference between host and agent must be one of the six names or the build fails.
+5. **Cutover proof.** From a container: `canvas get courses` succeeds; a direct
+   `curl https://<canvas>/api/v1/users/self` through the gateway returns 401; a `canvas put`
+   produces a Telegram card and nothing reaches Canvas until it is approved.
+
+## Staging and ownership
+
+| Stage | Where | Who | Gate |
+|---|---|---|---|
+| A. Seam in the guard | this repository, one PR | the agent session proposes; this session reviews | acceptance 1–3, then the owner merges |
+| B. Service, client, skill, NanoClaw socket endpoint | the agent's repository | the agent session; this session reviews the guard-facing parts | acceptance 4 |
+| C. Cutover: `canvas-guard` identity granted, group grants removed, skill swapped | NanoClaw host | the agent session with the owner present | acceptance 5 |
+
+Nothing merges without the owner's word. The agent works in its own clone. The faculty release
+moves only when Stage A has been reviewed and the replay probe is byte-identical.
+
+## Out of scope, deliberately
+
+- Codex execution rules for the agent: NanoClaw has no command-line matcher, and one inside the
+  container would be editable by the model. The service is the gate instead.
+- A receipt argument on the guard. The model can forge anything it can read, so approval is
+  requested by the service and never handled by the model.
+- File-splitting the guard into core and edges. The seam is six names; a split earns nothing.
