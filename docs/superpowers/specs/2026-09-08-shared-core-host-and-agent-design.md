@@ -36,8 +36,8 @@ credential to the guard's identity alone.
 ```
 HOST (Mac)                                AGENT (NanoClaw host)
 Codex sandbox                             container (model)            host processes
-  └─ canvas_api_guard.py ──Keychain──┐      └─ canvas (shell client)      guard service (python3, launchd)
-       TTY / --yes + execpolicy      │            │ local port/socket        ├─ imports canvas_api_guard
+  └─ canvas_api_guard.py ──Keychain──┐      └─ MCP client (NanoClaw's)     guard MCP server (python3, launchd)
+       TTY / --yes + execpolicy      │            │ streamable HTTP + bearer ├─ imports canvas_api_guard
                                      │            └──────────────────────►  ├─ OneCLI identity: canvas-guard
                                   Canvas ◄──────────── OneCLI gateway ◄──── ├─ confirm(): NanoClaw approval
                                                         (injects for the       │   over ncl.sock → Telegram card
@@ -82,16 +82,26 @@ looked up by module attribute at call time (replacing `guard.read_token` changes
 
 Three parts, all outside the model's container.
 
-**The guard service.** A Python 3 process on the NanoClaw host, its own launchd user agent
-like NanoClaw and OneCLI. It vendors `canvas_api_guard.py` at a pinned release commit and
-refuses to start unless the file's SHA-256 matches the pin. It replaces the six seam names,
-then serves the guard's verbs (`get`, `put`, `post`, `patch`, `delete`, `download-submission-file`)
-and the Level 2 operations over a local interface reachable from containers, the same shape
-OneCLI uses (host-gateway address and port). Reads run as they do on the host: audited, no
-approval. Writes run `confirm()`, which sends a NanoClaw approval request naming the verb,
-path and a body summary, waits for the verdict within the approval's TTL, and refuses on
-reject or expiry. The verdict never leaves the host; the audit line records
-`confirmation: "telegram:<approval row id>"`, a new value of an existing field.
+**The guard service is an MCP server.** A Python 3 process on the NanoClaw host, its own
+launchd user agent like NanoClaw and OneCLI, speaking MCP over streamable HTTP on a
+host-gateway address. This is the only MCP shape in use on that install (seven servers, all
+`url`-configured, none spawned inside a container), so NanoClaw's client, per-group bearer
+headers and URL discovery are inherited rather than written; the container needs nothing
+added to its image. The server vendors `canvas_api_guard.py` at a pinned release commit and
+refuses to start unless the file's SHA-256 matches the pin, then replaces the six seam names.
+
+Its tools are the allowlist made typed. Reads: `canvas_get(path, fields, all_pages)` for any
+documented endpoint, plus `student_attention`, `prepare_submission_review` and
+`download_assignment_submissions`. Writes: exactly the four named tools in the table below,
+each with a JSON Schema that admits only the listed arguments. There is no generic write
+tool for the agent, so an off-list write is unrepresentable rather than merely refused.
+Reads run as they do on the host: audited, no approval. A write tool runs `confirm()`,
+which sends a NanoClaw approval request naming the tool, its arguments and the dry-run plan,
+waits for the verdict within the approval's TTL, and refuses on reject or expiry. The
+verdict never leaves the host; the audit line records `confirmation: "telegram:<approval row
+id>"`, a new value of an existing field. Approval cannot live anywhere else: NanoClaw has no
+per-tool approval hook in the provider path, and a hook inside the container would be
+editable by the model.
 
 **What the agent may write.** The owner's requirement: reads, plus limited writes around
 course administration. The service therefore carries an allowlist of write shapes, checked
@@ -112,18 +122,27 @@ with the owner's review. Each allowed write costs exactly one Telegram approval,
 the dry-run plan; a Level 2 operation that makes several individually audited writes is
 approved once, as its plan, not once per write.
 
-**Identity and credential.** The service holds one OneCLI agent identity, `canvas-guard`,
+**Identity and credential.** The server holds one OneCLI agent identity, `canvas-guard`,
 granted the Canvas secret with selective scope. No agent-group identity is granted Canvas. The
 service's OneCLI token is host-side only, readable by the service user, never mounted or
 exported into any container. A direct curl from the model through the gateway therefore gets
-no injection. Each container that may use Canvas presents a per-group client token issued at
-spawn; the service maps it to the approver and refuses unknown clients.
+no injection. Each group that may use Canvas presents its per-group bearer on every MCP call; the server
+maps it to the group's scope and approver and refuses unknown bearers before doing anything.
 
-**The client and the skill.** The agent image has no Python, so the client is a shell script,
-`canvas`, that forwards its arguments to the service with curl and prints the response; the
-verbs and flags match the guard's so the existing skills apply. The container's Canvas skill
-replaces the "curl the real URL through the gateway" instruction for this host. Review
-downloads land in a host directory the service owns and mounts read-only into the container.
+**Client, discovery and the skill.** No client is written: the server's URL and its
+per-group bearer go into the group's MCP config in NanoClaw's database, which is materialized
+into the container at spawn and read once at startup. A short skill says what the tools are
+for; the tool schemas carry the argument contract. The container's Canvas skill drops the
+"curl the real URL through the gateway" instruction for this host. Review downloads land in a
+host directory the service owns, mounted as a directory (not a nested file mount, which
+Apple Container drops) read-only into the container.
+
+**Known limits of the runtime, recorded so nothing depends on them.** `container.json` is
+not immutable inside the container on Apple Container; the pin holds because the host
+re-materializes it from the database at every spawn and the runner reads it once. Per-group
+bearers are static today; minting at spawn is new NanoClaw work and a later hardening. A
+server that is down when a session starts leaves that group without Canvas tools until the
+next spawn; that is fail-closed and is the operational cost of the MCP form.
 
 **More than one agent group.** The service never trusts the network. Each container presents a
 per-group client token minted by NanoClaw at spawn and present only in that container; unknown
@@ -148,9 +167,10 @@ port.
    assertions the host suite uses for pinning, redirects, refusal-before-credential and
    evidence read-back, against a fake OneCLI and a fake approval endpoint, so a behavioural
    difference between host and agent must be one of the six names or the build fails.
-5. **Cutover proof.** From a container: `canvas get courses` succeeds; a direct
-   `curl https://<canvas>/api/v1/users/self` through the gateway returns 401; a `canvas put`
-   produces a Telegram card and nothing reaches Canvas until it is approved.
+5. **Cutover proof.** From a container: the `canvas_get` tool lists courses; a direct
+   `curl https://<canvas>/api/v1/users/self` through the gateway returns 401; an
+   `excuse_absence` tool call produces a Telegram card and nothing reaches Canvas until it is
+   approved; a `put` to any other path is not a tool the model has.
 
 ## Staging and ownership
 
@@ -158,7 +178,7 @@ port.
 |---|---|---|---|
 | A. Seam in the guard | this repository, one PR | the agent session proposes; this session reviews | acceptance 1–3, then the owner merges |
 | 0. Revoke the Canvas grant from every agent-group identity in OneCLI | NanoClaw host | the agent session, now | a direct curl through the gateway returns 401 |
-| B1. Read-only service, client, skill, launchd, `canvas-guard` identity | the agent's repository | the agent session; this session reviews the guard-facing parts | acceptance 4 for reads |
+| B1. Read-only MCP server, launchd, group config, skill, `canvas-guard` identity | the agent's repository | the agent session; this session reviews the guard-facing parts | acceptance 4 for reads |
 | B2. Writes: NanoClaw socket endpoint, allowlist, once-per-operation approval, download directories; `regrade-quiz-question` in this repository | agent repository and this one | the agent session proposes; this session reviews | acceptance 4 for writes |
 | C. Cutover: `canvas-guard` identity granted, group grants removed, skill swapped | NanoClaw host | the agent session with the owner present | acceptance 5 |
 
