@@ -446,8 +446,10 @@ def send_request(cfg, method, path, body=None):
         log_event(cfg.log_path, {
             "event": "request", "verb": method, "path": npath, "url": url, "kind": "write",
             "dry_run": cfg.dry_run, "confirmation": cfg.confirmation,
-            "token_source": cfg.token_source, "approval_receipt": cfg.confirmed_by,
-            "request_body": body})
+            "token_source": cfg.token_source, "request_body": body,
+            # Only when an external approver actually confirmed: a null receipt on every
+            # keychain-and-TTY installation would be noise in the record it never uses.
+            **({"approval_receipt": cfg.confirmed_by} if cfg.confirmed_by else {})})
     headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
     payload = None
     if body is not None:

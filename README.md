@@ -382,11 +382,16 @@ audit directories and files are refused unless they are owned by the current use
 
 Events include:
 
-- `read`: one line per read, written after the response: verb, normalized path, status, and
-  byte count or error type;
+- `read`: one line per read, written after the response: verb, normalized path, status, the
+  credential source, and byte count or error type;
 - `request`: a write, recorded before it is sent: method, normalized path, URL, confirmation
-  mode, and the request body;
-- `response`: that write's status, success, and byte count or error type;
+  mode, the credential source, the request body, and — only when an external approver confirmed
+  it — the `approval_receipt`;
+- `response`: that write's status, success, credential source, and byte count or error type;
+
+Every `read`, `request` and `response` carries `token_source`, so the record says whether the
+credential came from this host's keyring or was injected by a proxy. It is present on every
+installation, including one that never sets the key.
 - `download`/`download-response`: one submission-file fetch attempt, recorded before and after -
   route, attempt number, and on failure whether it `will_retry` and the `next_route`; the
   metadata call that resolves each URL logs its own `read` line first;
