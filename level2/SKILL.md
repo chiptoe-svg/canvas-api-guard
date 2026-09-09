@@ -9,7 +9,7 @@ description: Use named Canvas Specialized Functions for rubric creation and rubr
 token and opens no network connection. Every Canvas request it makes goes through the
 root-owned API Only guard, with the same host pinning, approval, and audit record.
 
-There are six operations, and each one exists because it computes something across several
+There are seven operations, and each one exists because it computes something across several
 Canvas calls or validates structured input. **Anything else - any documented Canvas endpoint,
 any one-off read, any write these do not cover - belongs to the `canvas-api-guard` skill, which
 can do all of it.** A missing named operation is never a reason to decline a Canvas task.
@@ -68,6 +68,7 @@ which is enough for OCR and reading handwriting. Otherwise render once per page 
 /usr/local/libexec/canvas_api_operations.py create-rubric --course-id 123 --assignment-id 20 --definition rubric.json --dry-run
 /usr/local/libexec/canvas_api_operations.py grade-with-rubric --course-id 123 --assignment-id 20 --definition grade.json --dry-run
 /usr/local/libexec/canvas_api_operations.py bulk-grade-with-rubric --course-id 123 --assignment-id 20 --definition grades.json --dry-run
+/usr/local/libexec/canvas_api_operations.py regrade-quiz-question --course-id 123 --definition regrade.json --dry-run
 ```
 
 - `create-rubric` turns a flat criteria list into Canvas’s indexed rubric shape and reads every
@@ -84,6 +85,16 @@ which is enough for OCR and reading handwriting. Otherwise render once per page 
   "use for grading" setting is not required.
 - `bulk-grade-with-rubric` does that for up to 50 students, refusing duplicates, as
   individually audited and read-back writes - never an opaque bulk request.
+- `regrade-quiz-question` rewrites one classic multiple-choice or true/false question's answer
+  key and rescores every completed attempt of that question. It refuses anything that is not a
+  graded classic quiz (a New Quizzes quiz is not in this API at all) and any other question
+  type. The definition is `{"quiz_id": N, "question_id": N, "correct_answer_ids": [N, ...]}`;
+  IDs only, because answer text is instructor HTML this write has to round-trip untouched.
+  **Every answer not listed becomes worth 0**, so a student who picked the previously correct
+  answer loses those points - the dry run shows each attempt's old points, new points and
+  delta, negative ones included, and the instructor approves that table. Up to 100 attempts,
+  refused whole above that; the answer key is written and read back first, then each attempt
+  is its own audited write, read back at its own attempt number.
 
 Put the requested content in one reviewed local JSON definition file; it is data, never code.
 Show the instructor the exact dry-run plan. Only after they approve it, rerun that same command
