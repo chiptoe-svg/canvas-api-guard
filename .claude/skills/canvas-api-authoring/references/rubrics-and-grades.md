@@ -97,6 +97,21 @@ but only ever shown as a response example, never as a request-parameter table en
 - `rubric[skip_updating_points_possible]` exists only in the update endpoint's parameter table, not
   the create one — a newly created rubric always has its points recalculated from `criteria` (docs:
   https://canvas.instructure.com/doc/api/rubrics.html).
+- A rubric criterion can be linked to a learning outcome inside Canvas — this is where a rubric
+  connects to accreditation reporting — but no field for that link is documented anywhere fetched
+  for this reference. The `RubricCriterion` object above (see Parameters) lists exactly six fields,
+  and none of them is an outcome id. `learning_outcome_id` and every other spelling tried
+  (`outcome_id` as a criterion field, `mastery`, `mastery_points`, `alignment`, `aligned`,
+  `ignore_for_scoring`, `outcome_group`) were searched for on `rubrics.html`, `outcomes.html`,
+  `outcome_results.html`, and the master `all_resources.html` field index; none names a
+  criterion-to-outcome link on any of them. Outcome results are their own separately documented
+  report, keyed by `outcome_id`, not a field carried on a rubric criterion (docs:
+  https://canvas.instructure.com/doc/api/outcome_results.html). Do not guess a field name for this
+  link; read the `criteria` of a real outcome-linked rubric back from Canvas and inspect the keys it
+  actually returns, rather than constructing one blind (docs:
+  https://canvas.instructure.com/doc/api/rubrics.html; docs:
+  https://canvas.instructure.com/doc/api/outcomes.html; docs:
+  https://canvas.instructure.com/doc/api/all_resources.html).
 
 **Source.** https://canvas.instructure.com/doc/api/rubrics.html, fetched 2026-09-10
 

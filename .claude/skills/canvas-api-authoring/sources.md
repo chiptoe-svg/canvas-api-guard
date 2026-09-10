@@ -705,6 +705,17 @@ params:
 - final
 - graded_anonymously
 
+### https://canvas.instructure.com/doc/api/outcomes.html
+fetched: 2026-09-10
+
+### https://canvas.instructure.com/doc/api/outcome_results.html
+fetched: 2026-09-10
+params:
+- outcome_id
+
+### https://canvas.instructure.com/doc/api/all_resources.html
+fetched: 2026-09-10
+
 ### https://canvas.instructure.com/doc/api/submissions.html
 fetched: 2026-09-10
 endpoints:
