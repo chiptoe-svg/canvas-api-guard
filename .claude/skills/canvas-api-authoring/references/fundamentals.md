@@ -26,9 +26,10 @@ not embedded in the course response by default.
 - `role[]` — filters by a custom course-level role
 
 **Traps.**
-- `state[]` has a documented default: "default is 'active' and 'invited' enrollments" — a plain
-  `GET .../enrollments` with no `state[]` silently hides completed, inactive, deleted, and
-  rejected enrollments (docs: https://canvas.instructure.com/doc/api/enrollments.html).
+- `state[]` has a documented default: if omitted, `active` and `invited` enrollments are
+  returned — a plain `GET .../enrollments` with no `state[]` silently hides completed,
+  inactive, deleted, and rejected enrollments (docs:
+  https://canvas.instructure.com/doc/api/enrollments.html).
 - Enrollments are three separate endpoints (by course, by section, by user), not one endpoint
   with a scope parameter — "who is in this course" and "what is this user enrolled in" are
   different calls (docs: https://canvas.instructure.com/doc/api/enrollments.html).
@@ -81,25 +82,36 @@ option.
 | Verb | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/v1/courses` | List courses, with `include[]` |
+| GET | `/api/v1/courses/:id` | Get a single course, with a different `include[]` |
 | GET | `/api/v1/courses/:course_id/sections` | List course sections, with `include[]` |
 
 **Parameters.**
-- `include[]` on courses: `needs_grading_count`, `syllabus_body`, `syllabus_versions`,
-  `public_description`, `total_scores`, `current_grading_period_scores`, `grading_periods`,
-  `term`, `account`, `course_progress`, `sections`, `storage_quota_used_mb`, `total_students`,
-  `passback_status`, `favorites`, `teachers`, `observed_users`, `course_image`, `banner_image`,
-  `concluded`, `post_manually`, `all_courses`, `permissions`, `lti_context_id`
-- `include[]` on sections: `students`, `avatar_url`, `enrollments`, `total_students`,
-  `passback_status`, `permissions`
+- `include[]` on `GET /api/v1/courses` (list): `needs_grading_count`, `syllabus_body`,
+  `syllabus_versions`, `public_description`, `total_scores`, `current_grading_period_scores`,
+  `grading_periods`, `term`, `account`, `course_progress`, `sections`, `storage_quota_used_mb`,
+  `total_students`, `passback_status`, `favorites`, `teachers`, `observed_users`,
+  `course_image`, `banner_image`, `concluded`, `post_manually`
+- `include[]` on `GET /api/v1/courses/:id` (single course): `all_courses`, `permissions`,
+  `observed_users`, `course_image`, `banner_image`, `concluded`, `lti_context_id`,
+  `post_manually`, `syllabus_versions`
+- `include[]` on `GET /api/v1/courses/:course_id/sections`: `students`, `avatar_url`,
+  `enrollments`, `total_students`, `passback_status`, `permissions`
 
 **Traps.**
-- `total_students` and `passback_status` are named identically in both `include[]`
-  enumerations, but they are two separate, independently-documented lists — passing one on the
-  endpoint that does not declare it is not guaranteed to do anything (docs:
+- The list endpoint and the single-course endpoint return the same object type but declare two
+  different `include[]` menus. `all_courses`, `permissions`, and `lti_context_id` are documented
+  only on `GET /api/v1/courses/:id`, not on the list endpoint; values like
+  `needs_grading_count`, `total_scores`, `sections`, and `teachers` are documented only on the
+  list endpoint, not on the single-course one. Assuming one endpoint's `include[]` menu works on
+  the other is the exact per-endpoint-vocabulary mistake this section warns about (docs:
+  https://canvas.instructure.com/doc/api/courses.html).
+- `total_students` and `passback_status` are named identically in the list-courses and
+  sections `include[]` enumerations, but they are two separate, independently-documented lists —
+  passing one on the endpoint that does not declare it is not guaranteed to do anything (docs:
   https://canvas.instructure.com/doc/api/courses.html; docs:
   https://canvas.instructure.com/doc/api/sections.html).
 - `include[]` values are per-endpoint, not a global vocabulary: `syllabus_body` exists only on
-  courses, `students` only on sections, in this pair of endpoints
+  the courses list, `students` only on sections, in this set of endpoints
   (docs: https://canvas.instructure.com/doc/api/courses.html; docs:
   https://canvas.instructure.com/doc/api/sections.html).
 - Neither page states a cost for any individual `include[]` value, but `total_students` is a
