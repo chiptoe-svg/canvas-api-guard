@@ -318,6 +318,37 @@ class Missing(unittest.TestCase):
                 "`/api/v1/courses/:course_id/quizzes/:id`\nquiz[title] quiz[published]")
         self.assertEqual(check.missing(self.record, page), [])
 
+    def test_a_parameter_is_not_matched_inside_a_longer_name(self):
+        """A short unbracketed parameter like per_page is a substring of per_page_max, and
+        `id` is a substring of `identifier`. Without a boundary check a removed parameter
+        reads as present forever - the same false negative `_appears` prevents for paths."""
+        record = check.parse_sources(
+            "## references/x.md\n\n### https://example.invalid/a.html\nfetched: 2026-09-10\n"
+            "params:\n- per_page\n- id\n")[0]
+        self.assertEqual(check.missing(record, "per_page_max is documented, the identifier went"),
+                         [("param", "per_page"), ("param", "id")])
+
+    def test_a_claim_is_not_matched_inside_a_longer_word_on_its_left(self):
+        """`_appears` originally checked only the trailing boundary, so `page` matched inside
+        `per_page` and the enum value `available` matched inside `unavailable`. Short enum
+        values and bare field names are recorded as claims, so both edges need checking."""
+        record = check.parse_sources(
+            "## references/x.md\n\n### https://example.invalid/a.html\nfetched: 2026-09-10\n"
+            "params:\n- page\n- available\n")[0]
+        self.assertEqual(
+            check.missing(record, "per_page is documented and the course is unavailable"),
+            [("param", "page"), ("param", "available")])
+
+    def test_a_path_still_matches_inside_a_full_url(self):
+        """A path claim begins with `/`, which is already its own left boundary. Checking the
+        left edge unconditionally would make every path inside a rendered absolute URL read as
+        missing, turning a silent false negative into a noisy false positive."""
+        record = check.parse_sources(
+            "## references/x.md\n\n### https://example.invalid/a.html\nfetched: 2026-09-10\n"
+            "endpoints:\n- GET /api/v1/courses\n")[0]
+        self.assertEqual(
+            check.missing(record, "see https://canvas.example.com/api/v1/courses for more"), [])
+
 
 class Report(unittest.TestCase):
     def test_a_clean_run_says_so_and_exits_zero(self):
@@ -351,6 +382,32 @@ class Report(unittest.TestCase):
         self.assertIn("connection refused", text)
 
 
+class Entities(unittest.TestCase):
+    """Canvas documentation pages are fetched as raw HTML, so a claim containing a quote,
+    an ampersand or an angle bracket does not appear literally in the bytes. Matching
+    without decoding reports such a claim missing while the page plainly shows it, and the
+    only way an author can get a green run is to record a weaker claim than the truth."""
+
+    def test_a_quoted_claim_matches_through_html_entities(self):
+        record = check.parse_sources(
+            "## references/x.md\n\n### https://example.invalid/a.html\nfetched: 2026-09-10\n"
+            'params:\n- rel="next"\n')[0]
+        page = "<p>the header carries rel=&quot;next&quot; when more pages remain</p>"
+        text, code = check.report([record], lambda url: page)
+        self.assertEqual(code, 0)
+        self.assertIn("nothing missing", text)
+
+    def test_a_genuinely_absent_quoted_claim_is_still_reported(self):
+        """Decoding must not turn the check into one that always passes."""
+        record = check.parse_sources(
+            "## references/x.md\n\n### https://example.invalid/a.html\nfetched: 2026-09-10\n"
+            'params:\n- rel="last"\n')[0]
+        page = "<p>the header carries rel=&quot;next&quot; when more pages remain</p>"
+        text, code = check.report([record], lambda url: page)
+        self.assertEqual(code, 1)
+        self.assertIn('MISSING param     rel="last"', text)
+
+
 if __name__ == "__main__":
     unittest.main()
 ```
@@ -372,10 +429,13 @@ Create `tools/canvas-docs-check.py`, executable:
 Build-side only. No Canvas token, no Canvas instance, no student data: this reads the public
 Canvas documentation host and nothing else. It is never installed, and it writes nothing.
 
-A miss means one of two things and this tool cannot tell them apart: Canvas moved, or the
-reference was wrong when it was written. Both need a person.
+Pages are fetched as raw HTML and are decoded before matching, so a claim may be recorded
+exactly as the documentation renders it. A miss means one of two things and this tool cannot
+tell them apart: Canvas moved, or the reference was wrong when it was written. Both need
+a person.
 """
 import argparse
+import html
 import re
 import sys
 import urllib.request
@@ -434,21 +494,37 @@ def _path_of(endpoint):
     return match.group(2) if match else endpoint
 
 
-def _appears(path, page):
-    """True if path occurs in page as a whole path, not as the prefix of a longer one.
+def _joins(char):
+    """True if char would make an adjacent claim part of a longer name or path."""
+    return char == "/" or char.isalnum() or char == "_" or char == "-"
 
-    Canvas paths nest: /courses/:course_id/quizzes is a substring of
-    /courses/:course_id/quizzes/:id. A plain substring test would therefore keep
-    reporting the collection endpoint as present long after it was removed, which is
-    the one drift this tool exists to catch.
+
+def _appears(claim, page):
+    """True if claim occurs in page whole, not as part of a longer name.
+
+    Both kinds of claim need this. Canvas paths nest, so /courses/:course_id/quizzes is a
+    substring of /courses/:course_id/quizzes/:id. Short names nest too: page sits inside
+    per_page, id inside grid, and the enum value available inside unavailable. A plain
+    substring test would keep reporting any of them as present long after it was removed,
+    which is the one drift this tool exists to catch.
+
+    Each edge is checked only when the claim's own character on that edge is a word
+    character. A path begins with `/`, which is already its own left boundary, so checking
+    its left edge would make it read as missing inside a rendered absolute URL. A bracketed
+    parameter ends with `]`, which is likewise its own right boundary.
     """
+    if not claim:
+        return True
+    check_left = claim[0].isalnum() or claim[0] == "_"
+    check_right = claim[-1].isalnum() or claim[-1] == "_"
     start = 0
     while True:
-        found = page.find(path, start)
+        found = page.find(claim, start)
         if found < 0:
             return False
-        after = page[found + len(path):found + len(path) + 1]
-        if not (after == "/" or after.isalnum() or after in ("_", "-")):
+        left = page[found - 1:found] if found else ""
+        right = page[found + len(claim):found + len(claim) + 1]
+        if not (check_left and _joins(left)) and not (check_right and _joins(right)):
             return True
         start = found + 1
 
@@ -464,7 +540,7 @@ def missing(record, page):
         if not _appears(_path_of(endpoint), page):
             gone.append(("endpoint", endpoint))
     for param in record["params"]:
-        if param not in page:
+        if not _appears(param, page):
             gone.append(("param", param))
     return gone
 
@@ -483,7 +559,7 @@ def report(records, fetch):
             lines.append("    ERROR  %s" % error)
             bad += 1
             continue
-        gone = missing(record, page)
+        gone = missing(record, html.unescape(page))
         if not gone:
             continue
         if record["file"] != shown:
@@ -528,7 +604,7 @@ if __name__ == "__main__":
 
 Run: `chmod +x tools/canvas-docs-check.py && python3 -m unittest discover -s tools -p 'test_canvas_docs_check.py' -v`
 
-Expected: PASS, 10 tests, OK.
+Expected: PASS, 15 tests, OK.
 
 - [ ] **Step 4b: Confirm by inspection that the tool writes nothing**
 
@@ -651,8 +727,8 @@ Expected: exit 0 and `nothing missing`. A miss here means the reference states s
 Run: `grep -rn '/usr/local/libexec/' .claude/skills/canvas-api-authoring/ ; echo "exit $?"`
 Expected: no matches, `exit 1`.
 
-Run: `grep -n 'canvas_api_guard\|canvas_api_operations\|--all-pages\|--fields\|run-plan\|--dry-run' .claude/skills/canvas-api-authoring/references/<REF> ; echo "exit $?"`
-Expected: no matches, `exit 1`. The six Canvas references name no local verb or flag at all.
+Run: `grep -n 'canvas_api_guard\|canvas_api_operations\|--all-pages\|--fields\|run-plan\|--dry-run' .claude/skills/canvas-api-authoring/references/<REF> | grep -v 'repo:' ; echo "exit $?"`
+Expected: no output, `exit 1`. The six Canvas references name no local verb or flag outside a line carrying a `repo:` evidence citation, since a repo file path may legitimately contain one of these strings.
 
 Run: `grep -c 'fetched 2026-09-10' .claude/skills/canvas-api-authoring/references/<REF>`
 Expected: one per section, matching the section count.
@@ -855,12 +931,12 @@ Expected: seven `ok` lines, no `GONE`.
 
 ```bash
 grep -rn '/usr/local/libexec/' .claude/skills/canvas-api-authoring/ ; echo "libexec exit $?"
-grep -rln 'canvas_api_guard\|canvas_api_operations\|--all-pages\|--fields\|--dry-run' \
-  .claude/skills/canvas-api-authoring/references/ | grep -v passthrough-or-function
+grep -rn 'canvas_api_guard\|canvas_api_operations\|--all-pages\|--fields\|--dry-run' \
+  .claude/skills/canvas-api-authoring/references/ | grep -v passthrough-or-function | grep -v 'repo:'
 echo "leak exit $?"
 ```
 
-Expected: `libexec exit 1` with no matches, and `leak exit 1` with no filenames listed.
+Expected: `libexec exit 1` with no matches, and `leak exit 1` with no output.
 
 - [ ] **Step 4: Confirm every trap carries evidence**
 

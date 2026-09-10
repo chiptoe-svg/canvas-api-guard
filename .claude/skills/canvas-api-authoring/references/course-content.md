@@ -413,7 +413,14 @@ module-level pair of gates layered on top of any item-level requirements.
   `module_item[completion_requirement][min_score]` parameter is documented "Required for
   completion_requirement type 'min_score'." `min_score` is clearly meant to be settable, but it
   does not appear in the field's own Allowed-values enumeration (docs:
-  https://canvas.instructure.com/doc/api/modules.html).
+  https://canvas.instructure.com/doc/api/modules.html). The same gap holds for `min_percentage`:
+  the `CompletionRequirement` response object's own schema comment lists the `type` field as "one
+  of 'must_view', 'must_submit', 'must_contribute', 'min_score', 'min_percentage',
+  'must_mark_done'" and documents a matching `min_percentage` field ("minimum percentage required
+  to complete (only present when type == 'min_percentage')"), but `min_percentage` is absent from
+  both the create/update Allowed-values list and from this page's own
+  `module_item[completion_requirement][...]` request parameters — there is no documented request
+  parameter to set it (docs: https://canvas.instructure.com/doc/api/modules.html).
 - `must_mark_done`'s prose scopes it to "'Assignment', 'Page', and 'AiExperience'" types, but
   `AiExperience` never appears in `module_item[type]`'s own Allowed-values list (`File`, `Page`,
   `Discussion`, `Assignment`, `Quiz`, `SubHeader`, `ExternalUrl`, `ExternalTool`) — a module item

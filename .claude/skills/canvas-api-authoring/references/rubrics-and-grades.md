@@ -189,7 +189,7 @@ object (see `references/fundamentals.md`) rather than the graded submissions dir
 - `submission[peer_review]` — boolean; "When true, updates the peer review sub assignment
   submission instead of the parent assignment submission... If any of these conditions are not
   met, the API will return a 422 error."
-- `submission[sticker]` — string. Full enumeration extracted verbatim from the raw page, all 49
+- `submission[sticker]` — string. Full enumeration extracted verbatim from the raw page, all 50
   values: `apple`, `basketball`, `bell`, `book`, `bookbag`, `briefcase`, `bus`, `calendar`, `chem`,
   `design`, `pencil`, `beaker`, `paintbrush`, `computer`, `column`, `pen`, `tablet`, `telescope`,
   `calculator`, `paperclip`, `composite_notebook`, `scissors`, `ruler`, `clock`, `globe`, `grad`,

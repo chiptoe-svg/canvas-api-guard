@@ -114,9 +114,9 @@ be the guard itself, not a function calling it:
 
 ## Worked precedent
 
-This is history as of 2026-09-10: the eight operations that exist today, and the reason each one
-earned its place, per the table in `level2/README.md`. The live list does not come from this file
-- run the CodeGraph query in `SKILL.md` for what exists now.
+This is history as of 2026-09-10: the eight operations that existed on that date, and the reason
+each one earned its place, per the table in `level2/README.md`. The live list does not come from
+this file - run the CodeGraph query in `SKILL.md` for what exists now.
 
 | Operation | Why it is not a single API call |
 | --- | --- |

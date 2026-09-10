@@ -247,27 +247,54 @@ linked endpoint returns a list rather than one object.
 
 **What Canvas does.** Canvas's HTML-link annotation (see the previous section) tags
 API-linked content with a `data-api-returntype` of `Assignment`, `Discussion`, or `Quiz` as
-three distinct, separately-documented values, not synonyms of each other. Whether a graded quiz
-or a graded discussion additionally allocates an underlying Assignment record — for grading,
-grade passback, and assignment-group membership — is real Canvas behaviour that instructors and
-integrations rely on, but it is not documented on any of the nine pages this reference was built
-from. None of them describe the Quiz, Discussion, or Assignment object schema.
+three distinct, separately-documented values, not synonyms of each other — but the Assignment
+and Quiz object schemas, now fetched, show the two are linked at the data-model level. A quiz
+whose `quiz_type` is `"assignment"` or `"graded_survey"` is graded; `quiz[assignment_group_id]`
+is documented as "Only valid if the quiz is graded, i.e. if quiz_type is 'assignment' or
+'graded_survey'" — assignment-group membership, the thing that makes something appear in the
+gradebook, is conditioned on that quiz type. On the Assignment side, an Assignment's
+`submission_types` can include `online_quiz`, and such an Assignment carries an optional
+`quiz_id` field, documented as "id of the associated quiz (applies only when submission_types is
+['online_quiz'])". A graded discussion works the same way from the Assignment side: an
+Assignment's `submission_types` can include `discussion_topic`, and such an Assignment carries an
+optional `discussion_topic` field, documented as "the DiscussionTopic associated with the
+assignment, if applicable". So the underlying claim holds for both: a graded quiz and a graded
+discussion are each backed by an Assignment record, reachable from that Assignment by `quiz_id`
+or by the nested `discussion_topic` object respectively.
 
-**Endpoints.** None — no page fetched for this reference documents a Quiz, Discussion, or
-Assignment endpoint.
+What the two pages do not establish is the reverse mechanics — creation order, whether deleting
+one side deletes the other, or any documented field on the Quiz or Discussion object that points
+back at its Assignment's id. That narrower claim is still unverified.
 
-**Parameters.** None recorded for this section beyond `data-api-returntype`, already recorded
-under "HTML fields and what Canvas does to them."
+**Endpoints.** None beyond those already listed in `references/assignments.md` and
+`references/quizzes.md` — this section draws on the Assignment and Quiz object schemas embedded
+in those two pages, not a separate endpoint.
+
+**Parameters.**
+- Assignment: `submission_types` (`online_quiz`, `discussion_topic`), `quiz_id`, `discussion_topic`
+- Quiz: `quiz_type` (`practice_quiz`, `assignment`, `graded_survey`, `survey`),
+  `quiz[assignment_group_id]`
 
 **Traps.**
-- Do not treat this reference as confirmation of how a graded quiz or graded discussion appears
-  in the gradebook or the assignments list. That mechanism is outside what the nine pages in
-  this task document; it needs to be verified against Canvas's own Quizzes and Assignments API
-  pages before anything is built on it
-  (docs: https://canvas.instructure.com/doc/api/file.endpoint_attributes.html — the only fact
-  this section can actually ground is that the three return types are listed separately).
+- The documented link is one-directional. The Assignment schema has a `quiz_id` field pointing
+  at its quiz; the Quiz object schema, fully enumerated on its documentation page, has no
+  matching field pointing back at an assignment id. The only place the string `assignment_id`
+  appears anywhere on that page is embedded inside the `speedgrader_url` example value
+  (`.../speed_grader?assignment_id=1`) — a URL to follow, not a field to read programmatically
+  (docs: https://canvas.instructure.com/doc/api/quizzes.html).
+- `is_quiz_assignment` (also on the Assignment object, "Boolean indicating whether this is a
+  quiz lti assignment") is a different fact from having a `quiz_id`. It marks a Quizzes 2 / New
+  Quizzes LTI assignment, not the classic quiz link described above — the two must not be read
+  as interchangeable evidence for "this assignment is backed by a quiz"
+  (docs: https://canvas.instructure.com/doc/api/assignments.html).
+- `practice_quiz` and `survey` are documented `quiz_type` values with no equivalent grading path:
+  nothing on this page ties them to an Assignment record the way `assignment` and
+  `graded_survey` are tied to one via `quiz[assignment_group_id]`'s validity condition
+  (docs: https://canvas.instructure.com/doc/api/quizzes.html).
 
-**Source.** https://canvas.instructure.com/doc/api/file.endpoint_attributes.html, fetched 2026-09-10
+**Source.** https://canvas.instructure.com/doc/api/file.endpoint_attributes.html, fetched
+2026-09-10; https://canvas.instructure.com/doc/api/assignments.html, fetched 2026-09-10;
+https://canvas.instructure.com/doc/api/quizzes.html, fetched 2026-09-10
 
 ### Long jobs that answer later
 

@@ -166,6 +166,27 @@ params:
 ### https://canvas.instructure.com/doc/api/file.changelog.html
 fetched: 2026-09-10
 
+### https://canvas.instructure.com/doc/api/assignments.html
+fetched: 2026-09-10
+params:
+- submission_types
+- online_quiz
+- discussion_topic
+- quiz_id
+- is_quiz_assignment
+
+### https://canvas.instructure.com/doc/api/quizzes.html
+fetched: 2026-09-10
+params:
+- quiz_type
+- assignment
+- graded_survey
+- practice_quiz
+- survey
+- quiz[assignment_group_id]
+- speedgrader_url
+- assignment_id
+
 ## references/assignments.md
 
 ### https://canvas.instructure.com/doc/api/assignments.html
@@ -1220,6 +1241,7 @@ params:
 - must_submit
 - must_mark_done
 - min_score
+- min_percentage
 - AiExperience
 - module_item[completion_requirement][min_score]
 - module_item[published]

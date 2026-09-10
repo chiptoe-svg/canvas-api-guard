@@ -33,7 +33,8 @@ returns the guard's `VERBS` table and Level 2's `OPERATIONS` table together.
 
 **How it behaves** is not a symbol. Whether a write is refused, whether a body may be multipart,
 what a read-back can prove - all of that is branching logic. CodeGraph will not tell you. Read
-`--help` on the program, then the tests that name the behaviour.
+`--help` on the programs (`canvas_api_guard.py`, `level2/canvas_api_operations.py`), then the
+tests that name the behaviour.
 
 Do not trust either tool past its boundary, and do not answer a capability question from memory.
 
