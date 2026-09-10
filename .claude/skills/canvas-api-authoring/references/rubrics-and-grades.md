@@ -136,8 +136,9 @@ separate from the rubric endpoint that can also embed an association at rubric-c
 - Canvas documents no read for a single rubric association: the only three endpoints named on this
   page for `rubric_associations` are `POST`, `PUT`, and `DELETE` — there is no `GET
   .../rubric_associations/:id` anywhere on `rubrics.html`. Fetching a newly created association
-  back by id may 404 even though the association was created (repo: `level2/SKILL.md`; docs
-  confirm no such GET is documented: https://canvas.instructure.com/doc/api/rubrics.html).
+  back by id may 404 even though the association was created — this project's own documentation
+  says so (repo: `level2/SKILL.md`; docs confirm no such GET is documented:
+  https://canvas.instructure.com/doc/api/rubrics.html).
 - `rubric_association[hide_score_total]` is conditional on its sibling: "This option is only
   available if the rubric is not used for grading" — setting `use_for_grading` and
   `hide_score_total` to true together is documented as contradictory (docs:
@@ -279,8 +280,8 @@ pattern: given a rubric whose criteria have ids `crit1` and `crit2`, a caller se
   `points_deducted`, `seconds_late`, `workflow_state`, `extra_attempts`, `anonymous_id`,
   `posted_at`, `read_status`, `redo_request` — and none of them names a criterion or a rubric
   score. Proving a criterion was written requires reading the rubric assessment itself, not the
-  submission (repo: `level2/README.md`; docs confirm the Submission schema carries no rubric field:
-  https://canvas.instructure.com/doc/api/submissions.html).
+  submission — this project's own documentation says so (repo: `level2/README.md`; docs confirm
+  the Submission schema carries no rubric field: https://canvas.instructure.com/doc/api/submissions.html).
 - Two different documented shapes exist for the same-sounding sub-object: `rubrics.html`'s
   dedicated `rubric_assessments` endpoint documents only `[points]` and `[comments]` under
   `criterion_id`; `submissions.html`'s embedded `rubric_assessment` on the grading `PUT` documents

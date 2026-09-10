@@ -59,3 +59,7 @@ decides more than any endpoint detail does.
 and the endpoints and parameter names taken from it. `tools/canvas-docs-check.py` re-fetches
 those pages and reports anything that no longer appears. Run it by hand when you want to know
 whether Canvas has moved. It changes nothing.
+
+A clean run proves every recorded claim still appears on its page. It does not prove a list is
+complete or exclusive. A reference that names 21 values checked clean has confirmed 21 values
+still appear, not that no 22nd exists.
