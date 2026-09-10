@@ -619,3 +619,311 @@ params:
 fetched: 2026-09-10
 endpoints:
 params:
+
+## references/rubrics-and-grades.md
+
+### https://canvas.instructure.com/doc/api/rubrics.html
+fetched: 2026-09-10
+endpoints:
+- POST /api/v1/courses/:course_id/rubrics
+- PUT /api/v1/courses/:course_id/rubrics/:id
+- GET /api/v1/courses/:course_id/rubrics
+- GET /api/v1/courses/:course_id/rubrics/:id
+- DELETE /api/v1/courses/:course_id/rubrics/:id
+- POST /api/v1/courses/:course_id/rubric_associations
+- PUT /api/v1/courses/:course_id/rubric_associations/:id
+- DELETE /api/v1/courses/:course_id/rubric_associations/:id
+- POST /api/v1/courses/:course_id/rubric_associations/:rubric_association_id/rubric_assessments
+- PUT /api/v1/courses/:course_id/rubric_associations/:rubric_association_id/rubric_assessments/:id
+- DELETE /api/v1/courses/:course_id/rubric_associations/:rubric_association_id/rubric_assessments/:id
+params:
+- rubric[title]
+- rubric[free_form_criterion_comments]
+- rubric[criteria]
+- rubric[skip_updating_points_possible]
+- rubric_association_id
+- include[]
+- assessments
+- graded_assessments
+- peer_assessments
+- associations
+- assignment_associations
+- course_associations
+- account_associations
+- style
+- full
+- comments_only
+- id
+- description
+- long_description
+- points
+- criterion_use_range
+- ratings
+- criterion_id
+- rubric_association[rubric_id]
+- rubric_association[association_id]
+- rubric_association[association_type]
+- Assignment
+- Course
+- Account
+- rubric_association[title]
+- rubric_association[use_for_grading]
+- rubric_association[hide_score_total]
+- rubric_association[purpose]
+- grading
+- bookmark
+- rubric_association[bookmarked]
+- rubric_assessment
+- rubric_assessment[criterion_id][points]
+- rubric_assessment[criterion_id][comments]
+- rubric_assessment[user_id]
+- rubric_assessment[assessment_type]
+- peer_review
+- provisional_grade
+- provisional
+- final
+- graded_anonymously
+
+### https://canvas.instructure.com/doc/api/submissions.html
+fetched: 2026-09-10
+endpoints:
+- PUT /api/v1/courses/:course_id/assignments/:assignment_id/submissions/:user_id
+- GET /api/v1/courses/:course_id/assignments/:assignment_id/submissions/:user_id
+- GET /api/v1/courses/:course_id/assignments/:assignment_id/submissions
+- POST /api/v1/courses/:course_id/assignments/:assignment_id/submissions/update_grades
+- POST /api/v1/courses/:course_id/submissions/update_grades
+params:
+- submission[posted_grade]
+- submission[excuse]
+- submission[late_policy_status]
+- late
+- missing
+- extended
+- none
+- submission[seconds_late_override]
+- submission[peer_review]
+- submission[sticker]
+- apple
+- basketball
+- bell
+- book
+- bookbag
+- briefcase
+- bus
+- calendar
+- chem
+- design
+- pencil
+- beaker
+- paintbrush
+- computer
+- column
+- pen
+- tablet
+- telescope
+- calculator
+- paperclip
+- composite_notebook
+- scissors
+- ruler
+- clock
+- globe
+- grad
+- gym
+- mail
+- microscope
+- mouse
+- music
+- notebook
+- page
+- panda1
+- panda2
+- panda3
+- panda4
+- panda5
+- panda6
+- panda7
+- panda8
+- panda9
+- presentation
+- science
+- science2
+- star
+- tag
+- tape
+- target
+- trophy
+- prefer_points_over_scheme
+- include[]
+- submission_comments
+- visibility
+- sub_assignment_submissions
+- peer_review_submissions
+- provisional_grades
+- group
+- grade_data[<student_id>][posted_grade]
+- grade_data[<student_id>][excuse]
+- grade_data[<student_id>][rubric_assessment]
+- grade_data[<assignment_id>][<student_id>]
+- rubric_assessment[criterion_id][rating_id]
+- posted_at
+- assignment_id
+- assignment
+- course
+- attempt
+- body
+- grade
+- grade_matches_current_submission
+- html_url
+- preview_url
+- score
+- submission_type
+- submitted_at
+- url
+- user_id
+- grader_id
+- graded_at
+- user
+- assignment_visible
+- excused
+- points_deducted
+- seconds_late
+- workflow_state
+- extra_attempts
+- anonymous_id
+- read_status
+- redo_request
+- comment[text_comment]
+- comment[attempt]
+- comment[group_comment]
+- comment[media_comment_id]
+- comment[media_comment_type]
+- audio
+- video
+- comment[file_ids][]
+- id
+- author_id
+- author_name
+- author
+- comment
+- created_at
+- edited_at
+- media_comment
+
+### https://canvas.instructure.com/doc/api/grading_standards.html
+fetched: 2026-09-10
+endpoints:
+- POST /api/v1/courses/:course_id/grading_standards
+- GET /api/v1/courses/:course_id/grading_standards
+- GET /api/v1/courses/:course_id/grading_standards/:grading_standard_id
+- PUT /api/v1/courses/:course_id/grading_standards/:grading_standard_id
+- DELETE /api/v1/courses/:course_id/grading_standards/:grading_standard_id
+params:
+- title
+- points_based
+- scaling_factor
+- grading_scheme_entry[][name]
+- grading_scheme_entry[][value]
+- id
+- context_type
+- context_id
+- grading_scheme
+- name
+- value
+- calculated_value
+
+### https://canvas.instructure.com/doc/api/grading_periods.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:course_id/grading_periods
+- GET /api/v1/courses/:course_id/grading_periods/:id
+- PUT /api/v1/courses/:course_id/grading_periods/:id
+- DELETE /api/v1/courses/:course_id/grading_periods/:id
+params:
+- grading_periods[][start_date]
+- grading_periods[][end_date]
+- grading_periods[][weight]
+- close_date
+- is_closed
+
+### https://canvas.instructure.com/doc/api/enrollments.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:course_id/enrollments
+- GET /api/v1/users/:user_id/enrollments
+params:
+- grading_period_id
+- current_grade
+- final_grade
+- current_score
+- final_score
+- current_points
+- unposted_current_grade
+- unposted_final_grade
+- unposted_current_score
+- unposted_final_score
+- unposted_current_points
+- override_grade
+- override_score
+- has_grading_periods
+- totals_for_all_grading_periods_option
+- current_grading_period_title
+- current_grading_period_id
+- current_period_override_grade
+- current_period_override_score
+- current_period_unposted_current_score
+- current_period_unposted_final_score
+- current_period_unposted_current_grade
+- current_period_unposted_final_grade
+
+### https://canvas.instructure.com/doc/api/courses.html
+fetched: 2026-09-10
+endpoints:
+- PUT /api/v1/courses/:id
+- GET /api/v1/courses/:course_id/settings
+- PUT /api/v1/courses/:course_id/settings
+params:
+- course[post_manually]
+- course[hide_final_grades]
+- allow_final_grade_override
+- hide_final_grades
+- grading_standard_enabled
+- grading_standard_id
+- course[grading_standard_id]
+
+### https://canvas.instructure.com/doc/api/gradebook_history.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:course_id/gradebook_history/days
+- GET /api/v1/courses/:course_id/gradebook_history/:date
+- GET /api/v1/courses/:course_id/gradebook_history/:date/graders/:grader_id/assignments/:assignment_id/submissions
+- GET /api/v1/courses/:course_id/gradebook_history/feed
+params:
+- date
+- grader_id
+- assignment_id
+- user_id
+- ascending
+- graders
+- assignments
+- name
+- current_grade
+- current_graded_at
+- current_grader
+- grade_matches_current_submission
+- graded_at
+- grader
+- id
+- new_grade
+- new_graded_at
+- new_grader
+- previous_grade
+- previous_graded_at
+- previous_grader
+- score
+- user_name
+- submission_type
+- url
+- workflow_state
+- submission_id
+- versions
