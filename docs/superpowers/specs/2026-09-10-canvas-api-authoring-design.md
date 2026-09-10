@@ -49,8 +49,14 @@ guard verb.
   real task and names the endpoints as it goes.
 
 - **Parameters verbatim, sources recorded.** Every parameter name is copied from the official
-  documentation rather than paraphrased or recalled. `sources.md` records each documentation URL
-  and the date it was fetched.
+  documentation rather than paraphrased or recalled. `sources.md` records each documentation URL,
+  the date it was fetched, and the endpoint paths and parameter names taken from it.
+
+- **Drift is checked on demand, never regenerated.** `tools/canvas-docs-check.py` re-fetches the
+  pages listed in `sources.md` and reports any recorded endpoint or parameter that no longer
+  appears. It is run by hand when someone wants to know whether Canvas has moved, and it writes
+  nothing. Keeping the checkable claims in `sources.md` rather than parsing them out of prose
+  keeps the references free-form and the check robust.
 
 - **Nothing is live-tested against Canvas.** There is no token in this environment. Every claim
   is documentation-grounded, and the skill says so on its face. Where a claim instead comes from
@@ -115,6 +121,22 @@ It also states what does not justify a function: a different projection of the s
 The eight operations that exist on 2026-09-10 appear as worked precedent, each with the reason
 it earned its place, dated as history. The live list is looked up, not read from here.
 
+## `tools/canvas-docs-check.py`
+
+A build-side tool, run by hand. It reads `sources.md`, fetches each documentation URL over
+plain HTTPS, and prints every recorded endpoint path and parameter name that no longer appears
+on its page. It exits non-zero when anything is missing. It writes no files and edits no
+references, so a report is a prompt for a human to look, not a change.
+
+A miss means one of two things and the tool cannot tell them apart: Canvas moved, or the
+reference was wrong when written. Both need a person.
+
+Its coverage is exactly what `sources.md` records. A parameter used in a reference but never
+recorded there is not checked, so recording the claim is part of authoring each section.
+
+It sits outside the guard's boundary and should not be mistaken for part of it: no Canvas token,
+no Canvas instance, no student data, only the public documentation host. It is never installed.
+
 ## References
 
 | File | Covers |
@@ -136,7 +158,8 @@ Skills are prose and have no unit tests, so verification is by construction and 
 that can actually be run.
 
 - **Endpoint check.** Every endpoint path named in a reference must appear in the Canvas
-  documentation page cited for that section. Checked against the fetched pages during authoring.
+  documentation page cited for that section. Checked against the fetched pages during authoring,
+  and re-checkable afterwards with `tools/canvas-docs-check.py`.
 - **No local command lines.** No file in the skill contains a `/usr/local/libexec/` command
   line. That is what keeps the references from going stale, and it is confirmed by grep. Naming a
   verb or a flag in prose is not a command line and is permitted, but only in
@@ -153,6 +176,8 @@ that can actually be run.
   Codex rules, or either faculty skill.
 - Installing anything to a faculty machine, and any change to the release.
 - New Quizzes coverage beyond the stub.
-- A scraper that regenerates the references from the documentation. Scraped output is not
-  reviewable, and the curated judgement is the value here.
+- Regenerating reference prose from the documentation. The checker reports drift; a human
+  decides what to change. Scraped prose is not reviewable, and the curated judgement is the value.
+- Running the drift check automatically, in the test suite, or on a schedule. It needs the
+  network, and the offline test suite must stay offline.
 - Live verification against a Canvas instance.
