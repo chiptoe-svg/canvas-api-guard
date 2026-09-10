@@ -18,11 +18,11 @@ endpoints:
 params:
 - per_page
 - Link
-- current
-- next
-- prev
-- first
-- last
+- rel="current"
+- rel="next"
+- rel="prev"
+- rel="first"
+- rel="last"
 - access_token
 
 ### https://canvas.instructure.com/doc/api/file.object_ids.html
