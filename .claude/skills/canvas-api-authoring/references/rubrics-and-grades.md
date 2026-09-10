@@ -226,7 +226,8 @@ object (see `references/fundamentals.md`) rather than the graded submissions dir
   https://canvas.instructure.com/doc/api/submissions.html).
 - Nothing on this page states whether writing `submission[posted_grade]` while the course's
   `post_manually` setting is true makes the grade visible immediately or leaves it unposted — see
-  "Grade versus posted grade."
+  "Grade versus posted grade" (docs: https://canvas.instructure.com/doc/api/submissions.html — no
+  interaction with `post_manually` is documented on this page).
 
 **Source.** https://canvas.instructure.com/doc/api/submissions.html, fetched 2026-09-10
 
