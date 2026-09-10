@@ -66,22 +66,37 @@ def _path_of(endpoint):
     return match.group(2) if match else endpoint
 
 
+def _joins(char):
+    """True if char would make an adjacent claim part of a longer name or path."""
+    return char == "/" or char.isalnum() or char == "_" or char == "-"
+
+
 def _appears(claim, page):
     """True if claim occurs in page whole, not as part of a longer name.
 
     Both kinds of claim need this. Canvas paths nest, so /courses/:course_id/quizzes is a
-    substring of /courses/:course_id/quizzes/:id. Short parameter names nest too: per_page
-    sits inside per_page_max, and id sits inside identifier. A plain substring test would
-    keep reporting either as present long after it was removed, which is the one drift
-    this tool exists to catch.
+    substring of /courses/:course_id/quizzes/:id. Short names nest too: page sits inside
+    per_page, id inside grid, and the enum value available inside unavailable. A plain
+    substring test would keep reporting any of them as present long after it was removed,
+    which is the one drift this tool exists to catch.
+
+    Each edge is checked only when the claim's own character on that edge is a word
+    character. A path begins with `/`, which is already its own left boundary, so checking
+    its left edge would make it read as missing inside a rendered absolute URL. A bracketed
+    parameter ends with `]`, which is likewise its own right boundary.
     """
+    if not claim:
+        return True
+    check_left = claim[0].isalnum() or claim[0] == "_"
+    check_right = claim[-1].isalnum() or claim[-1] == "_"
     start = 0
     while True:
         found = page.find(claim, start)
         if found < 0:
             return False
-        after = page[found + len(claim):found + len(claim) + 1]
-        if not (after == "/" or after.isalnum() or after in ("_", "-")):
+        left = page[found - 1:found] if found else ""
+        right = page[found + len(claim):found + len(claim) + 1]
+        if not (check_left and _joins(left)) and not (check_right and _joins(right)):
             return True
         start = found + 1
 

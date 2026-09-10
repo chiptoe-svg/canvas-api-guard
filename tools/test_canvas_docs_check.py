@@ -100,6 +100,27 @@ class Missing(unittest.TestCase):
         self.assertEqual(check.missing(record, "per_page_max is documented, the identifier went"),
                          [("param", "per_page"), ("param", "id")])
 
+    def test_a_claim_is_not_matched_inside_a_longer_word_on_its_left(self):
+        """`_appears` originally checked only the trailing boundary, so `page` matched inside
+        `per_page` and the enum value `available` matched inside `unavailable`. Short enum
+        values and bare field names are recorded as claims, so both edges need checking."""
+        record = check.parse_sources(
+            "## references/x.md\n\n### https://example.invalid/a.html\nfetched: 2026-09-10\n"
+            "params:\n- page\n- available\n")[0]
+        self.assertEqual(
+            check.missing(record, "per_page is documented and the course is unavailable"),
+            [("param", "page"), ("param", "available")])
+
+    def test_a_path_still_matches_inside_a_full_url(self):
+        """A path claim begins with `/`, which is already its own left boundary. Checking the
+        left edge unconditionally would make every path inside a rendered absolute URL read as
+        missing, turning a silent false negative into a noisy false positive."""
+        record = check.parse_sources(
+            "## references/x.md\n\n### https://example.invalid/a.html\nfetched: 2026-09-10\n"
+            "endpoints:\n- GET /api/v1/courses\n")[0]
+        self.assertEqual(
+            check.missing(record, "see https://canvas.example.com/api/v1/courses for more"), [])
+
 
 class Report(unittest.TestCase):
     def test_a_clean_run_says_so_and_exits_zero(self):
