@@ -165,3 +165,166 @@ params:
 
 ### https://canvas.instructure.com/doc/api/file.changelog.html
 fetched: 2026-09-10
+
+## references/assignments.md
+
+### https://canvas.instructure.com/doc/api/assignments.html
+fetched: 2026-09-10
+endpoints:
+- POST /api/v1/courses/:course_id/assignments
+- GET /api/v1/courses/:course_id/assignments/:id
+- GET /api/v1/courses/:course_id/assignments
+- PUT /api/v1/courses/:course_id/assignments/:id
+- DELETE /api/v1/courses/:course_id/assignments/:id
+- GET /api/v1/courses/:course_id/assignments/:assignment_id/overrides
+- GET /api/v1/courses/:course_id/assignments/:assignment_id/overrides/:id
+- POST /api/v1/courses/:course_id/assignments/:assignment_id/overrides
+- PUT /api/v1/courses/:course_id/assignments/:assignment_id/overrides/:id
+- DELETE /api/v1/courses/:course_id/assignments/:assignment_id/overrides/:id
+params:
+- assignment[name]
+- assignment[position]
+- assignment[assignment_group_id]
+- assignment[points_possible]
+- assignment[grading_type]
+- pass_fail
+- percent
+- letter_grade
+- gpa_scale
+- points
+- not_graded
+- assignment[description]
+- assignment[notify_of_update]
+- assignment[submission_types][]
+- online_quiz
+- none
+- on_paper
+- discussion_topic
+- external_tool
+- online_upload
+- online_text_entry
+- online_url
+- media_recording
+- student_annotation
+- assignment[allowed_extensions][]
+- assignment[external_tool_tag_attributes]
+- assignment[annotatable_attachment_id]
+- assignment[quiz_lti]
+- assignment[turnitin_enabled]
+- assignment[vericite_enabled]
+- assignment[grading_standard_id]
+- assignment[omit_from_final_grade]
+- assignment[hide_in_gradebook]
+- assignment[due_at]
+- assignment[lock_at]
+- assignment[unlock_at]
+- assignment[only_visible_to_overrides]
+- assignment[assignment_overrides][]
+- assignment_override[student_ids][]
+- assignment_override[title]
+- assignment_override[group_id]
+- assignment_override[course_section_id]
+- assignment_override[due_at]
+- assignment_override[unlock_at]
+- assignment_override[lock_at]
+- group_category_id
+- AssignmentOverride
+- assignment[allowed_attempts]
+- unpublishable
+- workflow_state
+- assignment[published]
+- assignment[peer_reviews]
+- assignment[automatic_peer_reviews]
+- assignment[peer_review]
+- assignment[peer_review][points_possible]
+- assignment[peer_review][grading_type]
+- assignment[peer_review][due_at]
+- assignment[peer_review][lock_at]
+- assignment[peer_review][unlock_at]
+- assignment[peer_review][peer_review_overrides][]
+
+### https://canvas.instructure.com/doc/api/assignment_groups.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:course_id/assignment_groups
+- GET /api/v1/courses/:course_id/assignment_groups/:assignment_group_id
+- POST /api/v1/courses/:course_id/assignment_groups
+- PUT /api/v1/courses/:course_id/assignment_groups/:assignment_group_id
+- DELETE /api/v1/courses/:course_id/assignment_groups/:assignment_group_id
+params:
+- name
+- position
+- group_weight
+- sis_source_id
+- integration_data
+- rules
+- drop_lowest
+- drop_highest
+- never_drop
+- move_assignments_to
+
+### https://canvas.instructure.com/doc/api/assignment_extensions.html
+fetched: 2026-09-10
+endpoints:
+- POST /api/v1/courses/:course_id/assignments/:assignment_id/extensions
+params:
+- assignment_extensions[][user_id]
+- assignment_extensions[][extra_attempts]
+- 403
+- 400
+
+### https://canvas.instructure.com/doc/api/peer_reviews.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:course_id/assignments/:assignment_id/peer_reviews
+- GET /api/v1/sections/:section_id/assignments/:assignment_id/peer_reviews
+- POST /api/v1/courses/:course_id/assignments/:assignment_id/submissions/:submission_id/peer_reviews
+- DELETE /api/v1/courses/:course_id/assignments/:assignment_id/submissions/:submission_id/peer_reviews
+- POST /api/v1/courses/:course_id/assignments/:assignment_id/allocate
+params:
+- include[]
+- submission_comments
+- user
+- user_id
+- PeerReview
+- assessor_id
+- asset_id
+- asset_type
+- id
+- workflow_state
+- assigned
+- completed
+
+### https://canvas.instructure.com/doc/api/late_policy.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:id/late_policy
+- POST /api/v1/courses/:id/late_policy
+- PATCH /api/v1/courses/:id/late_policy
+params:
+- late_policy[missing_submission_deduction_enabled]
+- late_policy[missing_submission_deduction]
+- late_policy[late_submission_deduction_enabled]
+- late_policy[late_submission_deduction]
+- late_policy[late_submission_interval]
+- late_policy[late_submission_minimum_percent_enabled]
+- late_policy[late_submission_minimum_percent]
+- bad_request
+- hour
+- course_id
+- created_at
+- updated_at
+
+### https://canvas.instructure.com/doc/api/learning_object_dates.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:course_id/assignments/:assignment_id/date_details
+- PUT /api/v1/courses/:course_id/assignments/:assignment_id/date_details
+params:
+- include[]
+- exclude[]
+- due_at
+- unlock_at
+- lock_at
+- only_visible_to_overrides
+- assignment_overrides[]
