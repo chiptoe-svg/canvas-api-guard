@@ -329,3 +329,293 @@ params:
 - lock_at
 - only_visible_to_overrides
 - assignment_overrides[]
+
+## references/quizzes.md
+
+### https://canvas.instructure.com/doc/api/quizzes.html
+fetched: 2026-09-10
+endpoints:
+- POST /api/v1/courses/:course_id/quizzes
+- GET /api/v1/courses/:course_id/quizzes
+- GET /api/v1/courses/:course_id/quizzes/:id
+- PUT /api/v1/courses/:course_id/quizzes/:id
+- DELETE /api/v1/courses/:course_id/quizzes/:id
+- POST /api/v1/courses/:course_id/quizzes/:id/reorder
+- POST /api/v1/courses/:course_id/quizzes/:id/validate_access_code
+params:
+- quiz[title]
+- quiz[description]
+- quiz[quiz_type]
+- quiz_type
+- practice_quiz
+- assignment
+- graded_survey
+- survey
+- quiz[assignment_group_id]
+- quiz[notify_of_update]
+- search_term
+- question_types
+- anonymous_submissions
+- quiz[time_limit]
+- quiz[allowed_attempts]
+- quiz[scoring_policy]
+- keep_highest
+- keep_latest
+- quiz[one_question_at_a_time]
+- quiz[cant_go_back]
+- quiz[hide_results]
+- always
+- until_after_last_attempt
+- quiz[show_correct_answers]
+- quiz[show_correct_answers_last_attempt]
+- quiz[show_correct_answers_at]
+- quiz[hide_correct_answers_at]
+- quiz[one_time_results]
+- quiz[shuffle_answers]
+- quiz[access_code]
+- quiz[ip_filter]
+- access_code
+- quiz[published]
+- unpublishable
+- locked_for_user
+- lock_info
+- lock_explanation
+- quiz[lock_at]
+- quiz[unlock_at]
+- order[][id]
+- order[][type]
+- question
+- group
+- points_possible
+
+### https://canvas.instructure.com/doc/api/quiz_questions.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:course_id/quizzes/:quiz_id/questions
+- GET /api/v1/courses/:course_id/quizzes/:quiz_id/questions/:id
+- POST /api/v1/courses/:course_id/quizzes/:quiz_id/questions
+- PUT /api/v1/courses/:course_id/quizzes/:quiz_id/questions/:id
+- DELETE /api/v1/courses/:course_id/quizzes/:quiz_id/questions/:id
+params:
+- question[question_name]
+- question[question_text]
+- question[quiz_group_id]
+- question[question_type]
+- calculated_question
+- essay_question
+- file_upload_question
+- fill_in_multiple_blanks_question
+- matching_question
+- multiple_answers_question
+- multiple_choice_question
+- multiple_dropdowns_question
+- numerical_question
+- short_answer_question
+- text_only_question
+- true_false_question
+- question[position]
+- question[points_possible]
+- question[correct_comments]
+- question[incorrect_comments]
+- question[neutral_comments]
+- question[text_after_answers]
+- question[answers]
+- answer_text
+- answer_weight
+- answer_comments
+- text_after_answers
+- answer_match_left
+- answer_match_right
+- matching_answer_incorrect_matches
+- numerical_answer_type
+- exact_answer
+- range_answer
+- precision_answer
+- exact
+- margin
+- approximate
+- precision
+- start
+- end
+- blank_id
+- id
+- quiz_submission_id
+- quiz_submission_attempt
+
+### https://canvas.instructure.com/doc/api/quiz_question_groups.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:course_id/quizzes/:quiz_id/groups
+- GET /api/v1/courses/:course_id/quizzes/:quiz_id/groups/:id
+- POST /api/v1/courses/:course_id/quizzes/:quiz_id/groups
+- PUT /api/v1/courses/:course_id/quizzes/:quiz_id/groups/:id
+- DELETE /api/v1/courses/:course_id/quizzes/:quiz_id/groups/:id
+- POST /api/v1/courses/:course_id/quizzes/:quiz_id/groups/:id/reorder
+params:
+- quiz_groups[][name]
+- quiz_groups[][pick_count]
+- quiz_groups[][question_points]
+- quiz_groups[][assessment_question_bank_id]
+- order[][id]
+- order[][type]
+- question
+- pick_count
+
+### https://canvas.instructure.com/doc/api/assessment_question_banks.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/question_banks
+- GET /api/v1/question_banks/:id
+- GET /api/v1/question_banks/:id/questions
+params:
+- context_type
+- Course
+- Account
+- context_id
+- include_question_count
+- variables
+- formulas
+- AssessmentQuestion
+
+### https://canvas.instructure.com/doc/api/quiz_submissions.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:course_id/quizzes/:quiz_id/submissions
+- GET /api/v1/courses/:course_id/quizzes/:quiz_id/submission
+- GET /api/v1/courses/:course_id/quizzes/:quiz_id/submissions/:id
+- POST /api/v1/courses/:course_id/quizzes/:quiz_id/submissions
+- PUT /api/v1/courses/:course_id/quizzes/:quiz_id/submissions/:id
+- POST /api/v1/courses/:course_id/quizzes/:quiz_id/submissions/:id/complete
+- GET /api/v1/courses/:course_id/quizzes/:quiz_id/submissions/:id/time
+params:
+- include[]
+- submission
+- quiz
+- user
+- access_code
+- preview
+- quiz_submissions[][attempt]
+- quiz_submissions[][fudge_points]
+- quiz_submissions[][questions]
+- score
+- comment
+- attempt
+- validation_token
+- end_at
+- time_left
+- workflow_state
+- untaken
+- pending_review
+- complete
+- settings_only
+
+### https://canvas.instructure.com/doc/api/quiz_submission_questions.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/quiz_submissions/:quiz_submission_id/questions
+- POST /api/v1/quiz_submissions/:quiz_submission_id/questions
+- GET /api/v1/quiz_submissions/:quiz_submission_id/questions/:id/formatted_answer
+- PUT /api/v1/quiz_submissions/:quiz_submission_id/questions/:id/flag
+- PUT /api/v1/quiz_submissions/:quiz_submission_id/questions/:id/unflag
+params:
+- include[]
+- quiz_question
+- attempt
+- validation_token
+- access_code
+- quiz_questions[]
+- answer
+- flagged
+- answers
+- answer_id
+- match_id
+
+### https://canvas.instructure.com/doc/api/quiz_assignment_overrides.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:course_id/quizzes/assignment_overrides
+- GET /api/v1/courses/:course_id/new_quizzes/assignment_overrides
+params:
+- quiz_assignment_overrides[][quiz_ids][]
+- due_dates
+- all_dates
+- base
+- id
+
+### https://canvas.instructure.com/doc/api/quiz_extensions.html
+fetched: 2026-09-10
+endpoints:
+- POST /api/v1/courses/:course_id/quizzes/:quiz_id/extensions
+params:
+- quiz_extensions[][user_id]
+- quiz_extensions[][extra_attempts]
+- quiz_extensions[][extra_time]
+- quiz_extensions[][manually_unlocked]
+- quiz_extensions[][extend_from_now]
+- quiz_extensions[][extend_from_end_at]
+
+### https://canvas.instructure.com/doc/api/course_quiz_extensions.html
+fetched: 2026-09-10
+endpoints:
+- POST /api/v1/courses/:course_id/quiz_extensions
+params:
+- user_id
+- extra_attempts
+- extra_time
+- manually_unlocked
+- extend_from_now
+- extend_from_end_at
+
+### https://canvas.instructure.com/doc/api/quiz_ip_filters.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:course_id/quizzes/:quiz_id/ip_filters
+params:
+
+### https://canvas.instructure.com/doc/api/quiz_reports.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:course_id/quizzes/:quiz_id/reports
+- POST /api/v1/courses/:course_id/quizzes/:quiz_id/reports
+- GET /api/v1/courses/:course_id/quizzes/:quiz_id/reports/:id
+- DELETE /api/v1/courses/:course_id/quizzes/:quiz_id/reports/:id
+params:
+- includes_all_versions
+- quiz_report[report_type]
+- student_analysis
+- item_analysis
+- quiz_report[includes_all_versions]
+- include
+- file
+- progress
+- generatable
+- anonymous
+- workflow_state
+- queued
+
+### https://canvas.instructure.com/doc/api/quiz_statistics.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:course_id/quizzes/:quiz_id/statistics
+params:
+- all_versions
+- multiple_attempts_exist
+- question_statistics
+- submission_statistics
+- True/False
+- Multiple Choice
+- File Upload
+- Formula
+- Essay
+- Multiple Dropdowns
+- Fill In Multiple Blanks
+
+### https://canvas.instructure.com/doc/api/new_quizzes.html
+fetched: 2026-09-10
+endpoints:
+params:
+
+### https://canvas.instructure.com/doc/api/new_quiz_items.html
+fetched: 2026-09-10
+endpoints:
+params:
