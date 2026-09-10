@@ -302,9 +302,8 @@ be allowed.
 | GET | `/api/v1/courses/:course_id/assignments/:id` | Get a single assignment |
 
 **Parameters.**
-- `assignment[published]` — boolean; "whether this assignment is published." The documentation
-  ties its effect to a named account-level setting being on, and states plainly that "unpublished
-  assignments are not visible to students."
+- `assignment[published]` — boolean; "whether this assignment is published. (Only useful if
+  'draft state' account setting is on.) Unpublished assignments are not visible to students."
 - `unpublishable` — boolean, read-only, not a request parameter; "whether the assignment's
   'published' state can be changed to false. Will be false if there are student submissions for
   the assignment."
@@ -322,10 +321,9 @@ be allowed.
   the single example `"unpublished"`. Do not carry the course's four-value enum over to
   assignments; it is not documented here (docs:
   https://canvas.instructure.com/doc/api/assignments.html).
-- `published` is explicitly qualified as useful only when a specific account-level publishing
-  setting is on — the field exists regardless, but the documentation ties its effect to an
-  account-level setting outside the assignment itself (docs:
-  https://canvas.instructure.com/doc/api/assignments.html).
+- `published` is explicitly qualified as "only useful if 'draft state' account setting is on" —
+  the field exists regardless, but the documentation ties its effect to an account-level setting
+  outside the assignment itself (docs: https://canvas.instructure.com/doc/api/assignments.html).
 
 **Source.** https://canvas.instructure.com/doc/api/assignments.html, fetched 2026-09-10
 

@@ -233,6 +233,7 @@ params:
 - unpublishable
 - workflow_state
 - assignment[published]
+- draft state
 - assignment[peer_reviews]
 - assignment[automatic_peer_reviews]
 - assignment[peer_review]
