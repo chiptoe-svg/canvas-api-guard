@@ -927,3 +927,212 @@ params:
 - workflow_state
 - submission_id
 - versions
+
+## references/submissions-and-files.md
+
+### https://canvas.instructure.com/doc/api/submissions.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:course_id/assignments/:assignment_id/submissions
+- GET /api/v1/sections/:section_id/assignments/:assignment_id/submissions
+- GET /api/v1/courses/:course_id/students/submissions
+- GET /api/v1/sections/:section_id/students/submissions
+- GET /api/v1/courses/:course_id/assignments/:assignment_id/submission_summary
+- GET /api/v1/sections/:section_id/assignments/:assignment_id/submission_summary
+- GET /api/v1/courses/:course_id/assignments/:assignment_id/submissions/:user_id
+- GET /api/v1/sections/:section_id/assignments/:assignment_id/submissions/:user_id
+- GET /api/v1/courses/:course_id/assignments/:assignment_id/anonymous_submissions/:anonymous_id
+- GET /api/v1/sections/:section_id/assignments/:assignment_id/anonymous_submissions/:anonymous_id
+- POST /api/v1/courses/:course_id/assignments/:assignment_id/submissions/:user_id/files
+- POST /api/v1/sections/:section_id/assignments/:assignment_id/submissions/:user_id/files
+params:
+- include[]
+- grouped
+- assignment_id
+- user_id
+- grader_id
+- canvadoc_document_id
+- submitted_at
+- score
+- attempt
+- body
+- grade
+- grade_matches_current_submission
+- preview_url
+- redo_request
+- url
+- late
+- assignment_visible
+- workflow_state
+- submitted
+- unsubmitted
+- graded
+- pending_review
+- submission_history
+- submission_comments
+- submission_html_comments
+- rubric_assessment
+- assignment
+- visibility
+- course
+- user
+- group
+- read_status
+- student_entered_score
+- student_ids[]
+- assignment_ids[]
+- post_to_sis
+- submitted_since
+- graded_since
+- grading_period_id
+- enrollment_state
+- active
+- concluded
+- state_based_on_date
+- order
+- id
+- graded_at
+- order_direction
+- ascending
+- descending
+- total_scores
+- sub_assignment_submissions
+- peer_review_submissions
+- include_deactivated
+- ungraded
+- not_submitted
+- full_rubric_assessment
+- anonymous_id
+- submission[file_ids][]
+
+### https://canvas.instructure.com/doc/api/files.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/files/:id/public_url
+- GET /files/:file_id/download
+- GET /courses/:course_id/files/:file_id/download
+- GET /api/v1/files/:id
+- GET /api/v1/courses/:course_id/files/:id
+- POST /api/v1/courses/:course_id/folders
+- POST /api/v1/folders/:folder_id/folders
+- GET /api/v1/folders/:id
+- GET /api/v1/courses/:course_id/folders/by_path/*full_path
+- GET /api/v1/courses/:course_id/folders
+- GET /api/v1/folders/:id/folders
+- PUT /api/v1/folders/:id
+- DELETE /api/v1/folders/:id
+- POST /api/v1/folders/:folder_id/files
+- POST /api/v1/folders/:dest_folder_id/copy_file
+- PUT /api/v1/files/:id
+- POST /api/v1/accounts/:account_id/folders
+params:
+- submission_id
+- preview_url
+- include[]
+- user
+- replacement_chain_context_type
+- replacement_chain_context_id
+- url
+- download_frd=1
+- name
+- parent_folder_id
+- parent_folder_path
+- lock_at
+- unlock_at
+- locked
+- hidden
+- position
+- force
+- on_duplicate
+- overwrite
+- rename
+- source_file_id
+- root
+
+### https://canvas.instructure.com/doc/api/file.file_uploads.html
+fetched: 2026-09-10
+endpoints:
+- POST /api/v1/courses/:course_id/files
+- POST /api/v1/users/self/files
+- POST /api/v1/accounts/:account_id/sis_imports
+- POST /api/v1/courses/:course_id/content_migrations
+- POST /api/v1/courses/:course_id/assignments/:assignment_id/submissions/comments/self/files
+params:
+- name
+- size
+- content_type
+- parent_folder_id
+- parent_folder_path
+- folder
+- on_duplicate
+- success_include[]
+- url
+- submit_assignment
+- upload_url
+- upload_params
+- key
+- file
+- progress
+- workflow_state
+- running
+- id
+- target_url
+- content-type
+- display_name
+- pre_attachment
+
+### https://canvas.instructure.com/doc/api/submission_comments.html
+fetched: 2026-09-10
+endpoints:
+- POST /api/v1/courses/:course_id/assignments/:assignment_id/submissions/:user_id/comments/files
+
+### https://canvas.instructure.com/doc/api/quiz_submission_files.html
+fetched: 2026-09-10
+endpoints:
+- POST /api/v1/courses/:course_id/quizzes/:quiz_id/submissions/self/files
+params:
+- name
+- on_duplicate
+- attachments
+- upload_url
+- upload_params
+
+### https://canvas.instructure.com/doc/api/content_exports.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:course_id/content_exports
+- GET /api/v1/groups/:group_id/content_exports
+- GET /api/v1/users/:user_id/content_exports
+- GET /api/v1/courses/:course_id/content_exports/:id
+- POST /api/v1/courses/:course_id/content_exports
+- POST /api/v1/groups/:group_id/content_exports
+- POST /api/v1/users/:user_id/content_exports
+params:
+- export_type
+- common_cartridge
+- qti
+- zip
+- skip_notifications
+- select
+- folders
+- files
+- attachments
+- quizzes
+- assignments
+- announcements
+- calendar_events
+- discussion_topics
+- modules
+- module_items
+- pages
+- rubrics
+- id
+- created_at
+- attachment
+- progress_url
+- user_id
+- workflow_state
+- created
+- exporting
+- exported
+- failed
