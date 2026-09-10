@@ -4,10 +4,13 @@
 Build-side only. No Canvas token, no Canvas instance, no student data: this reads the public
 Canvas documentation host and nothing else. It is never installed, and it writes nothing.
 
-A miss means one of two things and this tool cannot tell them apart: Canvas moved, or the
-reference was wrong when it was written. Both need a person.
+Pages are fetched as raw HTML and are decoded before matching, so a claim may be recorded
+exactly as the documentation renders it. A miss means one of two things and this tool cannot
+tell them apart: Canvas moved, or the reference was wrong when it was written. Both need
+a person.
 """
 import argparse
+import html
 import re
 import sys
 import urllib.request
@@ -131,7 +134,7 @@ def report(records, fetch):
             lines.append("    ERROR  %s" % error)
             bad += 1
             continue
-        gone = missing(record, page)
+        gone = missing(record, html.unescape(page))
         if not gone:
             continue
         if record["file"] != shown:

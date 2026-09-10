@@ -154,5 +154,31 @@ class Report(unittest.TestCase):
         self.assertIn("connection refused", text)
 
 
+class Entities(unittest.TestCase):
+    """Canvas documentation pages are fetched as raw HTML, so a claim containing a quote,
+    an ampersand or an angle bracket does not appear literally in the bytes. Matching
+    without decoding reports such a claim missing while the page plainly shows it, and the
+    only way an author can get a green run is to record a weaker claim than the truth."""
+
+    def test_a_quoted_claim_matches_through_html_entities(self):
+        record = check.parse_sources(
+            "## references/x.md\n\n### https://example.invalid/a.html\nfetched: 2026-09-10\n"
+            'params:\n- rel="next"\n')[0]
+        page = "<p>the header carries rel=&quot;next&quot; when more pages remain</p>"
+        text, code = check.report([record], lambda url: page)
+        self.assertEqual(code, 0)
+        self.assertIn("nothing missing", text)
+
+    def test_a_genuinely_absent_quoted_claim_is_still_reported(self):
+        """Decoding must not turn the check into one that always passes."""
+        record = check.parse_sources(
+            "## references/x.md\n\n### https://example.invalid/a.html\nfetched: 2026-09-10\n"
+            'params:\n- rel="last"\n')[0]
+        page = "<p>the header carries rel=&quot;next&quot; when more pages remain</p>"
+        text, code = check.report([record], lambda url: page)
+        self.assertEqual(code, 1)
+        self.assertIn('MISSING param     rel="last"', text)
+
+
 if __name__ == "__main__":
     unittest.main()
