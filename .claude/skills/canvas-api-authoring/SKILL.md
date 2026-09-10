@@ -30,7 +30,10 @@ Canvas LMS is open source (`instructure/canvas-lms`, AGPL-3.0). Source on its `m
 stronger evidence than the documentation, because it is what actually runs. It is not the same as
 watching a real instance: source shows what the code does, not what any hosted instance runs,
 which feature flags are on, or which release is deployed. Treat Source-confirmed as stronger than
-documentation and weaker than an observed instance, never as final truth.
+documentation and weaker than an observed instance, never as final truth. `master` also moves, and
+nothing re-checks a source citation's line number the way `tools/canvas-docs-check.py` re-checks a
+documentation claim; treat a cited line number as a hint and the cited symbol name as the real
+anchor.
 
 ## Look up current capability, never recall it
 
@@ -75,7 +78,9 @@ curl -s https://raw.githubusercontent.com/instructure/canvas-lms/master/app/mode
 Start near the resource you're chasing: `app/models/rubric.rb` (criteria parsing, outcome
 linkage), `app/models/rubric_assessment.rb` (what a saved assessment does to the grade), and
 `app/models/rubric_association.rb` (the `assess` method that scores a submission from criteria).
-When the shape reaching the API differs from the model, check `lib/api/v1/` for the serializer.
+For a quiz, `app/models/quizzes/quiz.rb` computes the point total. For a file upload route,
+`config/routes.rb` has the real path. When the shape reaching the API differs from the model,
+check `lib/api/v1/` for the serializer.
 
 Source on `master` tells you what the code does, not what a hosted instance runs, with which
 feature flags, or at which release. It is stronger evidence than the documentation and weaker than

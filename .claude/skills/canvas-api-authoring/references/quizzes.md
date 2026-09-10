@@ -148,7 +148,8 @@ One field, `text_after_answers`, is tagged "Used in missing word questions" — 
   337-344). The classic quiz-editing form still offers it as a choice — `<option
   value="missing_word_question">` — with its own fields for the text before and after the blank,
   one of which posts as `text_after_answers` (source:
-  `app/views/quizzes/quizzes/_form_question.html.erb`, lines 40 and 233-234). The REST page's
+  `app/views/quizzes/quizzes/_form_question.html.erb`, line 40 for the option and line 240 for the
+  `text_after_answers` textarea, with its editor toggles at lines 236-237). The REST page's
   enum is simply incomplete, not a sign the type was retired.
 - `question[answers]` and the top-level `question[text_after_answers]` parameter share a name
   with the `Answer` object's own `text_after_answers` field — the create endpoint's own parameter

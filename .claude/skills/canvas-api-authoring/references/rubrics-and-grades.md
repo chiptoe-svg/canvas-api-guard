@@ -94,10 +94,13 @@ but only ever shown as a response example, never as a request-parameter table en
   an array — `(params[:criteria] || {}).each do |idx, criterion_data|` — then sorts the resulting
   criteria by `idx.to_i` before saving; nested ratings are parsed the same way,
   `(criterion_data[:ratings] || {}).values.map`, and then re-sorted by points, so a rating's key is
-  read but not preserved. Canvas assigns each criterion's actual `id` itself, through
-  `unique_item_id`, rather than trusting `criterion_data[:id]` — which is why the response's
-  `"_10"`-style ids and the request's stringified indices were never meant to be the same
-  vocabulary (source: `app/models/rubric.rb#generate_criteria`, lines 473-522).
+  read but not preserved. Canvas assigns each criterion's `id` through `unique_item_id`, which keeps
+  a caller-supplied `criterion_data[:id]` when it is present and unclaimed, and mints a fresh
+  `rubricid_NNNN`-style id only when it is nil or already taken — a writer whose index-keyed
+  `criteria` carry no `id` field gets ids Canvas mints, which is why the response's `"_10"`-style
+  ids and the request's stringified indices were never meant to be the same vocabulary
+  (source: `app/models/rubric.rb#unique_item_id` and `#generate_criteria`, lines 349-355 and
+  473-522).
 - Both create and update return not a plain `Rubric` object but a hash of the form
   `{ 'rubric': Rubric, 'rubric_association': RubricAssociation }` — the page states this outright:
   "Unfortunately this endpoint does not return a standard Rubric object" (docs:
