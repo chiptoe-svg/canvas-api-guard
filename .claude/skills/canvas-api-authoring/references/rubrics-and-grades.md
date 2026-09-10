@@ -317,6 +317,21 @@ pattern: given a rubric whose criteria have ids `crit1` and `crit2`, a caller se
   same field — one of the few places in this reference where a request enum and a response enum
   for the same field are confirmed identical rather than merely similarly named (docs:
   https://canvas.instructure.com/doc/api/rubrics.html).
+- Storing a rubric assessment and totalling it into the assignment's grade are two different
+  things. Writing `rubric_assessment` stores each criterion's points and comments; whether those
+  criteria become the submission's grade is a separate question, governed by
+  `rubric_association[use_for_grading]` (see "Attaching a rubric to something"). Neither page
+  fetched for this reference states what happens to the grade when a `rubric_assessment` is
+  submitted on its own, without `submission[posted_grade]` in the same request — the consequence is
+  not documented on `rubrics.html` or `submissions.html` (docs:
+  https://canvas.instructure.com/doc/api/rubrics.html; docs:
+  https://canvas.instructure.com/doc/api/submissions.html). Repo-verified: this project's own
+  tested write does not depend on the association setting at all. It totals the criterion points
+  itself and sends `submission[posted_grade]` and `rubric_assessment` in the same `PUT`, so the
+  reliable pattern is to total the criteria and write the grade in the same request as the
+  assessment, not to rely on `use_for_grading` (repo: `level2/canvas_api_operations.py`, the
+  `grade_one` function, line 308: `body = {"submission": {"posted_grade": total},
+  "rubric_assessment": criteria}`).
 
 **Source.** https://canvas.instructure.com/doc/api/rubrics.html, fetched 2026-09-10; https://canvas.instructure.com/doc/api/submissions.html, fetched 2026-09-10
 

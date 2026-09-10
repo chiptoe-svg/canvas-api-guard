@@ -58,7 +58,8 @@ decides more than any endpoint detail does.
 `sources.md` records every documentation page these references draw on, the date it was fetched,
 and the endpoints and parameter names taken from it. `tools/canvas-docs-check.py` re-fetches
 those pages and reports anything that no longer appears. Run it by hand when you want to know
-whether Canvas has moved. It changes nothing.
+whether Canvas has moved. It changes nothing. `sources.md` is input for that checker, not reading
+material; a reader wanting a claim's source should look at the citation on the claim itself.
 
 A clean run proves every recorded claim still appears on its page. It does not prove a list is
 complete or exclusive. A reference that names 21 values checked clean has confirmed 21 values
