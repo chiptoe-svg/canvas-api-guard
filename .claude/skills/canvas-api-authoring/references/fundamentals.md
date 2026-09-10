@@ -73,16 +73,18 @@ opaque" — follow them rather than constructing page URLs by hand.
 
 **What Canvas does.** A plain GET on a course or section is deliberately thin: it does not
 return people, aggregates, or extra bodies unless asked. `include[]` is how an endpoint is asked
-for more, and each endpoint declares its own separate menu of what it will attach — the same
-`include[]` value name on two different endpoints is two different declarations, not one shared
-option.
+for more. The list-courses and single-course endpoints share nearly the same `include[]` menu —
+the docs describe the single-course one as accepting "the same include[] parameters as the list
+action plus:" — but "nearly" matters: one value from the list menu is missing on the
+single-course endpoint, and it adds three of its own. The sections endpoint has an entirely
+separate, much smaller menu.
 
 **Endpoints.**
 
 | Verb | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/v1/courses` | List courses, with `include[]` |
-| GET | `/api/v1/courses/:id` | Get a single course, with a different `include[]` |
+| GET | `/api/v1/courses/:id` | Get a single course, with an almost-identical `include[]` |
 | GET | `/api/v1/courses/:course_id/sections` | List course sections, with `include[]` |
 
 **Parameters.**
@@ -91,29 +93,34 @@ option.
   `grading_periods`, `term`, `account`, `course_progress`, `sections`, `storage_quota_used_mb`,
   `total_students`, `passback_status`, `favorites`, `teachers`, `observed_users`,
   `course_image`, `banner_image`, `concluded`, `post_manually`
-- `include[]` on `GET /api/v1/courses/:id` (single course): `all_courses`, `permissions`,
-  `observed_users`, `course_image`, `banner_image`, `concluded`, `lti_context_id`,
-  `post_manually`, `syllabus_versions`
+- `include[]` on `GET /api/v1/courses/:id` (single course): the same 21 values as the list
+  endpoint, minus `grading_periods`, plus `all_courses`, `permissions`, and `lti_context_id`.
+  Written out in full: `needs_grading_count`, `syllabus_body`, `syllabus_versions`,
+  `public_description`, `total_scores`, `current_grading_period_scores`, `term`, `account`,
+  `course_progress`, `sections`, `storage_quota_used_mb`, `total_students`, `passback_status`,
+  `favorites`, `teachers`, `observed_users`, `all_courses`, `permissions`, `course_image`,
+  `banner_image`, `concluded`, `lti_context_id`, `post_manually`
 - `include[]` on `GET /api/v1/courses/:course_id/sections`: `students`, `avatar_url`,
   `enrollments`, `total_students`, `passback_status`, `permissions`
 
 **Traps.**
-- The list endpoint and the single-course endpoint return the same object type but declare two
-  different `include[]` menus. `all_courses`, `permissions`, and `lti_context_id` are documented
-  only on `GET /api/v1/courses/:id`, not on the list endpoint; values like
-  `needs_grading_count`, `total_scores`, `sections`, and `teachers` are documented only on the
-  list endpoint, not on the single-course one. Assuming one endpoint's `include[]` menu works on
-  the other is the exact per-endpoint-vocabulary mistake this section warns about (docs:
-  https://canvas.instructure.com/doc/api/courses.html).
-- `total_students` and `passback_status` are named identically in the list-courses and
-  sections `include[]` enumerations, but they are two separate, independently-documented lists —
-  passing one on the endpoint that does not declare it is not guaranteed to do anything (docs:
-  https://canvas.instructure.com/doc/api/courses.html; docs:
+- The single-course endpoint's `include[]` is not a separate menu from the list endpoint's — it
+  is nearly the same set. Reading it as unrelated (because it is not byte-identical) is as wrong
+  as assuming it is byte-identical: `grading_periods` works on the list endpoint but not on the
+  single-course one, while `all_courses`, `permissions`, and `lti_context_id` work on the
+  single-course endpoint but not on the list one. Everything else in both 21/23-value lists is
+  shared (docs: https://canvas.instructure.com/doc/api/courses.html — the "Accepts the same
+  include[] parameters as the list action plus:" sentence immediately above the single-course
+  endpoint's parameter table; note an almost identical sentence appears earlier on the same page
+  for a single *user* endpoint, which is not this one).
+- `total_students` and `passback_status` are named identically in the courses `include[]`
+  enumerations and the sections `include[]` enumeration, but they are independently-documented
+  per object type — passing one on an endpoint that does not declare it is not guaranteed to do
+  anything (docs: https://canvas.instructure.com/doc/api/courses.html; docs:
   https://canvas.instructure.com/doc/api/sections.html).
-- `include[]` values are per-endpoint, not a global vocabulary: `syllabus_body` exists only on
-  the courses list, `students` only on sections, in this set of endpoints
-  (docs: https://canvas.instructure.com/doc/api/courses.html; docs:
-  https://canvas.instructure.com/doc/api/sections.html).
+- `include[]` values are not shared across object types: `students` and `avatar_url` exist only
+  on the sections endpoint, not on either courses endpoint
+  (docs: https://canvas.instructure.com/doc/api/sections.html).
 - Neither page states a cost for any individual `include[]` value, but `total_students` is a
   count, and pagination's own documentation warns that a total count "may... be too expensive to
   compute" when Canvas has to produce one — treat a long `include[]` list as added work per
