@@ -173,6 +173,10 @@ how that score is interpreted and displayed, independent of both.
   represents." Nothing on this page states that group weights across a course are validated to
   sum to 100 — do not assume the API enforces that (docs:
   https://canvas.instructure.com/doc/api/assignment_groups.html).
+- Whether a rubric determines this assignment's grade is a separate read-only pair on this same
+  endpoint, `use_rubric_for_grading` and `rubric_settings` — named and confirmed in
+  `references/rubrics-and-grades.md`'s "Attaching a rubric to something" section, not restated
+  here (docs: https://canvas.instructure.com/doc/api/assignments.html).
 
 **Source.** https://canvas.instructure.com/doc/api/assignment_groups.html, fetched 2026-09-10; https://canvas.instructure.com/doc/api/assignments.html, fetched 2026-09-10
 

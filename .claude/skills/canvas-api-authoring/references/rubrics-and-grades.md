@@ -146,6 +146,16 @@ separate from the rubric endpoint that can also embed an association at rubric-c
   values, documented on the dedicated `rubric_associations` create endpoint: `grading`, `bookmark`.
 - `rubric_association[bookmarked]` — boolean; "Whether or not the associated rubric appears in its
   context."
+- `use_rubric_for_grading` — boolean, read-only `Assignment` response field, returned by `GET
+  .../assignments/:id`; "(Optional) If true, the rubric is directly tied to grading the
+  assignment. Otherwise, it is only advisory. Included if there is an associated rubric." This is
+  the assignment-side name for the same concept `rubric_association[use_for_grading]` sets on the
+  association.
+- `rubric_settings` — object, read-only `Assignment` response field; "(Optional) An object
+  describing the basic attributes of the rubric, including the point total. Included if there is
+  an associated rubric." The one sub-field the page's response example shows is `points_possible`,
+  carried as a string: `{"points_possible":"12"}`. No other sub-field of `rubric_settings` is
+  documented on this page.
 
 **Traps.**
 - Canvas documents no read for a single rubric association: the only three endpoints named on this
@@ -154,6 +164,20 @@ separate from the rubric endpoint that can also embed an association at rubric-c
   back by id may 404 even though the association was created — this project's own documentation
   says so (repo: `level2/SKILL.md`; docs confirm no such GET is documented:
   https://canvas.instructure.com/doc/api/rubrics.html).
+- The field name changes depending on which object you read it from, and the two pages never
+  connect the two names. You set `rubric_association[use_for_grading]` on the association; you
+  confirm it by reading `use_rubric_for_grading` on the assignment (`GET
+  .../assignments/:assignment_id`) — a different name, on a different object, for the same
+  concept. Searching either page for the other page's spelling finds nothing: `use_for_grading`
+  does not appear anywhere on `assignments.html`, and `use_rubric_for_grading` does not appear
+  anywhere on `rubrics.html` (docs: https://canvas.instructure.com/doc/api/rubrics.html; docs:
+  https://canvas.instructure.com/doc/api/assignments.html).
+- Given the no-read trap above, the assignment is also the only documented place to confirm
+  `use_for_grading` took effect: read `use_rubric_for_grading` and `rubric_settings` off `GET
+  .../assignments/:assignment_id` rather than retrying the association endpoint (docs:
+  https://canvas.instructure.com/doc/api/assignments.html). This project's own documentation
+  already relies on exactly that read to confirm an association it cannot fetch directly (repo:
+  `level2/SKILL.md`, line 138).
 - `rubric_association[hide_score_total]` is conditional on its sibling: "This option is only
   available if the rubric is not used for grading" — setting `use_for_grading` and
   `hide_score_total` to true together is documented as contradictory (docs:
@@ -167,7 +191,7 @@ separate from the rubric endpoint that can also embed an association at rubric-c
   `Account` — attaching a rubric to anything else (a section, a group) is not documented (docs:
   https://canvas.instructure.com/doc/api/rubrics.html).
 
-**Source.** https://canvas.instructure.com/doc/api/rubrics.html, fetched 2026-09-10
+**Source.** https://canvas.instructure.com/doc/api/rubrics.html, fetched 2026-09-10; https://canvas.instructure.com/doc/api/assignments.html, fetched 2026-09-10
 
 ### Grading a submission
 

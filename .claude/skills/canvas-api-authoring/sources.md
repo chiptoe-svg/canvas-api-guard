@@ -264,6 +264,8 @@ params:
 - assignment[peer_review][lock_at]
 - assignment[peer_review][unlock_at]
 - assignment[peer_review][peer_review_overrides][]
+- use_rubric_for_grading
+- rubric_settings
 
 ### https://canvas.instructure.com/doc/api/assignment_groups.html
 fetched: 2026-09-10
@@ -704,6 +706,15 @@ params:
 - provisional
 - final
 - graded_anonymously
+
+### https://canvas.instructure.com/doc/api/assignments.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:course_id/assignments/:id
+params:
+- use_rubric_for_grading
+- rubric_settings
+- points_possible
 
 ### https://canvas.instructure.com/doc/api/outcomes.html
 fetched: 2026-09-10
