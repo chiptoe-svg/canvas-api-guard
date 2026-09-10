@@ -1136,3 +1136,155 @@ params:
 - exporting
 - exported
 - failed
+
+## references/course-content.md
+
+### https://canvas.instructure.com/doc/api/announcements.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/announcements
+params:
+- context_codes[]
+- include
+- sections
+- sections_user_count
+- start_date
+- end_date
+- available_after
+
+### https://canvas.instructure.com/doc/api/discussion_topics.html
+fetched: 2026-09-10
+endpoints:
+- POST /api/v1/courses/:course_id/discussion_topics
+- PUT /api/v1/courses/:course_id/discussion_topics/:topic_id
+- GET /api/v1/courses/:course_id/discussion_topics
+params:
+- title
+- message
+- is_announcement
+- published
+- specific_sections
+- lock_comment
+- podcast_enabled
+- podcast_has_student_posts
+- only_announcements
+- delayed_post_at
+- lock_at
+
+### https://canvas.instructure.com/doc/api/modules.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:course_id/modules
+- GET /api/v1/courses/:course_id/modules/:id
+- POST /api/v1/courses/:course_id/modules
+- PUT /api/v1/courses/:course_id/modules/:id
+- DELETE /api/v1/courses/:course_id/modules/:id
+- PUT /api/v1/courses/:course_id/modules/:id/relock
+- GET /api/v1/courses/:course_id/modules/:module_id/items
+- GET /api/v1/courses/:course_id/modules/:module_id/items/:id
+- POST /api/v1/courses/:course_id/modules/:module_id/items
+- PUT /api/v1/courses/:course_id/modules/:module_id/items/:id
+- DELETE /api/v1/courses/:course_id/modules/:module_id/items/:id
+- PUT /api/v1/courses/:course_id/modules/:module_id/items/:id/done
+- POST /api/v1/courses/:course_id/modules/:module_id/items/:id/mark_read
+params:
+- module[name]
+- module[unlock_at]
+- module[position]
+- module[require_sequential_progress]
+- module[prerequisite_module_ids][]
+- module[publish_final_grade]
+- module[published]
+- module_item[title]
+- module_item[type]
+- File
+- Page
+- Discussion
+- Assignment
+- Quiz
+- SubHeader
+- ExternalUrl
+- ExternalTool
+- module_item[content_id]
+- module_item[position]
+- module_item[indent]
+- module_item[page_url]
+- module_item[external_url]
+- module_item[new_tab]
+- module_item[iframe][width]
+- module_item[iframe][height]
+- module_item[module_id]
+- module_item[completion_requirement][type]
+- must_view
+- must_contribute
+- must_submit
+- must_mark_done
+- min_score
+- AiExperience
+- module_item[completion_requirement][min_score]
+- module_item[published]
+
+### https://canvas.instructure.com/doc/api/pages.html
+fetched: 2026-09-10
+endpoints:
+- POST /api/v1/courses/:course_id/pages
+- GET /api/v1/courses/:course_id/pages
+- GET /api/v1/courses/:course_id/pages/:url_or_id
+- PUT /api/v1/courses/:course_id/pages/:url_or_id
+- GET /api/v1/courses/:course_id/pages/:url_or_id/revisions
+- GET /api/v1/courses/:course_id/pages/:url_or_id/revisions/latest
+- GET /api/v1/courses/:course_id/pages/:url_or_id/revisions/:revision_id
+- POST /api/v1/courses/:course_id/pages/:url_or_id/revisions/:revision_id
+- GET /api/v1/courses/:course_id/front_page
+- PUT /api/v1/courses/:course_id/front_page
+params:
+- wiki_page[title]
+- wiki_page[body]
+- wiki_page[editing_roles]
+- teachers
+- students
+- members
+- public
+- wiki_page[notify_of_update]
+- wiki_page[published]
+- wiki_page[front_page]
+- wiki_page[publish_at]
+- sort
+- order
+- search_term
+- published
+- revision_id
+- summary
+- hide_from_students
+
+### https://canvas.instructure.com/doc/api/courses.html
+fetched: 2026-09-10
+endpoints:
+- POST /api/v1/accounts/:account_id/courses
+- PUT /api/v1/courses/:id
+params:
+- course[default_view]
+- feed
+- wiki
+- modules
+- syllabus
+- assignments
+
+### https://canvas.instructure.com/doc/api/tabs.html
+fetched: 2026-09-10
+endpoints:
+- GET /api/v1/courses/:course_id/tabs
+- PUT /api/v1/courses/:course_id/tabs/:tab_id
+params:
+- include[]
+- course_subject_tabs
+- position
+- hidden
+- visibility
+- public
+- members
+- admins
+- none
+- type
+- internal
+- external
