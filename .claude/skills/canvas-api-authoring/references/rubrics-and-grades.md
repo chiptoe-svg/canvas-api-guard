@@ -69,6 +69,27 @@ but only ever shown as a response example, never as a request-parameter table en
   an individual rating when POSTing `rubric[criteria]`, unlike the grading-side `rubric_assessment`
   parameter (see "Grading against a rubric"), which does show a worked example (docs:
   https://canvas.instructure.com/doc/api/rubrics.html).
+- Repo-verified: the page never states a literal request-side key form for `rubric[criteria]` or
+  its nested `ratings`, but this repo's own live-tested write does, and it resolves the "integer
+  ids" contradiction above rather than sitting next to it. Both `criteria` and, inside each
+  criterion, `ratings` are dicts keyed by `str(index)` from `enumerate` — stringified sequential
+  indices, i.e. `"0"`, `"1"`, `"2"`, not arbitrary or meaningful ids and not the underscore-prefixed
+  strings the response examples show. A criterion's own `ratings` follow the identical pattern one
+  level deeper, so the full literal shape a writer sends is
+  `rubric[criteria]["0"]["description"]`, `rubric[criteria]["0"]["points"]`,
+  `rubric[criteria]["0"]["ratings"]["0"]["description"]`,
+  `rubric[criteria]["0"]["ratings"]["0"]["points"]`, and so on for `"1"`, `"2"`, ... — what a
+  writer sends (stringified indices) and what Canvas's own response examples show (`"_10"`,
+  `"name_2"`) are not the same vocabulary; the writer's form is a stringified index, not an id
+  Canvas assigns or expects back. A comment in the same code also records a second,
+  live-observed fact: `free_form_criterion_comments` is only sent when true, because Canvas was
+  observed storing `false` as `null` on a real rubric, which a strict read-back would otherwise
+  flag as a mismatch — documentation states no default or storage behavior for this field at all
+  (repo: `level2/canvas_api_operations.py`, the `rubric_body` function, line 191 for the
+  index-keyed `criteria` construction and lines 193-194 for the observed
+  `free_form_criterion_comments` behavior; repo: `test_canvas_api_operations.py`, lines 59-71,
+  which assert the exact `{"0": {...}, "1": {...}}` shape for both `criteria` and nested
+  `ratings`, and that `false` is omitted rather than sent).
 - Both create and update return not a plain `Rubric` object but a hash of the form
   `{ 'rubric': Rubric, 'rubric_association': RubricAssociation }` — the page states this outright:
   "Unfortunately this endpoint does not return a standard Rubric object" (docs:
