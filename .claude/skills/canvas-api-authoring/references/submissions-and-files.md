@@ -413,6 +413,15 @@ produces a failure that looks like a permissions problem rather than a protocol 
   `self` swapped relative to the other page's `.../submissions/comments/self/files` (docs:
   https://canvas.instructure.com/doc/api/file.file_uploads.html; docs:
   https://canvas.instructure.com/doc/api/submission_comments.html).
+
+  Source-confirmed: `submission_comments.html`'s order is the real one. `config/routes.rb` routes
+  exactly one path for this action, `post
+  "/courses/:course_id/assignments/:assignment_id/submissions/:user_id/comments/files", action:
+  :create_file`, under `scope(controller: :submission_comments_api)` — `:user_id` before
+  `comments`, giving `.../submissions/self/comments/files` with `:user_id` as `self` (source:
+  `config/routes.rb`, line 1581). No route anywhere in that file orders the segments
+  `.../submissions/comments/self/files`; a caller sending `file.file_uploads.html`'s form gets a
+  404, not an upload.
 - Quiz Submission Files' example response nests the entire step 1 payload one level deeper than
   every other context in this section: `{"attachments": [{"upload_url": ..., "upload_params":
   {...}}]}`, an array wrapper the general file-upload documentation never mentions and never

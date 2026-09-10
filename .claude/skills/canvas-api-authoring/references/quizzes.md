@@ -140,6 +140,16 @@ One field, `text_after_answers`, is tagged "Used in missing word questions" — 
   is not one of the twelve `question_type` values this page enumerates. The field's own
   description does not name which of the twelve types it belongs to (docs:
   https://canvas.instructure.com/doc/api/quiz_questions.html).
+
+  Source-confirmed: `missing_word_question` is a real, thirteenth question type, live and
+  unsupported-flagged `false`, not deprecated. `answer_type` maps it to its own entry (`select`
+  entry type, `select_answer` answer type) in the same lookup table as the twelve documented types
+  (source: `app/helpers/quizzes_helper.rb#answer_type`, the `"missing_word_question"` entry, lines
+  337-344). The classic quiz-editing form still offers it as a choice — `<option
+  value="missing_word_question">` — with its own fields for the text before and after the blank,
+  one of which posts as `text_after_answers` (source:
+  `app/views/quizzes/quizzes/_form_question.html.erb`, lines 40 and 233-234). The REST page's
+  enum is simply incomplete, not a sign the type was retired.
 - `question[answers]` and the top-level `question[text_after_answers]` parameter share a name
   with the `Answer` object's own `text_after_answers` field — the create endpoint's own parameter
   table lists both `question[text_after_answers]` and `question[answers]` side by side with no
@@ -230,6 +240,19 @@ on a quiz are per-question (`question[points_possible]`) and per-group
 (`quiz_groups[][question_points]`, applied to every question the group picks). The quiz's total is
 not something this API lets a caller assign directly.
 
+Source-confirmed: `points_possible` is computed, not stored input. `Quiz.count_points_possible`
+sums, over the quiz's root entries, each ungrouped question's own `points_possible` plus, for each
+question group entry, `question_points * pick_count` — a group's total scales with how many
+questions it picks, not how many it contains (source: `app/models/quizzes/quiz.rb#count_points_possible`,
+lines 272-282). `generate_quiz_data` recomputes this sum and overwrites `points_possible` (floored
+at 0) every time the quiz's question data is regenerated — i.e. whenever questions or groups
+change and the quiz is saved — except for surveys and quizzes saved by a New Quizzes migration
+(source: `app/models/quizzes/quiz.rb#generate_quiz_data`, lines 809-826, the assignment at line
+821). `set_defaults` also recomputes it before save, via `current_points_possible`, for any quiz
+that is not yet available, not a survey, and not from a New Quizzes migration (source:
+`app/models/quizzes/quiz.rb#set_defaults`, lines 145-172, the assignment at line 159; source:
+`app/models/quizzes/quiz.rb#current_points_possible`, lines 285-289).
+
 **Endpoints.**
 
 | Verb | Path | Purpose |
@@ -261,6 +284,15 @@ not something this API lets a caller assign directly.
   individual value is ignored, overwritten, or retained but unused is not documented (docs:
   https://canvas.instructure.com/doc/api/quiz_questions.html; docs:
   https://canvas.instructure.com/doc/api/quiz_question_groups.html).
+
+  Source-confirmed: retained but unused for the total. `root_entries` builds the quiz's top-level
+  list from ungrouped questions plus groups only — a grouped question is excluded from that
+  top-level list once it carries a `quiz_group_id`, and sits nested inside its group's own
+  `:questions` array instead (source: `app/models/quizzes/quiz.rb#active_quiz_questions_without_group`,
+  lines 590-596; source: `app/models/quizzes/quiz.rb#root_entries`, lines 609-634). `count_points_possible`
+  only reads the top-level list, so a grouped question's individual `points_possible` is never
+  read for the quiz total; the group's own `question_points` is the only value that counts each
+  picked question (source: `app/models/quizzes/quiz.rb#count_points_possible`, lines 272-282).
 
 **Source.** https://canvas.instructure.com/doc/api/quizzes.html, fetched 2026-09-10; https://canvas.instructure.com/doc/api/quiz_questions.html, fetched 2026-09-10; https://canvas.instructure.com/doc/api/quiz_question_groups.html, fetched 2026-09-10
 
