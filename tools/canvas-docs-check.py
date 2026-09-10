@@ -66,20 +66,21 @@ def _path_of(endpoint):
     return match.group(2) if match else endpoint
 
 
-def _appears(path, page):
-    """True if path occurs in page as a whole path, not as the prefix of a longer one.
+def _appears(claim, page):
+    """True if claim occurs in page whole, not as part of a longer name.
 
-    Canvas paths nest: /courses/:course_id/quizzes is a substring of
-    /courses/:course_id/quizzes/:id. A plain substring test would therefore keep
-    reporting the collection endpoint as present long after it was removed, which is
-    the one drift this tool exists to catch.
+    Both kinds of claim need this. Canvas paths nest, so /courses/:course_id/quizzes is a
+    substring of /courses/:course_id/quizzes/:id. Short parameter names nest too: per_page
+    sits inside per_page_max, and id sits inside identifier. A plain substring test would
+    keep reporting either as present long after it was removed, which is the one drift
+    this tool exists to catch.
     """
     start = 0
     while True:
-        found = page.find(path, start)
+        found = page.find(claim, start)
         if found < 0:
             return False
-        after = page[found + len(path):found + len(path) + 1]
+        after = page[found + len(claim):found + len(claim) + 1]
         if not (after == "/" or after.isalnum() or after in ("_", "-")):
             return True
         start = found + 1
@@ -96,7 +97,7 @@ def missing(record, page):
         if not _appears(_path_of(endpoint), page):
             gone.append(("endpoint", endpoint))
     for param in record["params"]:
-        if param not in page:
+        if not _appears(param, page):
             gone.append(("param", param))
     return gone
 

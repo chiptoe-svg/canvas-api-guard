@@ -90,6 +90,16 @@ class Missing(unittest.TestCase):
                 "`/api/v1/courses/:course_id/quizzes/:id`\nquiz[title] quiz[published]")
         self.assertEqual(check.missing(self.record, page), [])
 
+    def test_a_parameter_is_not_matched_inside_a_longer_name(self):
+        """A short unbracketed parameter like per_page is a substring of per_page_max, and
+        `id` is a substring of `identifier`. Without a boundary check a removed parameter
+        reads as present forever - the same false negative `_appears` prevents for paths."""
+        record = check.parse_sources(
+            "## references/x.md\n\n### https://example.invalid/a.html\nfetched: 2026-09-10\n"
+            "params:\n- per_page\n- id\n")[0]
+        self.assertEqual(check.missing(record, "per_page_max is documented, the identifier went"),
+                         [("param", "per_page"), ("param", "id")])
+
 
 class Report(unittest.TestCase):
     def test_a_clean_run_says_so_and_exits_zero(self):
