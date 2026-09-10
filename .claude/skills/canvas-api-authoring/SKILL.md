@@ -20,8 +20,17 @@ It is not a record of what the local tooling can do. Every capability claim abou
 `canvas_api_guard.py` or `canvas_api_operations.py` goes stale the moment either changes, so
 none is written here. Look it up instead - see below.
 
-Nothing here has been run against a live Canvas instance. Every claim is documentation-grounded.
-A claim taken from this repo's own tested code is labelled repo-verified where it appears.
+Nothing here has been run against a live Canvas instance. A claim rests on one of three kinds of
+evidence, in ascending strength: the official Canvas REST documentation, cited `(docs: <url>)`;
+this repo's own code, cited `(repo: <path>)`, with a claim from this repo's own tested code
+labelled repo-verified; and Canvas's own source, cited `(source: <path>#<symbol or line>)`, with a
+claim from it labelled Source-confirmed.
+
+Canvas LMS is open source (`instructure/canvas-lms`, AGPL-3.0). Source on its `master` branch is
+stronger evidence than the documentation, because it is what actually runs. It is not the same as
+watching a real instance: source shows what the code does, not what any hosted instance runs,
+which feature flags are on, or which release is deployed. Treat Source-confirmed as stronger than
+documentation and weaker than an observed instance, never as final truth.
 
 ## Look up current capability, never recall it
 
@@ -52,6 +61,26 @@ Do not trust either tool past its boundary, and do not answer a capability quest
 
 Start with `references/passthrough-or-function.md`. The shape of the thing you are building
 decides more than any endpoint detail does.
+
+## When the documentation doesn't answer it
+
+When a page is silent, contradictory, or contradicted by observed behaviour, read the source
+instead of guessing. Canvas LMS is open source (`instructure/canvas-lms`, AGPL-3.0). Fetch files
+raw, straight from the default branch:
+
+```
+curl -s https://raw.githubusercontent.com/instructure/canvas-lms/master/app/models/rubric.rb -o /tmp/f.rb
+```
+
+Start near the resource you're chasing: `app/models/rubric.rb` (criteria parsing, outcome
+linkage), `app/models/rubric_assessment.rb` (what a saved assessment does to the grade), and
+`app/models/rubric_association.rb` (the `assess` method that scores a submission from criteria).
+When the shape reaching the API differs from the model, check `lib/api/v1/` for the serializer.
+
+Source on `master` tells you what the code does, not what a hosted instance runs, with which
+feature flags, or at which release. It is stronger evidence than the documentation and weaker than
+observing a real instance. Cite it `(source: <path>#<symbol or line>)` and label the claim
+Source-confirmed, per "What this is not" above.
 
 ## Provenance
 

@@ -89,7 +89,15 @@ but only ever shown as a response example, never as a request-parameter table en
   index-keyed `criteria` construction and lines 193-194 for the observed
   `free_form_criterion_comments` behavior; repo: `test_canvas_api_operations.py`, lines 59-71,
   which assert the exact `{"0": {...}, "1": {...}}` shape for both `criteria` and nested
-  `ratings`, and that `false` is omitted rather than sent).
+  `ratings`, and that `false` is omitted rather than sent). Source-confirmed: Canvas's own parser
+  matches this independently. `Rubric#generate_criteria` reads `rubric[criteria]` as a Hash, not
+  an array — `(params[:criteria] || {}).each do |idx, criterion_data|` — then sorts the resulting
+  criteria by `idx.to_i` before saving; nested ratings are parsed the same way,
+  `(criterion_data[:ratings] || {}).values.map`, and then re-sorted by points, so a rating's key is
+  read but not preserved. Canvas assigns each criterion's actual `id` itself, through
+  `unique_item_id`, rather than trusting `criterion_data[:id]` — which is why the response's
+  `"_10"`-style ids and the request's stringified indices were never meant to be the same
+  vocabulary (source: `app/models/rubric.rb#generate_criteria`, lines 473-522).
 - Both create and update return not a plain `Rubric` object but a hash of the form
   `{ 'rubric': Rubric, 'rubric_association': RubricAssociation }` — the page states this outright:
   "Unfortunately this endpoint does not return a standard Rubric object" (docs:
@@ -106,10 +114,19 @@ but only ever shown as a response example, never as a request-parameter table en
   `outcome_results.html`, and the master `all_resources.html` field index; none names a
   criterion-to-outcome link on any of them. Outcome results are their own separately documented
   report, keyed by `outcome_id`, not a field carried on a rubric criterion (docs:
-  https://canvas.instructure.com/doc/api/outcome_results.html). Do not guess a field name for this
-  link; read the `criteria` of a real outcome-linked rubric back from Canvas and inspect the keys it
-  actually returns, rather than constructing one blind (docs:
-  https://canvas.instructure.com/doc/api/rubrics.html; docs:
+  https://canvas.instructure.com/doc/api/outcome_results.html). Source-confirmed: the field is
+  `learning_outcome_id`, carried on the criterion itself. `Rubric`'s own validators read it as
+  `record.criteria.pluck(:learning_outcome_id)`, and the `Criterion` struct that
+  `generate_criteria`/`reconstitute_criteria` build lists `learning_outcome_id` as a member
+  alongside `description`, `points`, `mastery_points`, and `ignore_for_scoring`. It reaches the API:
+  `rubric_json` sets `hash["criteria"] = rubric.data` verbatim when a request passes `style=full`,
+  so an outcome-linked criterion's `learning_outcome_id` rides along inside that raw array even
+  though it is not one of the six fields the `RubricCriterion` schema documents (source:
+  `app/models/rubric.rb#RubricUniqueAlignments`, line 26; source: `app/models/rubric.rb`, the
+  `Criterion` struct, line 470; source: `app/models/rubric.rb#generate_criteria`, lines 494-499;
+  source: `lib/api/v1/rubric.rb#rubric_json`, line 52). The REST reference itself still does not
+  document this field; the name is confirmed by source, not by any page fetched for this reference
+  (docs: https://canvas.instructure.com/doc/api/rubrics.html; docs:
   https://canvas.instructure.com/doc/api/outcomes.html; docs:
   https://canvas.instructure.com/doc/api/all_resources.html).
 
@@ -355,7 +372,24 @@ pattern: given a rubric whose criteria have ids `crit1` and `crit2`, a caller se
   reliable pattern is to total the criteria and write the grade in the same request as the
   assessment, not to rely on `use_for_grading` (repo: `level2/canvas_api_operations.py`, the
   `grade_one` function, line 308: `body = {"submission": {"posted_grade": total},
-  "rubric_assessment": criteria}`).
+  "rubric_assessment": criteria}`). Source-confirmed: Canvas's own source states the consequence
+  the docs leave silent. Every `RubricAssessment` save runs `update_artifact` afterward, which
+  reads: `return if artifact.blank? || !rubric_association&.use_for_grading? || artifact.score ==
+  score`. When `use_for_grading` is false, it returns immediately — a `rubric_assessment` sent
+  alone never touches the grade, confirming the association-gated behavior above from the other
+  side. When `use_for_grading` is true and the freshly summed rubric score differs from the
+  artifact's current score, it calls `assignment.grade_student` with the summed criterion score as
+  `score:` and the assessor as `grader:` — Canvas grades the submission itself from the
+  `rubric_assessment` alone, with no `submission[posted_grade]` in the request at all. Two further
+  gates sit in front of that call: the assessor must hold the assignment's `:grade` right
+  (`assignment.grants_right?(assessor, :grade)`), and checkpointed assignments are excluded
+  outright — a comment on the same line says support for `use_for_grading` on checkpoints is not
+  finished (`assignment.checkpoints_parent?`). The summed score itself comes from
+  `RubricAssociation#assess`, which totals each criterion's `points` into `score` unless the
+  criterion is marked `ignore_for_scoring` (source: `app/models/rubric_assessment.rb#update_artifact`,
+  lines 209-230; source: `app/models/rubric_association.rb#assess`, lines 302-395). This repo's own
+  pattern of always sending `submission[posted_grade]` in the same request (above) sidesteps all
+  four gates rather than depending on any of them.
 
 **Source.** https://canvas.instructure.com/doc/api/rubrics.html, fetched 2026-09-10; https://canvas.instructure.com/doc/api/submissions.html, fetched 2026-09-10
 
