@@ -1012,6 +1012,50 @@ class TestEvidence(GuardTestCase):
         self.assertIn("WRITE STATUS UNCERTAIN", output)
         self.assertNotIn("404 gone", output)
 
+    def flaky_token_on_third_call(self):
+        """A token reader that behaves normally for the pre-write read and the write itself,
+        then raises a bare GuardError - never a RequestFailure - on the post-write read-back,
+        the way a keychain failure or a mid-run audit-log rotation (secure_log_fd) would."""
+        calls = {"n": 0}
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] == 3:
+                raise guard.GuardError("keychain rotated mid-run: no token")
+            return TOKEN
+        return mock.patch.object(guard, "read_token", flaky)
+
+    def test_a_put_whose_post_write_read_back_raises_guarderror_is_uncertain_not_refused(self):
+        """C1 follow-up (do_update): the post-write read-back must catch any GuardError, not
+        only RequestFailure - a completed PUT must never report exit 2/nothing applied."""
+        responses = [FakeResponse(payload={"id": 1, "name": "A"}),        # pre-read
+                     FakeResponse(payload={"id": 1, "name": "X"})]        # the write
+        with self.flaky_token_on_third_call(), \
+                mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, output = self.run_main(
+                ["put", "courses/1", "-d", '{"course": {"name": "X"}}', "--yes"])
+        self.assertEqual(code, 3)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+        self.assertIn("read-back failed", output)
+        evidence = [line for line in self.log_lines() if line["event"] == "evidence"]
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["verification"], "failed")
+
+    def test_a_delete_whose_post_write_read_back_raises_guarderror_is_uncertain_not_refused(self):
+        """C1 follow-up (do_delete): same as the PUT case, and must not be swallowed or
+        mis-handled by the 404-means-gone branch, which a bare GuardError never satisfies."""
+        responses = [FakeResponse(payload={"id": 2, "name": "Lab 4"}),    # pre-read
+                     FakeResponse(status=200, payload={"id": 2})]         # the delete
+        with self.flaky_token_on_third_call(), \
+                mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, output = self.run_main(["delete", "courses/1/assignments/2", "--yes"])
+        self.assertEqual(code, 3)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+        self.assertIn("read-back failed", output)
+        self.assertNotIn("404 gone", output)
+        evidence = [line for line in self.log_lines() if line["event"] == "evidence"]
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["verification"], "failed")
+
 
 class TestAFailedWriteRequest(GuardTestCase):
     """Canvas answering 4xx means it did not apply the write; anything else - a timeout, a
@@ -1501,13 +1545,30 @@ class TestShortWritesAreNeverSilent(GuardTestCase):
         self.assertIn("short write", str(caught.exception))
 
     def test_a_short_write_in_audit_prune_is_refused(self):
+        """The seeded record must be inside the retention window, so `kept` is non-empty and
+        the prune's own temp-file write is a real, multi-byte payload. A record outside the
+        window leaves `kept` empty, and a globally-short-circuited os.write would then be
+        caught by log_event's separate, already-checked write of the audit-prune record
+        itself - proving nothing about the prune site under test here. Only the FIRST os.write
+        call in do_audit_prune is the prune's own write (nothing writes before it); every call
+        after is let through for real, so a short return only from that first call isolates it."""
+        now = guard.datetime.datetime.now(guard.datetime.timezone.utc)
+        stamp = (now - guard.datetime.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
         with open(self.log_path, "w") as handle:
-            handle.write(json.dumps({"timestamp": "2020-01-01T00:00:00Z", "event": "read"}) + "\n")
+            handle.write(json.dumps({"timestamp": stamp, "event": "read"}) + "\n")
         os.chmod(self.log_path, 0o600)
-        with mock.patch("os.write", return_value=1):
-            code, _ = self.run_main(["audit", "prune", "--older-than", "1"])
+        real_write = os.write
+        calls = {"n": 0}
+        def short_first_write(fd, data):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return 1                         # short: far less than the real payload
+            return real_write(fd, data)
+        with mock.patch("os.write", side_effect=short_first_write):
+            code, _ = self.run_main(["audit", "prune", "--older-than", "180"])
         self.assertEqual(code, 2)
         self.assertIn("short write", self.last_stderr)
+        self.assertGreaterEqual(calls["n"], 1)
 
 
 class TestAttachmentDownload(GuardTestCase):

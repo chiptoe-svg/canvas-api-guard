@@ -1103,7 +1103,13 @@ def do_update(cfg, method, path, body):
         return
     try:
         after = send_request(cfg, "GET", path)
-    except RequestFailure as err:
+    except GuardError as err:                  # RequestFailure (network/HTTP) and a bare
+                                                # GuardError (e.g. read_token() on a keychain
+                                                # failure, or secure_log_fd() if the audit log's
+                                                # ownership/mode changed mid-run) both mean the
+                                                # read-back could not happen; the write was
+                                                # already sent, so this is uncertain, never a
+                                                # refusal.
         evidence["target"] = target_identity(before_obj, resp.get("data") if resp else None)
         uncertain(cfg, evidence, "the write returned, but read-back failed: %s" % err)
     after_obj = after["data"]
@@ -1211,8 +1217,12 @@ def do_delete(cfg, path, body):
         return
     try:
         after = send_request(cfg, "GET", path)
-    except RequestFailure as err:
-        if err.status == 404:
+    except GuardError as err:                  # as in do_update: RequestFailure and a bare
+                                                # GuardError both mean the read-back could not
+                                                # happen. A bare GuardError has no .status - use
+                                                # getattr so the 404-means-gone check below never
+                                                # raises AttributeError on one.
+        if getattr(err, "status", None) == 404:
             evidence.update({"verification": "passed", "note": "read-back after delete: 404 gone"})
             emit(cfg, evidence)
             return
