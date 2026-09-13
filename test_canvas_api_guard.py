@@ -1180,6 +1180,8 @@ class TestAuditCorrelation(GuardTestCase):
         self.assertEqual(len(lines), 80)
         for line in lines:
             json.loads(line)          # raises if two writers interleaved
+        runs = set(json.loads(line)["run"] for line in lines)
+        self.assertEqual(len(runs), 1, runs)
 
 
 class TestAuditFormat(GuardTestCase):

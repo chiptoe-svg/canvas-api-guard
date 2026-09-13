@@ -83,7 +83,7 @@ REDACTED = "Bearer <redacted>"
 AGENT_MARKERS = ("AI_AGENT", "CLAUDE_CODE_SESSION_ID", "CODEX_SANDBOX",
                  "CODEX_SANDBOX_NETWORK_DISABLED")   # names recorded if present; never values
 _SOURCE = None
-_RUN_ID = None
+_RUN_ID = os.urandom(6).hex()
 
 class GuardError(Exception):
     """Any refusal or failure the user should see as one clear line."""
@@ -266,10 +266,11 @@ def invocation_source():
     return _SOURCE
 
 def run_id():
-    """One id for every record this process writes. A PID is reused; this is not, so a request,
-    its evidence and its refusal cannot be read as belonging to a different run."""
+    """One id for every record this process writes. A PID is reused; this is not, so a
+    request, its evidence and its refusal cannot be read as belonging to a different run.
+    Assigned at import, so no two threads can ever race to create it."""
     global _RUN_ID
-    if _RUN_ID is None:
+    if _RUN_ID is None:          # only a test resets it
         _RUN_ID = os.urandom(6).hex()
     return _RUN_ID
 

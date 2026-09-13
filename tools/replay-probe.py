@@ -53,7 +53,6 @@ def load_guard(tree, tag):
 
 def run(guard, argv, urlopen):
     guard._SOURCE = None
-    guard._RUN_ID = None
     out, err = FakeStdout(), io.StringIO()
     with mock.patch("sys.stdout", out), mock.patch("sys.stderr", err), \
             mock.patch("sys.stdin", io.StringIO()), mock.patch("urllib.request.urlopen", urlopen):
