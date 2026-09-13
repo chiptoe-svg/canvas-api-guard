@@ -57,6 +57,20 @@ RULES="$SRC_DIR/codex/canvas-api-guard.rules"
 SKILL="$SRC_DIR/codex/skills/canvas-api-guard/SKILL.md"
 LEVEL2_SCRIPT="$SRC_DIR/level2/canvas_api_operations.py"
 LEVEL2_SKILL="$SRC_DIR/level2/SKILL.md"
+
+# The installed programs name /usr/bin/python3 absolutely, so PATH cannot choose the
+# interpreter that reads the credential store. Refuse to install if it is not there.
+PINNED_PYTHON=/usr/bin/python3
+if [ ! -x "$PINNED_PYTHON" ]; then
+    echo "error: $PINNED_PYTHON is missing. On macOS install the Command Line Tools" >&2
+    echo "       (xcode-select --install), then run this again." >&2
+    exit 1
+fi
+if [ "$(stat -f %u "$PINNED_PYTHON" 2>/dev/null || stat -c %u "$PINNED_PYTHON")" != "0" ]; then
+    echo "error: $PINNED_PYTHON is not owned by root; refusing to install" >&2
+    exit 1
+fi
+
 DEST_DIR=/usr/local/libexec
 DEST="$DEST_DIR/canvas_api_guard.py"
 CONFIG_DIR=/usr/local/etc/canvas-api-guard

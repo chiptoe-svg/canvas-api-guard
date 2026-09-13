@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 # canvas_api_guard - an audited passthrough to the Canvas REST API.
 #
 # WHAT IT IS. A single-file, stdlib-only wrapper around the Canvas REST API. It gives the user
@@ -139,11 +139,22 @@ def installed_guard_file():
         raise GuardError("the guard cannot prove its own path: __file__ is not set")
     return os.path.realpath(running)
 
+def trusted_interpreter():
+    """The interpreter executing this file must clear the same bar as the file itself. The
+    shebang names an absolute path, but `python3 canvas_api_guard.py` still runs whatever
+    python the caller's PATH supplies, and that process is the one that reads the keychain."""
+    running = sys.executable
+    if not running:
+        raise GuardError("the guard cannot prove its interpreter: sys.executable is not set")
+    return trusted_path(running, "the Python interpreter")
+
 def check_provenance():
-    """Prove the running guard is the installed, root-owned one before any credential use."""
+    """Prove the running guard is the installed, root-owned one, and that an equally trusted
+    interpreter is executing it, before any credential use."""
     if CONFIG_PATH != INSTALLED_CONFIG_PATH:
         return                       # test seam: a throwaway config is never an installation
     trusted_path(installed_guard_file(), "the guard executable")
+    trusted_interpreter()
 
 # ------------------------------------------------------------------------------------- token
 # read_token() is the only credential reader. Its value is used only to make an Authorization

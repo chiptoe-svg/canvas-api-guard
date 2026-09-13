@@ -229,6 +229,52 @@ class TestFixedProductionConfig(GuardTestCase):
         self.assertEqual(code, 0)
 
 
+class TestTrustedInterpreter(GuardTestCase):
+    """The guard proves its own file is root-owned; the interpreter executing that file has to
+    clear the same bar, or PATH still chooses the code that reads the keychain."""
+
+    def test_a_user_owned_interpreter_is_refused(self):
+        fake = os.path.join(self.state_dir, "python3")
+        with open(fake, "w"):
+            pass
+        os.chmod(fake, 0o755)
+        with mock.patch.object(guard.sys, "executable", fake):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.trusted_interpreter()
+        self.assertIn("Python interpreter", str(caught.exception))
+
+    def test_a_root_owned_interpreter_is_accepted(self):
+        with mock.patch.object(guard.sys, "executable", "/bin/sh"):
+            self.assertEqual(guard.trusted_interpreter(), os.path.realpath("/bin/sh"))
+
+    def test_an_unset_interpreter_is_refused(self):
+        with mock.patch.object(guard.sys, "executable", ""):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.trusted_interpreter()
+        self.assertIn("sys.executable", str(caught.exception))
+
+    def test_provenance_checks_the_interpreter_when_the_config_is_the_installed_one(self):
+        """check_provenance runs before read_token and before the network; the interpreter
+        check has to sit inside it, not beside it."""
+        fake = os.path.join(self.state_dir, "python3")
+        with open(fake, "w"):
+            pass
+        os.chmod(fake, 0o755)
+        with mock.patch.object(guard, "INSTALLED_CONFIG_PATH", guard.CONFIG_PATH), \
+                mock.patch.object(guard, "installed_guard_file", lambda: "/bin/sh"), \
+                mock.patch.object(guard.sys, "executable", fake):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.check_provenance()
+        self.assertIn("Python interpreter", str(caught.exception))
+
+    def test_both_programs_name_an_absolute_interpreter(self):
+        root = os.path.dirname(os.path.abspath(__file__))
+        for name in ("canvas_api_guard.py", os.path.join("level2", "canvas_api_operations.py")):
+            with open(os.path.join(root, name)) as handle:
+                first = handle.readline().strip()
+            self.assertEqual(first, "#!/usr/bin/python3", name)
+
+
 class TestPathNormalisation(GuardTestCase):
     def test_all_three_forms_normalise_to_one(self):
         for given in ("/api/v1/courses/123", "api/v1/courses/123", "courses/123",

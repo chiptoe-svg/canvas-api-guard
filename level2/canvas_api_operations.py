@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """Specialized Canvas instructor operations.
 
 This program never reads a Canvas credential and never opens a network connection.  It calls
