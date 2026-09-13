@@ -931,15 +931,15 @@ git commit -m "chore: guard 1.18.0, and the pilot-safety review surface"
 
 ### Task 8: LICENSE
 
-**Gated on the owner's choice — do not guess a licence.** Ask which, then:
+The owner chose **MIT** (2026-09-13).
 
 - [ ] **Step 1: Fetch the exact text**
 
 ```bash
-gh api /licenses/<key> --jq .body > LICENSE
+gh api /licenses/mit --jq .body > LICENSE
 ```
 
-where `<key>` is the owner's choice (`mit`, `apache-2.0`, `agpl-3.0`, …). Fill in the copyright line if the text carries a placeholder.
+The GitHub text carries `[year]` and `[fullname]` placeholders. Replace them with `2026` and the copyright holder the owner names — ask if it is not already stated anywhere in the repo; do not guess a name.
 
 - [ ] **Step 2: Name it in the README**
 
