@@ -54,8 +54,8 @@ class FakeResponse(object):
         self.headers = headers or {}
         self._payload = json.dumps(payload if payload is not None else {}).encode("utf-8")
 
-    def read(self):
-        return self._payload
+    def read(self, amt=None):
+        return self._payload if amt is None else self._payload[:amt]
 
     def close(self):
         pass
@@ -3075,6 +3075,38 @@ class TestDocumentClaims(unittest.TestCase):
         self.assertIn("test_canvas_api_operations.py", review)
         self.assertIn("submission-reviews", review)
         self.assertNotIn("clemson.instructure.com", readme)
+
+
+class TestResponseSizeCap(GuardTestCase):
+    """--all-pages is bounded by PAGE_CAP; one response body was not bounded at all."""
+
+    def test_an_oversized_read_is_refused(self):
+        big = {"blob": "x" * 500}
+        with mock.patch.object(guard, "MAX_RESPONSE_BYTES", 64), \
+                mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload=big)
+            code, _ = self.run_main(["get", "courses/1"])
+        self.assertEqual(code, 2)
+        self.assertIn("64-byte limit", self.last_stderr)
+        self.assertTrue(any(line.get("error") == "ResponseTooLarge" for line in self.log_lines()))
+
+    def test_a_response_at_the_limit_is_accepted(self):
+        with mock.patch.object(guard, "MAX_RESPONSE_BYTES", 4096), \
+                mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            code, _ = self.run_main(["get", "courses/1"])
+        self.assertEqual(code, 0)
+
+    def test_an_oversized_read_back_after_a_write_is_uncertain_not_refused(self):
+        """The write was sent. Exit 2 would claim nothing happened."""
+        responses = [FakeResponse(payload={"id": 1, "name": "before"}),
+                     FakeResponse(payload={"id": 1, "name": "after"}),
+                     FakeResponse(payload={"id": 1, "name": "x" * 500})]
+        with mock.patch.object(guard, "MAX_RESPONSE_BYTES", 64), \
+                mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, _ = self.run_main(["put", "courses/1", "-d", '{"course": {"name": "after"}}',
+                                     "--yes"])
+        self.assertEqual(code, 3)
 
 
 if __name__ == "__main__":

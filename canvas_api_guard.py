@@ -77,6 +77,8 @@ READ_VERBS = ("GET", "DOWNLOAD")   # evidence verbs already logged as their own 
 TIMEOUT = 30
 PAGE_CAP = 200                     # --all-pages: an upper bound, not a promise. A server that
                                    # keeps returning the same rel="next" would otherwise loop.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024   # one response body. --all-pages is bounded separately by
+                                       # PAGE_CAP; this bounds the single read underneath it.
 REDACTED = "Bearer <redacted>"
 AGENT_MARKERS = ("AI_AGENT", "CLAUDE_CODE_SESSION_ID", "CODEX_SANDBOX",
                  "CODEX_SANDBOX_NETWORK_DISABLED")   # names recorded if present; never values
@@ -494,7 +496,7 @@ def send_request(cfg, method, path, body=None):
     event = "response" if is_write else "read"
     try:
         raw = open_request(request)
-        status, head, text = raw.status, dict(raw.headers), raw.read()
+        status, head, text = raw.status, dict(raw.headers), raw.read(MAX_RESPONSE_BYTES + 1)
         raw.close()
     except Exception as err:                       # HTTPError, DNS, TLS, timeout, ...
         status = getattr(err, "code", None)
@@ -502,6 +504,14 @@ def send_request(cfg, method, path, body=None):
                                  "status": status, "error": type(err).__name__})
         raise RequestFailure("%s %s failed: %s: %s"
                              % (method, url, type(err).__name__, err), status=status)
+    if len(text) > MAX_RESPONSE_BYTES:
+        log_event(cfg.log_path, {"event": event, "verb": method, "path": npath, "ok": False,
+                                 "status": status, "error": "ResponseTooLarge"})
+        # RequestFailure, not GuardError: on a write this reaches send_write, which treats a
+        # non-4xx as uncertain. The write was sent; only its result is unreadable.
+        raise RequestFailure("%s %s returned more than the %d-byte limit; narrow the request "
+                             "with --fields, a smaller per_page, or a more specific path"
+                             % (method, npath, MAX_RESPONSE_BYTES), status=status)
     log_event(cfg.log_path, {"event": event, "verb": method, "path": npath, "status": status,
                              "ok": True, "bytes": len(text)})
     try:

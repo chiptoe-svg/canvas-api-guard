@@ -30,8 +30,8 @@ class FakeResponse(object):
         self.status, self.headers = status, {}
         self._payload = json.dumps(payload if payload is not None else {}).encode("utf-8")
 
-    def read(self):
-        return self._payload
+    def read(self, amt=None):
+        return self._payload if amt is None else self._payload[:amt]
 
     def close(self):
         pass
