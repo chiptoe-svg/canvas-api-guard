@@ -230,25 +230,27 @@ class TestDraftNeverDeletesTopLevel(GuardTestCase):
         urlopen.assert_not_called()
 
     def test_deleting_a_question_of_an_unpublished_quiz_is_allowed(self):
-        responses = [FakeResponse(payload={"id": 5, "published": False}),   # parent proof
-                     FakeResponse(payload={"id": 9}),                        # the pre-read
-                     FakeResponse(payload={"id": 9}),                        # the DELETE
-                     FakeResponse(status=404, payload={})]                   # gone on read-back
+        responses = [FakeResponse(payload={"id": 5, "published": False}),   # prove_draft's parent
+                     FakeResponse(payload={"id": 9}),                        # do_delete's pre-read
+                     FakeResponse(status=200, payload={"id": 9}),            # the DELETE
+                     urllib.error.HTTPError("https://" + HOST, 404,          # gone on read-back
+                                            "Not Found", {}, None)]
         with mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen:
             code, _ = self.run_main(["draft", "delete", "courses/1/quizzes/5/questions/9"])
         self.assertEqual(code, 0)
         self.assertTrue(urlopen.called)
 
     def test_an_ordinary_delete_with_approval_is_unaffected(self):
-        responses = [FakeResponse(payload={"id": 5, "published": True}),
-                     FakeResponse(payload={"id": 5}),
-                     FakeResponse(status=404, payload={})]
+        responses = [FakeResponse(payload={"id": 5, "name": "Quiz 5"}),      # do_delete's pre-read
+                     FakeResponse(status=200, payload={"id": 5}),            # the DELETE
+                     urllib.error.HTTPError("https://" + HOST, 404,          # gone on read-back
+                                            "Not Found", {}, None)]
         with mock.patch("urllib.request.urlopen", side_effect=responses):
             code, _ = self.run_main(["delete", "courses/1/quizzes/5", "--yes"])
         self.assertEqual(code, 0)
 ```
 
-The response sequences match the real call order. `do_delete` (`canvas_api_guard.py:1125`) reads the object, writes, then reads back, treating a 404 on that read-back as proof it is gone (`:1143`) — three calls. A *draft* delete adds `prove_draft`'s parent read in front, making four. If a sequence still runs short, follow the failure; never change `do_delete` to fit a test.
+A 404 read-back is an `urllib.error.HTTPError` raised by the mocked `urlopen`, never a `FakeResponse` carrying status 404 — that is this suite's existing convention (`test_canvas_api_guard.py:758`, `test_delete_reports_that_the_object_is_gone`). The response sequences match the real call order. `do_delete` (`canvas_api_guard.py:1125`) reads the object, writes, then reads back, treating a 404 on that read-back as proof it is gone (`:1143`) — three calls. A *draft* delete adds `prove_draft`'s parent read in front, making four. If a sequence still runs short, follow the failure; never change `do_delete` to fit a test.
 
 - [ ] **Step 2: Run them and watch them fail**
 
