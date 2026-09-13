@@ -5,7 +5,7 @@
 
 Exports BASE_COMMIT with git archive into a temp dir, then runs the same seven scenarios
 against both guards with urlopen and read_token replaced, the config exactly as install.sh
-writes it, and diffs: audit records (timestamp and pid normalised), stdout, stderr, exit codes,
+writes it, and diffs: audit records (timestamp, pid, and run id normalised), stdout, stderr, exit codes,
 --help and --version. Exit 0 = identical, 1 = differs (the diff is printed), 2 = usage.
 Nothing here touches the network, a credential store, or the installed guard.
 The version string is normalised; a release bump is not a behaviour change. Everything else must match.
@@ -22,7 +22,7 @@ import urllib.request
 from unittest import mock
 
 CONFIG_TEXT = '{"host":"canvas.example.edu","profile":"level-1"}\n'   # install.sh's exact bytes
-NORMALISE = ("timestamp", "pid")
+NORMALISE = ("timestamp", "pid", "run")
 
 
 class FakeResponse(object):
@@ -53,6 +53,7 @@ def load_guard(tree, tag):
 
 def run(guard, argv, urlopen):
     guard._SOURCE = None
+    guard._RUN_ID = None
     out, err = FakeStdout(), io.StringIO()
     with mock.patch("sys.stdout", out), mock.patch("sys.stderr", err), \
             mock.patch("sys.stdin", io.StringIO()), mock.patch("urllib.request.urlopen", urlopen):
