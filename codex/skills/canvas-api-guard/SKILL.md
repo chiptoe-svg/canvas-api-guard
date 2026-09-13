@@ -54,6 +54,15 @@ a private review directory, bearer-free, and prints the local path and its sha25
 ```
 `--file-id` is that submission's `attachments[].id`; show it first, like a write; the file stays here (rule below).
 
+## audit prune
+
+The audit log holds identifiers, changed field values and verification results. `prune` removes
+records older than the window and keeps anything whose timestamp it cannot read. The pilot default
+is 180 days. It reaches no network:
+```sh
+/usr/local/libexec/canvas_api_guard.py audit prune --older-than 180
+```
+
 ## The five disciplines
 
 These are not style. Every object here is somebody's education record.

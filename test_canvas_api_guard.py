@@ -1223,6 +1223,59 @@ class TestAuditFormat(GuardTestCase):
         ])
 
 
+class TestAuditPrune(GuardTestCase):
+    def seed(self, ages_in_days):
+        """Write one record per age, oldest first, bypassing log_event's own timestamp."""
+        lines = []
+        now = guard.datetime.datetime.now(guard.datetime.timezone.utc)
+        for age in ages_in_days:
+            stamp = (now - guard.datetime.timedelta(days=age)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            lines.append(json.dumps({"timestamp": stamp, "event": "read", "age": age}))
+        with open(self.log_path, "w") as handle:
+            handle.write("\n".join(lines) + "\n")
+        os.chmod(self.log_path, 0o600)
+
+    def test_records_older_than_the_cutoff_are_dropped_and_newer_ones_kept(self):
+        self.seed([400, 200, 10, 1])
+        code, _ = self.run_main(["audit", "prune", "--older-than", "180"])
+        self.assertEqual(code, 0)
+        ages = [line.get("age") for line in self.log_lines() if "age" in line]
+        self.assertEqual(ages, [10, 1])
+
+    def test_the_prune_logs_itself(self):
+        self.seed([400, 1])
+        self.run_main(["audit", "prune", "--older-than", "180"])
+        pruned = [line for line in self.log_lines() if line.get("event") == "audit-prune"]
+        self.assertEqual(len(pruned), 1)
+        self.assertEqual(pruned[0]["records_dropped"], 1)
+        self.assertEqual(pruned[0]["records_kept"], 1)
+
+    def test_an_unparseable_line_is_kept_never_silently_discarded(self):
+        self.seed([400])
+        with open(self.log_path, "a") as handle:
+            handle.write("this is not json\n")
+        self.run_main(["audit", "prune", "--older-than", "180"])
+        with open(self.log_path) as handle:
+            self.assertIn("this is not json", handle.read())
+
+    def test_the_pruned_log_keeps_its_private_mode(self):
+        self.seed([400, 1])
+        self.run_main(["audit", "prune", "--older-than", "180"])
+        self.assertEqual(os.stat(self.log_path).st_mode & 0o777, 0o600)
+
+    def test_a_zero_day_retention_is_refused(self):
+        self.seed([1])
+        code, _ = self.run_main(["audit", "prune", "--older-than", "0"])
+        self.assertEqual(code, 2)
+        self.assertIn("at least 1 day", self.last_stderr)
+
+    def test_the_prune_reaches_no_network(self):
+        self.seed([400])
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            self.run_main(["audit", "prune", "--older-than", "180"])
+        urlopen.assert_not_called()
+
+
 class TestAttachmentDownload(GuardTestCase):
     def test_attachment_opener_disables_proxy_use(self):
         request = urllib.request.Request("https://%s/files/9/download" % HOST)
@@ -1891,7 +1944,8 @@ class TestRulesCoverage(unittest.TestCase):
 
     def test_every_guard_subcommand_is_classified_exactly_once(self):
         lists = rule_lists(self.RULES)
-        classified = lists["READS"] + lists["DRAFTS"] + lists["WRITES"] + lists["DOWNLOADS"]
+        classified = (lists["READS"] + lists["DRAFTS"] + lists["WRITES"]
+                      + lists["DOWNLOADS"] + lists["MAINTENANCE"])
         self.assertEqual(sorted(classified), subcommand_names(guard.build_parser()))
         self.assertEqual(len(classified), len(set(classified)))
 
@@ -1912,7 +1966,8 @@ class TestRulesCoverage(unittest.TestCase):
         self.assertEqual(lists["OPERATION_READS"], ALLOWED_WITHOUT_PROMPT[2:])
         for name in subcommand_names(guard.build_parser()):
             if name not in lists["READS"] + lists["DRAFTS"]:
-                self.assertIn(name, lists["WRITES"] + lists["DOWNLOADS"], name)
+                self.assertIn(name, lists["WRITES"] + lists["DOWNLOADS"] + lists["MAINTENANCE"],
+                              name)
         for name in subcommand_names(load_operations().parser()):
             if name not in lists["OPERATION_READS"]:
                 self.assertIn(name, lists["OPERATION_PROMPTS"], name)
@@ -1952,7 +2007,7 @@ class TestSkillDocuments(unittest.TestCase):
 
     def test_the_level_1_skill_stays_short_enough_to_be_read(self):
         with open(self.GUARD_SKILL) as handle:
-            self.assertLess(len(handle.read().splitlines()), 120)  # was 90; publishing, updates and the failure rules earned theirs
+            self.assertLess(len(handle.read().splitlines()), 130)  # was 90, then 120; audit prune earned its nine
 
     def test_the_level_1_skill_shows_only_verbs_the_guard_has(self):
         known = set(subcommand_names(guard.build_parser()))

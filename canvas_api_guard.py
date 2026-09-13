@@ -73,7 +73,7 @@ INSTALLED_CONFIG_PATH = CONFIG_PATH          # the offline-test seam: the suite 
                                              # provenance check below stands down. The
                                              # installed guard never does that.
 WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
-READ_VERBS = ("GET", "DOWNLOAD")   # evidence verbs already logged as their own single line
+READ_VERBS = ("GET", "DOWNLOAD", "AUDIT")   # evidence verbs already logged as their own single line
 TIMEOUT = 30
 PAGE_CAP = 200                     # --all-pages: an upper bound, not a promise. A server that
                                    # keeps returning the same rel="next" would otherwise loop.
@@ -1198,6 +1198,50 @@ def do_delete(cfg, path, body):
     uncertain(cfg, evidence, "read-back after delete still returned the object, not marked "
                              "deleted (workflow_state %r)" % after_obj.get("workflow_state"))
 
+RETENTION_DAYS = 180           # the pilot default, documented in SKILL.md; never automatic
+
+def do_audit_prune(cfg, days):
+    """Rewrite the audit log keeping only records newer than the cutoff. The same ownership and
+    mode gate applies on the way in, the replacement is written privately and moved into place,
+    and the file is never deleted. A line whose timestamp cannot be read is always kept."""
+    if days < 1:
+        raise GuardError("--older-than must be at least 1 day")
+    os.close(secure_log_fd(cfg.log_path))       # the ownership and mode gate, before reading
+    cutoff = (datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(days=days))
+    kept, dropped = [], 0
+    with open(cfg.log_path) as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                stamp = json.loads(line)["timestamp"]
+                when = datetime.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=datetime.timezone.utc)
+            except (ValueError, TypeError, KeyError):
+                kept.append(line)               # unreadable: kept, never silently discarded
+                continue
+            if when >= cutoff:
+                kept.append(line)
+            else:
+                dropped += 1
+    temporary = cfg.log_path + ".prune"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(temporary, flags, 0o600)
+    try:
+        os.write(fd, "".join(kept).encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(temporary, cfg.log_path)
+    log_event(cfg.log_path, {"event": "audit-prune", "older_than_days": days,
+                             "records_kept": len(kept), "records_dropped": dropped})
+    emit(cfg, {"verb": "AUDIT", "path": cfg.log_path,
+               "note": "audit records older than %d days removed" % days,
+               "object": {"records_kept": len(kept), "records_dropped": dropped}})
+
 VERBS = {"get": do_get, "post": do_post, "delete": do_delete,
          "put": lambda c, p, b: do_update(c, "PUT", p, b),
          "patch": lambda c, p, b: do_update(c, "PATCH", p, b)}
@@ -1302,6 +1346,13 @@ def build_parser():
     download.add_argument("--submission-id", required=True)
     download.add_argument("--suffix", default=".bin", help="safe local filename extension, for example .pdf")
     download.add_argument("-o", "--output", choices=("text", "json"), default=None)
+    audit = subs.add_parser("audit", help="maintain the local audit log; reaches no network")
+    audit_subs = audit.add_subparsers(dest="audit_action", required=True)
+    prune = audit_subs.add_parser("prune", help="remove audit records older than --older-than days")
+    prune.add_argument("--older-than", type=int, required=True, metavar="DAYS",
+                       help="keep records newer than this many days (pilot default: %d)"
+                            % RETENTION_DAYS)
+    prune.add_argument("-o", "--output", choices=("text", "json"), default=None)
     return parser
 
 def main(argv=None):
@@ -1318,6 +1369,11 @@ def main(argv=None):
             cfg = make_config(argparse.Namespace(output=args.output, dry_run=False,
                                                   yes=False, all_pages=False, fields=None))
             do_download_submission_file(cfg, args.course_id, args.file_id, args.submission_id, args.suffix)
+            return 0
+        if args.verb == "audit":
+            cfg = make_config(argparse.Namespace(output=args.output, dry_run=False,
+                                                  yes=False, all_pages=False, fields=None))
+            do_audit_prune(cfg, args.older_than)
             return 0
         body = json.loads(args.data) if args.data else None
         cfg = make_config(args)
