@@ -292,6 +292,43 @@ class TestPathNormalisation(GuardTestCase):
                 guard.normalise_path(bad)
 
 
+class TestOutOfScopePaths(GuardTestCase):
+    """Account administration and developer keys are outside a faculty pilot. Refused for every
+    verb, reads included, because that needs no judgement about which are dangerous."""
+
+    def test_an_account_path_is_refused_on_read(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "accounts/1/users"])
+        self.assertEqual(code, 2)
+        self.assertIn("outside its scope", self.last_stderr)
+        urlopen.assert_not_called()
+
+    def test_an_account_path_is_refused_on_write(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["post", "accounts/1/courses", "-d", "{}", "--yes"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+
+    def test_a_developer_key_path_is_refused(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "developer_keys"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+
+    def test_a_course_path_naming_accounts_further_down_is_allowed(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            code, _ = self.run_main(["get", "courses/1/accounts"])
+        self.assertEqual(code, 0)
+
+    def test_the_refusal_happens_before_any_network_or_log_line(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "accounts/1"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+        self.assertEqual([line for line in self.log_lines() if line.get("event") == "read"], [])
+
+
 class TestConfirmation(GuardTestCase):
     def test_a_write_without_a_tty_and_without_yes_is_refused(self):
         with mock.patch("urllib.request.urlopen") as urlopen:

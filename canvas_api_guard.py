@@ -354,13 +354,26 @@ def normalise_path(path):
         clean = "api/v1/" + clean
     return "/" + clean + (("?" + query) if query else "")
 
+# Two path prefixes a faculty pilot never needs, refused for every verb including reads. This is
+# deliberately not a list of "dangerous" operations: such a list invites the belief that what is
+# missing from it is safe. Every other write is gated the way it always was, by a person seeing
+# the URL and the changed fields and confirming.
+OUT_OF_SCOPE = re.compile(r"^/api/v1/(accounts|developer_keys)(/|$)")
+
+def refuse_out_of_scope(npath):
+    if OUT_OF_SCOPE.match(npath):
+        raise GuardError("this tool does not reach %s: account administration and developer "
+                         "keys are outside its scope" % npath.split("?")[0])
+
 def canvas_url(host, path):
     """The only place a URL is built. Pins the scheme and the host."""
     if not host:
         raise GuardError("no Canvas host configured in %s" % CONFIG_PATH)
     if "://" in host or "/" in host or "@" in host or any(c.isspace() for c in host):
         raise GuardError("invalid Canvas host: %r" % host)
-    url = "https://" + host + normalise_path(path)
+    npath = normalise_path(path)
+    refuse_out_of_scope(npath)
+    url = "https://" + host + npath
     check = urllib.parse.urlsplit(url)
     if check.scheme != "https" or check.netloc != host:
         raise GuardError("refusing a URL that leaves the pinned host: %r" % url)

@@ -14,6 +14,7 @@ and it is the ONLY way you talk to Canvas: never curl, urllib, or a browser agai
 the credential store (`security`, `secret-tool`); never ask for or write a token anywhere.
 Every documented Canvas endpoint works through it as documented, with `get`, `put`, `post`, `patch`
 and `delete`; the Canvas API documentation is your reference, and a named operation is never required.
+The guard reaches course-scoped Canvas endpoints; `accounts/...` and developer keys are refused for every verb, and that refusal is in the program, not in instructions.
 
 ## How to call it
 
