@@ -1275,6 +1275,18 @@ class TestAuditPrune(GuardTestCase):
             self.run_main(["audit", "prune", "--older-than", "180"])
         urlopen.assert_not_called()
 
+    def test_one_prune_writes_exactly_one_record(self):
+        """emit logs anything whose verb is not in READ_VERBS. Without "AUDIT" there, one prune
+        writes its own audit-prune record AND a second evidence record for the same action."""
+        self.seed([400, 1])
+        before = len(self.log_lines())
+        code, _ = self.run_main(["audit", "prune", "--older-than", "180"])
+        self.assertEqual(code, 0)
+        after = self.log_lines()
+        self.assertEqual(len(after) - (before - 1), 1, after)
+        self.assertEqual([line for line in after
+                          if line.get("verb") == "AUDIT" and line.get("event") == "evidence"], [])
+
 
 class TestAttachmentDownload(GuardTestCase):
     def test_attachment_opener_disables_proxy_use(self):
@@ -1906,12 +1918,13 @@ class TestCodexRules(unittest.TestCase):
     # are generated from these plus whatever the rules file's own lists currently declare, so a
     # subcommand nobody hand-copied into this test still gets checked against real Codex.
     DECISION_FOR_LIST = {"READS": "allow", "DRAFTS": "allow", "WRITES": "prompt",
-                         "DOWNLOADS": "prompt", "OPERATION_READS": "allow",
-                         "OPERATION_PROMPTS": "prompt"}
+                         "DOWNLOADS": "prompt", "MAINTENANCE": "prompt",
+                         "OPERATION_READS": "allow", "OPERATION_PROMPTS": "prompt"}
 
     def test_the_matrix(self):
         program_for_list = {"READS": self.GUARD, "DRAFTS": self.GUARD, "WRITES": self.GUARD,
-                            "DOWNLOADS": self.GUARD, "OPERATION_READS": self.OPERATIONS,
+                            "DOWNLOADS": self.GUARD, "MAINTENANCE": self.GUARD,
+                            "OPERATION_READS": self.OPERATIONS,
                             "OPERATION_PROMPTS": self.OPERATIONS}
         lists = rule_lists(self.RULES)
         rows = []
