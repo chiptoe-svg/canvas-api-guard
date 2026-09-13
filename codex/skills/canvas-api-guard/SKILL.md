@@ -14,7 +14,7 @@ and it is the ONLY way you talk to Canvas: never curl, urllib, or a browser agai
 the credential store (`security`, `secret-tool`); never ask for or write a token anywhere.
 Every documented Canvas endpoint works through it as documented, with `get`, `put`, `post`, `patch`
 and `delete`; the Canvas API documentation is your reference, and a named operation is never required.
-Every documented Canvas endpoint is reachable except `accounts/...` and developer keys, which the program itself refuses for every verb - not a rule in these instructions.
+Every documented Canvas endpoint is reachable except `accounts/...`, developer keys, and any path with a literal `%`, all refused by the program itself for every verb, not a rule here; encode only query parameters, never the path.
 
 ## How to call it
 

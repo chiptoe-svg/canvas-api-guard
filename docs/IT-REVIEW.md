@@ -198,7 +198,10 @@ rotation policy. `audit prune --older-than DAYS` gives an operator a manual way 
 records older than a window - it keeps any line whose timestamp it cannot read, never deletes
 the log file itself, and logs its own run - and the guard documents 180 days as the pilot
 retention default, but nothing in the guard invokes prune automatically. Scheduling it, and
-forwarding or rotating the log, remain deployment controls.
+forwarding or rotating the log, remain deployment controls. Prune re-reads the log for records
+appended after its own first pass and carries them into the replacement, but a record appended
+in the instant between that final read and the atomic swap can still be lost; prune should not
+be run while another guard may be active.
 
 ## Installation controls
 

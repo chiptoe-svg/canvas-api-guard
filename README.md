@@ -267,9 +267,10 @@ token storage. The temporary reviewed checkout is intentionally retained for ins
 ## Usage
 
 Paths may be `/api/v1/courses/123`, `api/v1/courses/123`, or `courses/123`. A path containing
-a scheme, host, backslash, whitespace, or `..` is refused. `/api/v1/accounts/...` and
-`/api/v1/developer_keys/...` are refused for every verb, reads included: account administration
-and developer keys are outside this pilot's scope. The host and audit path have no
+a scheme, host, backslash, whitespace, a literal `%`, or `..` is refused - encode only query
+parameters, never the path. `/api/v1/accounts/...` and `/api/v1/developer_keys/...` are refused
+for every verb, reads included: account administration and developer keys are outside this
+pilot's scope. The host and audit path have no
 command-line overrides in the installed interface.
 
 ```sh

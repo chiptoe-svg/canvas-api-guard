@@ -356,6 +356,47 @@ class TestOutOfScopePaths(GuardTestCase):
         self.assertEqual(code, 0)
         urlopen.assert_called_once()
 
+    def test_a_refused_read_leaves_exactly_one_refusal_record(self):
+        """I4: docs/IT-REVIEW.md presents the account refusal as a security control; a control
+        that leaves no trace is weaker than that implies."""
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "accounts/1/users"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+        refusals = [line for line in self.log_lines() if line["event"] == "refusal"]
+        self.assertEqual(len(refusals), 1)
+        self.assertEqual(refusals[0]["kind"], "read")
+        self.assertIn("refused", refusals[0]["confirmation"])
+
+    def test_a_refused_write_leaves_exactly_one_refusal_record(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["post", "accounts/1/courses", "-d", "{}", "--yes"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+        refusals = [line for line in self.log_lines() if line["event"] == "refusal"]
+        self.assertEqual(len(refusals), 1)
+        self.assertEqual(refusals[0]["kind"], "write")
+        self.assertIn("refused", refusals[0]["confirmation"])
+
+    def test_a_refused_percent_encoded_path_leaves_exactly_one_refusal_record(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "courses/1/pages%2fsyllabus"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+        refusals = [line for line in self.log_lines() if line["event"] == "refusal"]
+        self.assertEqual(len(refusals), 1)
+        self.assertIn("percent", refusals[0]["confirmation"])
+
+    def test_a_scheme_refusal_still_leaves_no_log_line_at_all(self):
+        """Every other normalise_path refusal - a scheme, a host, '..', whitespace - is a
+        malformed argument, not a scoped-path or percent-encoding refusal, and stays unlogged,
+        as TestHostPinning.test_the_verb_refuses_before_any_log_line_is_written already covers."""
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "https://evil.example.com/api/v1/courses/1"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+        self.assertEqual(self.log_lines(), [])
+
 
 class TestConfirmation(GuardTestCase):
     def test_a_write_without_a_tty_and_without_yes_is_refused(self):
@@ -741,6 +782,41 @@ class TestEvidence(GuardTestCase):
         self.assertIn("WRITE STATUS UNCERTAIN", output)
         self.assertIn("evil.example.com", self.last_stderr)
         self.assertEqual(urlopen.call_count, 1)          # the POST, and nothing after it
+
+    def test_a_post_whose_created_id_cannot_round_trip_is_uncertain_not_refused(self):
+        """C1: created_object_id percent-encodes the created object's id (a Canvas slug can
+        carry a non-ASCII character); the normalise_path % rule then refuses that read-back
+        path. The write already happened, so this must be reported uncertain (exit 3, with an
+        evidence record), never as an ordinary refusal (exit 2, nothing logged)."""
+        responses = [FakeResponse(status=201, headers={},
+                                  payload={"url": "café-notes", "page_id": 1})]
+        with mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen:
+            code, output = self.run_main(
+                ["post", "courses/1/pages", "--created-id", "url", "--yes",
+                 "-d", '{"wiki_page": {"title": "x"}}'])
+        self.assertEqual(code, 3)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+        self.assertIn("read-back at", output)
+        self.assertEqual(urlopen.call_count, 1)           # the POST, and nothing after it
+        evidence = [line for line in self.log_lines() if line["event"] == "evidence"]
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["verification"], "failed")
+
+    def test_a_post_read_back_via_a_percent_encoded_location_header_is_uncertain_not_refused(self):
+        """Same failure, reached through the Location-header fallback instead of --created-id."""
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(
+                status=201,
+                headers={"Location": "https://" + HOST + "/api/v1/courses/1/pages/caf%C3%A9"},
+                payload={"ok": True})
+            code, output = self.run_main(
+                ["post", "courses/1/pages", "--yes", "-d", '{"wiki_page": {"title": "x"}}'])
+        self.assertEqual(code, 3)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+        self.assertEqual(urlopen.call_count, 1)
+        evidence = [line for line in self.log_lines() if line["event"] == "evidence"]
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["verification"], "failed")
 
     def rubric_create(self, read_back):
         """One create-rubric POST, with the exact body Level 2's rubric_body() builds."""
@@ -1351,6 +1427,87 @@ class TestAuditPrune(GuardTestCase):
         self.assertEqual(len(after) - (before - 1), 1, after)
         self.assertEqual([line for line in after
                           if line.get("verb") == "AUDIT" and line.get("event") == "evidence"], [])
+
+    def test_a_record_appended_between_the_read_and_the_swap_survives_the_prune(self):
+        """I2: prune reads the whole log, filters it, and only swaps in the replacement at the
+        end. A concurrent guard's record, appended after that read but before the swap, must be
+        carried into the replacement rather than silently lost - Task 4's own design doc counts
+        on two Codex sessions running at once."""
+        self.seed([400, 1])
+        real_open = os.open
+        appended = {"done": False}
+
+        def concurrent_write_then_open(path, flags, *a, **kw):
+            if not appended["done"] and path == self.log_path + ".prune":
+                appended["done"] = True
+                # Simulate a second guard's write landing in the window between this prune's
+                # read and its os.replace.
+                guard.log_event(self.log_path, {"event": "read", "verb": "GET",
+                                                "path": "/api/v1/courses/999", "ok": True})
+            return real_open(path, flags, *a, **kw)
+
+        with mock.patch("os.open", side_effect=concurrent_write_then_open):
+            code, _ = self.run_main(["audit", "prune", "--older-than", "180"])
+        self.assertEqual(code, 0)
+        self.assertTrue(appended["done"])
+        self.assertTrue(any(line.get("path") == "/api/v1/courses/999"
+                            for line in self.log_lines()))
+
+    def test_the_last_kept_line_gets_a_newline_before_the_prune_appends_its_own(self):
+        """I3: a log whose final line lacks a trailing newline must not merge with the prune's
+        own audit-prune record into one unparseable physical line. The existing "unparseable
+        line is kept" test appends its bad line WITH a newline, which is why this was missed."""
+        self.seed([1])
+        with open(self.log_path) as handle:
+            content = handle.read()
+        with open(self.log_path, "w") as handle:
+            handle.write(content.rstrip("\n"))       # drop the trailing newline
+        os.chmod(self.log_path, 0o600)
+        code, _ = self.run_main(["audit", "prune", "--older-than", "180"])
+        self.assertEqual(code, 0)
+        with open(self.log_path) as handle:
+            lines = [line for line in handle if line.strip()]
+        for line in lines:
+            json.loads(line)                         # every physical line is one JSON object
+        self.assertEqual(len(lines), 2)               # the kept record, plus audit-prune's own
+
+    def test_a_stale_prune_temp_file_is_refused_with_a_named_remedy(self):
+        """M9: an interrupted prune can leave audit.jsonl.prune behind. Every later prune must
+        refuse with a message naming that file and telling the operator to remove it - not die
+        on a bare FileExistsError, and never silently unlink it itself."""
+        self.seed([400, 1])
+        stale = self.log_path + ".prune"
+        with open(stale, "w") as handle:
+            handle.write("leftover\n")
+        os.chmod(stale, 0o600)
+        code, _ = self.run_main(["audit", "prune", "--older-than", "180"])
+        self.assertEqual(code, 2)
+        self.assertIn(stale, self.last_stderr)
+        self.assertIn("remove it by hand", self.last_stderr)
+        self.assertTrue(os.path.exists(stale))        # never silently unlinked
+        with open(stale) as handle:
+            self.assertEqual(handle.read(), "leftover\n")   # left untouched
+
+
+class TestShortWritesAreNeverSilent(GuardTestCase):
+    """M8: os.write is not guaranteed to write every byte in one call. An unchecked short write
+    would silently truncate a log record, or truncate the whole rewritten audit log just before
+    os.replace destroys the original."""
+
+    def test_a_short_write_in_log_event_is_refused(self):
+        with mock.patch("os.write", return_value=1):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.log_event(self.log_path, {"event": "read"})
+        self.assertIn("short write", str(caught.exception))
+
+    def test_a_short_write_in_audit_prune_is_refused(self):
+        with open(self.log_path, "w") as handle:
+            handle.write(json.dumps({"timestamp": "2020-01-01T00:00:00Z", "event": "read"}) + "\n")
+        os.chmod(self.log_path, 0o600)
+        with mock.patch("os.write", return_value=1):
+            code, _ = self.run_main(["audit", "prune", "--older-than", "1"])
+        self.assertEqual(code, 2)
+        self.assertIn("short write", self.last_stderr)
 
 
 class TestAttachmentDownload(GuardTestCase):

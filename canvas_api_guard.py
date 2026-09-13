@@ -312,6 +312,15 @@ def secure_log_fd(log_path):
                          % log_path)
     return fd
 
+def write_all(fd, payload, label):
+    """os.write is not guaranteed to write every byte in one call; an unchecked short write here
+    silently truncates a record. Used by log_event and by audit prune's temp-file write, where a
+    short write just before os.replace would swap in a truncated log. Fail loudly instead."""
+    written = os.write(fd, payload)
+    if written != len(payload):
+        raise GuardError("%s: short write (%d of %d bytes); refusing to continue"
+                         % (label, written, len(payload)))
+
 def log_event(log_path, fields):
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     record = {"timestamp": stamp, "pid": os.getpid(), "run": run_id(),
@@ -323,7 +332,7 @@ def log_event(log_path, fields):
         # One write on an O_APPEND descriptor, so a record longer than a pipe buffer cannot be
         # split across another writer's. This is not a lock: it removes interleaving, it does
         # not order two runs.
-        os.write(fd, line)
+        write_all(fd, line, "audit log write")
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -1161,7 +1170,12 @@ def do_post(cfg, path, body):
                   "the created object could not be read back")
     try:
         back = send_request(cfg, "GET", read_path)
-    except RequestFailure as err:
+    except GuardError as err:                 # RequestFailure (a network/HTTP failure) and a
+                                                # bare GuardError (read_path itself refused, e.g.
+                                                # a created id that could not be percent-encoded
+                                                # back into a legal path) are both a read-back
+                                                # that could not happen - the write was already
+                                                # sent, so this is uncertain, never a refusal.
         evidence["target"] = target_identity(resp.get("data"))
         uncertain(cfg, evidence, "the create returned, but read-back at %s failed: %s"
                   % (read_path, err))
@@ -1216,41 +1230,85 @@ def do_delete(cfg, path, body):
 
 RETENTION_DAYS = 180           # the pilot default, documented in SKILL.md; never automatic
 
+def prune_filter(raw, cutoff):
+    """Split raw JSONL bytes into (kept lines, dropped count) by the retention rule: a line
+    whose timestamp cannot be read is always kept, never silently discarded."""
+    kept, dropped = [], 0
+    for line in raw.splitlines(keepends=True):
+        if not line.strip():
+            continue
+        try:
+            stamp = json.loads(line)["timestamp"]
+            when = datetime.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=datetime.timezone.utc)
+        except (ValueError, TypeError, KeyError):
+            kept.append(line)                   # unreadable: kept, never silently discarded
+            continue
+        if when >= cutoff:
+            kept.append(line)
+        else:
+            dropped += 1
+    return kept, dropped
+
 def do_audit_prune(cfg, days):
     """Rewrite the audit log keeping only records newer than the cutoff. The same ownership and
     mode gate applies on the way in, the replacement is written privately and moved into place,
-    and the file is never deleted. A line whose timestamp cannot be read is always kept."""
+    and the file is never deleted. A line whose timestamp cannot be read is always kept.
+
+    Two Codex sessions running concurrently is Task 4's own design assumption, so a record
+    another guard appends while this one is reading, filtering and writing must not just vanish:
+    the byte offset the first read stopped at is kept, and just before the atomic swap the log
+    is read again from that offset and anything new is carried into the replacement. A short
+    window between that second read and os.replace remains - see docs/IT-REVIEW.md."""
     if days < 1:
         raise GuardError("--older-than must be at least 1 day")
     os.close(secure_log_fd(cfg.log_path))       # the ownership and mode gate, before reading
     cutoff = (datetime.datetime.now(datetime.timezone.utc)
               - datetime.timedelta(days=days))
-    kept, dropped = [], 0
-    with open(cfg.log_path) as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            try:
-                stamp = json.loads(line)["timestamp"]
-                when = datetime.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(
-                    tzinfo=datetime.timezone.utc)
-            except (ValueError, TypeError, KeyError):
-                kept.append(line)               # unreadable: kept, never silently discarded
-                continue
-            if when >= cutoff:
-                kept.append(line)
-            else:
-                dropped += 1
+    with open(cfg.log_path, "rb") as handle:
+        first_pass = handle.read()
+        offset = handle.tell()
+    kept, dropped = prune_filter(first_pass, cutoff)
+    if kept and not kept[-1].endswith(b"\n"):
+        kept[-1] += b"\n"           # never let the prune's own record land on the same
+                                     # physical line as the last kept one (I3)
+
     temporary = cfg.log_path + ".prune"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
-    fd = os.open(temporary, flags, 0o600)
     try:
-        os.write(fd, "".join(kept).encode("utf-8"))
+        fd = os.open(temporary, flags, 0o600)
+    except FileExistsError:
+        raise GuardError("a previous audit prune left %s in place; an interrupted prune is "
+                         "never resumed or cleaned up automatically, so retention has silently "
+                         "stopped - inspect that file, then remove it by hand before running "
+                         "prune again" % temporary)
+    try:
+        write_all(fd, b"".join(kept), "audit prune")
         os.fsync(fd)
     finally:
         os.close(fd)
+
+    # A concurrent guard may have appended a record while the rewrite above ran; carry it into
+    # the replacement rather than losing it in the os.replace below.
+    with open(cfg.log_path, "rb") as handle:
+        handle.seek(offset)
+        late = handle.read()
+    if late.strip():
+        late_kept, late_dropped = prune_filter(late, cutoff)
+        if late_kept and not late_kept[-1].endswith(b"\n"):
+            late_kept[-1] += b"\n"
+        if late_kept:
+            fd = os.open(temporary, os.O_WRONLY | os.O_APPEND)
+            try:
+                write_all(fd, b"".join(late_kept), "audit prune (late record)")
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            kept.extend(late_kept)
+        dropped += late_dropped
+
     os.replace(temporary, cfg.log_path)
     log_event(cfg.log_path, {"event": "audit-prune", "older_than_days": days,
                              "records_kept": len(kept), "records_dropped": dropped})
@@ -1371,6 +1429,30 @@ def build_parser():
     prune.add_argument("-o", "--output", choices=("text", "json"), default=None)
     return parser
 
+def log_scoped_or_percent_refusal(cfg, verb, kind, raw_path):
+    """canvas_url() just refused raw_path. refuse_out_of_scope and the % rule are the two
+    refusals docs/IT-REVIEW.md presents as a security control, so - like every other policy
+    refusal in this file (see refused-no-tty, refused-not-draft) - they must leave exactly one
+    refusal record, never a silent exit 2. normalise_path and canvas_url are pure functions with
+    no cfg and no log path, so the record is written here instead, at the one place in main()
+    that validates args.path before anything else happens.
+
+    Every other normalise_path refusal (an empty path, whitespace, a scheme, a host, '..') stays
+    unlogged here, exactly as before: those are a malformed argument, not a scoped or encoded
+    path, and the pre-existing test that no log line precedes that refusal must keep holding."""
+    body_only = (raw_path or "").strip().split("?", 1)[0]
+    if "%" in body_only:
+        log_event(cfg.log_path, {"event": "refusal", "verb": verb, "kind": kind,
+                                 "path": raw_path, "confirmation": "refused-percent-encoded"})
+        return
+    try:
+        npath = normalise_path(raw_path)
+    except GuardError:
+        return                          # a different, unlogged malformed-path refusal
+    if OUT_OF_SCOPE.match(npath):
+        log_event(cfg.log_path, {"event": "refusal", "verb": verb, "kind": kind,
+                                 "path": npath, "confirmation": "refused-out-of-scope"})
+
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1393,7 +1475,14 @@ def main(argv=None):
             return 0
         body = json.loads(args.data) if args.data else None
         cfg = make_config(args)
-        canvas_url(cfg.host, args.path)              # fail before anything else happens
+        verb_for_log = (args.method if args.verb == "draft" else args.verb).upper()
+        try:
+            canvas_url(cfg.host, args.path)          # fail before anything else happens
+        except GuardError:
+            log_scoped_or_percent_refusal(
+                cfg, verb_for_log, "write" if verb_for_log in WRITE_METHODS else "read",
+                args.path)
+            raise
         if args.verb == "draft":
             do_draft(cfg, args.method, args.path, body)
             return 0
