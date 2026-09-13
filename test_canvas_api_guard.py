@@ -3091,9 +3091,11 @@ class TestResponseSizeCap(GuardTestCase):
         self.assertTrue(any(line.get("error") == "ResponseTooLarge" for line in self.log_lines()))
 
     def test_a_response_at_the_limit_is_accepted(self):
-        with mock.patch.object(guard, "MAX_RESPONSE_BYTES", 4096), \
+        payload = {"id": 1, "blob": "x" * 400}
+        exact = len(json.dumps(payload).encode("utf-8"))
+        with mock.patch.object(guard, "MAX_RESPONSE_BYTES", exact), \
                 mock.patch("urllib.request.urlopen") as urlopen:
-            urlopen.return_value = FakeResponse(payload={"id": 1})
+            urlopen.return_value = FakeResponse(payload=payload)
             code, _ = self.run_main(["get", "courses/1"])
         self.assertEqual(code, 0)
 
@@ -3101,12 +3103,16 @@ class TestResponseSizeCap(GuardTestCase):
         """The write was sent. Exit 2 would claim nothing happened."""
         responses = [FakeResponse(payload={"id": 1, "name": "before"}),
                      FakeResponse(payload={"id": 1, "name": "after"}),
-                     FakeResponse(payload={"id": 1, "name": "x" * 500})]
+                     FakeResponse(payload={"id": 1, "name": "after",
+                                           "description": "x" * 500})]
         with mock.patch.object(guard, "MAX_RESPONSE_BYTES", 64), \
                 mock.patch("urllib.request.urlopen", side_effect=responses):
             code, _ = self.run_main(["put", "courses/1", "-d", '{"course": {"name": "after"}}',
                                      "--yes"])
         self.assertEqual(code, 3)
+        notes = [line.get("note") for line in self.log_lines() if line.get("note")]
+        self.assertTrue(any("read-back failed" in note for note in notes), notes)
+        self.assertFalse(any("did not match requested field" in note for note in notes), notes)
 
 
 if __name__ == "__main__":
