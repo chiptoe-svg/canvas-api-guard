@@ -90,6 +90,13 @@ is never printed or logged.
   access is invisible to it - and it proves the path of a copy launched as a program, not an
   already-running process with forged globals; the Codex rules' absolute-path match is the layer
   that stops those.
+- The same bar applies to the interpreter running the guard, not only the guard file: both
+  `canvas_api_guard.py` and the Specialized Functions program pin an absolute
+  `#!/usr/bin/python3` shebang, and before any credential use the guard additionally requires
+  `sys.executable` itself to resolve to a root-owned, non-group-writable regular file - because
+  `python3 canvas_api_guard.py` runs whatever `python3` the caller's `PATH` supplies, and that
+  process is the one that reads the keychain. `install.sh` refuses to install without a
+  root-owned `/usr/bin/python3`.
 
 ### Keep the token on one destination
 
@@ -100,7 +107,14 @@ is never printed or logged.
   guard's.
 - There is no production `--host` option.
 - The URL builder forces HTTPS and rejects paths containing a scheme, host, traversal,
-  whitespace, or backslash.
+  whitespace, or backslash. It also rejects any literal `%` in the path portion of every request
+  regardless of destination, not just the two prefixes just below; percent-encoding is still
+  accepted in the query string, after `?`.
+- Two path prefixes a faculty pilot never needs are refused for every verb, reads included:
+  `/api/v1/accounts/...` (account administration) and `/api/v1/developer_keys/...`. This is
+  deliberately not a list of "dangerous" operations - such a list invites the belief that what is
+  missing from it is safe. Every other write is still gated the ordinary way, by a person seeing
+  the URL and the changed fields and confirming.
 - Every redirect on an authenticated API request is refused, including a same-host redirect.
 - A submitted-file download does follow Canvas's HTTPS redirects, and no hop carries the token,
   a cookie, a forwarded Host header, or proxy credentials - the first hop already carries none.
@@ -152,6 +166,11 @@ correlation sources.
 - Exit codes: `0` completed, and any write verified; `2` refused or failed with nothing
   applied; `3` a write may have been applied and could not be verified (`WRITE STATUS
   UNCERTAIN`).
+- Every single response body read from Canvas is bounded at 8 MiB. An oversized plain read is
+  refused outright (exit `2`) before it reaches the model; an oversized read-back required after
+  a write is `WRITE STATUS UNCERTAIN` (exit `3`) instead, because the write itself was already
+  sent and only its confirmation is unreadable. `--all-pages` is bounded separately, by its own
+  200-page cap; each page underneath that cap is still subject to the 8 MiB limit.
 
 ### Produce useful, protected audit evidence
 
@@ -167,9 +186,19 @@ correlation sources.
   lines in total.
 - Write evidence includes the Canvas user ID and student name when Canvas returns the user
   object, plus requested/before/after fields and the verification result.
+- Every record carries a per-run correlation id, assigned once when the process starts so no
+  two runs can race to create it, letting a request, its evidence, and its refusal be read as
+  belonging to the same run even when a reused process ID would not distinguish them. Each
+  record is written with a single `os.write` on the append-mode descriptor, so a record from one
+  concurrently running guard cannot be split apart by a write from another; this removes
+  interleaving between two runs, it does not order them.
 
-The audit log is not protected from root and has no retention, forwarding, or rotation policy.
-Those remain deployment controls.
+The audit log is not protected from root. It has no automatic retention, forwarding, or
+rotation policy. `audit prune --older-than DAYS` gives an operator a manual way to remove
+records older than a window - it keeps any line whose timestamp it cannot read, never deletes
+the log file itself, and logs its own run - and the guard documents 180 days as the pilot
+retention default, but nothing in the guard invokes prune automatically. Scheduling it, and
+forwarding or rotating the log, remain deployment controls.
 
 ## Installation controls
 
@@ -240,6 +269,12 @@ existing object, or the parent of a nested path, reads back `published: false` a
 Any failed check, including a proof read that fails, is a logged refusal (`refused-not-draft`)
 and nothing is sent. Unpublishing a live object is not a draft: students would see it vanish. Publishing remains an ordinary write with the
 prompt: the final chance to stop it, rather than a prompt at every building step.
+
+`draft delete` additionally refuses to delete a top-level quiz, assignment, page or discussion
+topic - unpublished work is still faculty work, and deleting it is not reversible without a
+person's confirmation. Draft may still delete the `questions`, `groups`, `reorder` and
+`overrides` nested under one of those objects. Deleting the top-level object itself remains
+available, as an ordinary write with the usual confirmation prompt.
 
 ### Edge seam
 
@@ -335,7 +370,8 @@ propagates out of these operations unchanged and is never retried.
 - Read data is returned to the model. Correct use of the approved Clemson account is an
   external identity and policy control.
 - A malicious root user can replace the executable/configuration or alter the audit.
-- The local audit can grow without bound until deployment adds rotation and retention.
+- The local audit can grow without bound until deployment schedules `audit prune`, or adds
+  rotation and forwarding of its own; nothing in the guard runs prune automatically.
 - Submission review writes copies of student work to `~/.canvas-api-guard/submission-reviews/`
   (user-owned, mode 0700). Those files are education records, they are not deleted
   automatically, and no retention policy is enforced here; deployment owns their lifetime.

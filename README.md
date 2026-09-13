@@ -267,7 +267,9 @@ token storage. The temporary reviewed checkout is intentionally retained for ins
 ## Usage
 
 Paths may be `/api/v1/courses/123`, `api/v1/courses/123`, or `courses/123`. A path containing
-a scheme, host, backslash, whitespace, or `..` is refused. The host and audit path have no
+a scheme, host, backslash, whitespace, or `..` is refused. `/api/v1/accounts/...` and
+`/api/v1/developer_keys/...` are refused for every verb, reads included: account administration
+and developer keys are outside this pilot's scope. The host and audit path have no
 command-line overrides in the installed interface.
 
 ```sh
@@ -380,6 +382,11 @@ by this repository.
 The local audit file intentionally persists student identity and before/after write evidence.
 It is therefore confidential institutional data even when model processing is approved. Keep
 it private, covered by endpoint controls and retention policy, and do not make extra copies.
+
+`audit prune --older-than DAYS` removes records older than the window, keeps any record whose
+timestamp it cannot read, and never deletes the log file itself. 180 days is the documented
+pilot retention default, but prune is never run automatically; scheduling it is a deployment
+control.
 
 ## Audit record
 
