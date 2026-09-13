@@ -116,6 +116,14 @@ if [ "$(stat_uid "$PINNED_PYTHON")" != "0" ]; then
     echo "error: $PINNED_PYTHON is not owned by root; refusing to install" >&2
     exit 1
 fi
+# Run it, do not just stat it. On macOS /usr/bin/python3 is a root-owned stub that exists even
+# with no Command Line Tools installed, so the two checks above pass and the real failure would
+# surface later as an opaque xcrun error instead of the message below.
+if ! "$PINNED_PYTHON" -c 'import sys' >/dev/null 2>&1; then
+    echo "error: $PINNED_PYTHON exists but does not run. On macOS install the Command Line" >&2
+    echo "       Tools (xcode-select --install), then run this again." >&2
+    exit 1
+fi
 
 # Every ancestor of an installation path must be root-owned, not a symlink, and not
 # writable by group or other -- otherwise the guard's own provenance check (which demands

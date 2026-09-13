@@ -946,7 +946,7 @@ class TestEvidence(GuardTestCase):
     def test_delete_reports_that_the_object_is_gone(self):
         responses = [FakeResponse(payload={"id": 2, "name": "Lab 4"}),  # before
                      FakeResponse(status=200, payload={"id": 2}),       # the delete
-                     urllib.error.HTTPError("https://" + HOST, 404, "Not Found", {}, None)]
+                     urllib.error.HTTPError("https://" + HOST, 404, "Not Found", {}, io.BytesIO(b""))]
         with mock.patch("urllib.request.urlopen", side_effect=responses):
             code, output = self.run_main(["delete", "courses/1/assignments/2", "--yes"])
         self.assertEqual(code, 0)
@@ -1078,7 +1078,7 @@ class TestAFailedWriteRequest(GuardTestCase):
         self.assertEqual(len(self.evidence_lines()), 1)
 
     def test_a_5xx_write_is_uncertain(self):
-        error = urllib.error.HTTPError("https://" + HOST, 500, "Server Error", {}, None)
+        error = urllib.error.HTTPError("https://" + HOST, 500, "Server Error", {}, io.BytesIO(b""))
         code, output = self.put(error)
         error.close()
         self.assertEqual(code, 3)
@@ -1086,7 +1086,7 @@ class TestAFailedWriteRequest(GuardTestCase):
         self.assertEqual(len(self.evidence_lines()), 1)
 
     def test_a_4xx_write_stays_a_plain_failure_with_no_evidence_line(self):
-        error = urllib.error.HTTPError("https://" + HOST, 403, "Forbidden", {}, None)
+        error = urllib.error.HTTPError("https://" + HOST, 403, "Forbidden", {}, io.BytesIO(b""))
         code, output = self.put(error)
         error.close()
         self.assertEqual(code, 2)
@@ -1230,7 +1230,7 @@ class TestRedirectsAreRefused(unittest.TestCase):
 
     def test_attachment_download_error_records_status_not_signed_url(self):
         signed_url = "https://cdn.example.edu/file?X-Amz-Signature=do-not-log"
-        error = urllib.error.HTTPError(signed_url, 403, "Forbidden", {}, None)
+        error = urllib.error.HTTPError(signed_url, 403, "Forbidden", {}, io.BytesIO(b""))
         failure = guard.safe_download_failure(error)
         error.close()
         self.assertEqual(failure, {"error": "HTTPError", "http_status": 403,
@@ -1611,7 +1611,7 @@ class TestAttachmentDownload(GuardTestCase):
         cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST,
                             "dry_run": False, "dry_run_request": None})()
         file_url = "https://%s/files/9/download?verifier=not-for-output" % HOST
-        transient = urllib.error.HTTPError(file_url, 500, "Server Error", {}, None)
+        transient = urllib.error.HTTPError(file_url, 500, "Server Error", {}, io.BytesIO(b""))
         with mock.patch.object(guard, "send_request", return_value={"data": {"url": file_url}}) as send, \
                 mock.patch.object(guard, "secure_review_dir", return_value=self.state_dir), \
                 mock.patch.object(guard, "open_attachment_request", side_effect=[transient, io.BytesIO(b"student work")]) as open_it, \
@@ -1631,8 +1631,8 @@ class TestAttachmentDownload(GuardTestCase):
                             "dry_run": False, "dry_run_request": None})()
         file_url = "https://%s/files/9/download?verifier=not-for-output" % HOST
         public_url = "https://cdn.example.edu/submission-file?signature=not-for-output"
-        first = urllib.error.HTTPError(file_url, 500, "Server Error", {}, None)
-        second = urllib.error.HTTPError(file_url, 500, "Server Error", {}, None)
+        first = urllib.error.HTTPError(file_url, 500, "Server Error", {}, io.BytesIO(b""))
+        second = urllib.error.HTTPError(file_url, 500, "Server Error", {}, io.BytesIO(b""))
         responses = [{"data": {"url": file_url}}, {"data": {"url": file_url}},
                      {"data": {"public_url": public_url}}]
         with mock.patch.object(guard, "send_request", side_effect=responses) as send, \
@@ -2690,7 +2690,7 @@ class TestDraftNeverDeletesTopLevel(GuardTestCase):
                      FakeResponse(payload={"id": 9}),                        # do_delete's pre-read
                      FakeResponse(status=200, payload={"id": 9}),            # the DELETE
                      urllib.error.HTTPError("https://" + HOST, 404,          # gone on read-back
-                                            "Not Found", {}, None)]
+                                            "Not Found", {}, io.BytesIO(b""))]
         with mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen:
             code, _ = self.run_main(["draft", "delete", "courses/1/quizzes/5/questions/9"])
         self.assertEqual(code, 0)
@@ -2700,7 +2700,7 @@ class TestDraftNeverDeletesTopLevel(GuardTestCase):
         responses = [FakeResponse(payload={"id": 5, "name": "Quiz 5"}),      # do_delete's pre-read
                      FakeResponse(status=200, payload={"id": 5}),            # the DELETE
                      urllib.error.HTTPError("https://" + HOST, 404,          # gone on read-back
-                                            "Not Found", {}, None)]
+                                            "Not Found", {}, io.BytesIO(b""))]
         with mock.patch("urllib.request.urlopen", side_effect=responses):
             code, _ = self.run_main(["delete", "courses/1/quizzes/5", "--yes"])
         self.assertEqual(code, 0)
