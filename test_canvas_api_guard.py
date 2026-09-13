@@ -2166,7 +2166,7 @@ class TestDraft(GuardTestCase):
     def test_an_object_whose_state_cannot_be_read_is_refused(self):
         with mock.patch("urllib.request.urlopen",
                         return_value=FakeResponse(payload={"id": 5})) as urlopen:
-            code, _ = self.run_main(["draft", "delete", "courses/1/assignments/5"])
+            code, _ = self.run_main(["draft", "delete", "courses/1/quizzes/5/questions/9"])
         self.assertEqual(code, 2)
         self.assertEqual(urlopen.call_count, 1)
         self.assertEqual(self.refusal()["verb"], "DELETE")
@@ -2274,6 +2274,47 @@ class TestDraft(GuardTestCase):
         self.assertEqual(code, 2)
         urlopen.assert_not_called()
         self.assertEqual(self.log_lines()[-1]["confirmation"], "refused-no-tty")
+
+
+class TestDraftNeverDeletesTopLevel(GuardTestCase):
+    """Unpublished is not the same as recoverable. Draft may remove a question from a quiz it
+    is building; it may not remove the quiz."""
+
+    def test_deleting_an_unpublished_quiz_is_refused(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["draft", "delete", "courses/1/quizzes/5"])
+        self.assertEqual(code, 2)
+        self.assertIn("never deletes", self.last_stderr)
+        urlopen.assert_not_called()
+        self.assertEqual([line["confirmation"] for line in self.log_lines()
+                          if line.get("event") == "refusal"], ["refused-not-draft"])
+
+    def test_deleting_a_collection_is_refused(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["draft", "delete", "courses/1/assignments"])
+        self.assertEqual(code, 2)
+        self.assertIn("never deletes", self.last_stderr)
+        urlopen.assert_not_called()
+
+    def test_deleting_a_question_of_an_unpublished_quiz_is_allowed(self):
+        responses = [FakeResponse(payload={"id": 5, "published": False}),   # prove_draft's parent
+                     FakeResponse(payload={"id": 9}),                        # do_delete's pre-read
+                     FakeResponse(status=200, payload={"id": 9}),            # the DELETE
+                     urllib.error.HTTPError("https://" + HOST, 404,          # gone on read-back
+                                            "Not Found", {}, None)]
+        with mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen:
+            code, _ = self.run_main(["draft", "delete", "courses/1/quizzes/5/questions/9"])
+        self.assertEqual(code, 0)
+        self.assertTrue(urlopen.called)
+
+    def test_an_ordinary_delete_with_approval_is_unaffected(self):
+        responses = [FakeResponse(payload={"id": 5, "name": "Quiz 5"}),      # do_delete's pre-read
+                     FakeResponse(status=200, payload={"id": 5}),            # the DELETE
+                     urllib.error.HTTPError("https://" + HOST, 404,          # gone on read-back
+                                            "Not Found", {}, None)]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, _ = self.run_main(["delete", "courses/1/quizzes/5", "--yes"])
+        self.assertEqual(code, 0)
 
 
 class TestGuardHeader(unittest.TestCase):

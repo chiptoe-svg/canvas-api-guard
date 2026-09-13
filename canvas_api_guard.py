@@ -567,6 +567,11 @@ def prove_draft(cfg, method, path, body):
         reason = ("draft only writes courses/N/quizzes, assignments, pages or discussion_topics, "
                   "an item of one, or its questions, groups or overrides, with no query string; "
                   "anything else is a normal write with approval")
+    elif method.lower() == "delete" and not match.group(4):
+        reason = ("draft never deletes courses/%s/%s: unpublished work is still faculty work "
+                  "and deleting it is not reversible. Use delete with --dry-run, then --yes. "
+                  "Draft may still delete the questions, groups or overrides under an "
+                  "unpublished item." % (match.group(1), match.group(2)))
     elif unsafe:
         reason = ("draft never turns %s on; publishing is a normal write with approval"
                   % " or ".join(unsafe))
