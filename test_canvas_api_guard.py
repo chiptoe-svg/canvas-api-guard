@@ -1164,6 +1164,7 @@ class TestAuditCorrelation(GuardTestCase):
     def test_concurrent_writers_produce_intact_lines(self):
         """A record larger than PIPE_BUF must not interleave with another writer's."""
         import threading
+        expected = guard.run_id()      # as at import: established before any concurrency exists
         payload = {"event": "test", "blob": "y" * 9000}
 
         def writer():
@@ -1181,7 +1182,7 @@ class TestAuditCorrelation(GuardTestCase):
         for line in lines:
             json.loads(line)          # raises if two writers interleaved
         runs = set(json.loads(line)["run"] for line in lines)
-        self.assertEqual(len(runs), 1, runs)
+        self.assertEqual(runs, {expected})
 
 
 class TestAuditFormat(GuardTestCase):
