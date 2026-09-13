@@ -83,6 +83,7 @@ REDACTED = "Bearer <redacted>"
 AGENT_MARKERS = ("AI_AGENT", "CLAUDE_CODE_SESSION_ID", "CODEX_SANDBOX",
                  "CODEX_SANDBOX_NETWORK_DISABLED")   # names recorded if present; never values
 _SOURCE = None
+_RUN_ID = None
 
 class GuardError(Exception):
     """Any refusal or failure the user should see as one clear line."""
@@ -264,6 +265,14 @@ def invocation_source():
                    "agent_env": sorted(name for name in AGENT_MARKERS if name in os.environ)}
     return _SOURCE
 
+def run_id():
+    """One id for every record this process writes. A PID is reused; this is not, so a request,
+    its evidence and its refusal cannot be read as belonging to a different run."""
+    global _RUN_ID
+    if _RUN_ID is None:
+        _RUN_ID = os.urandom(6).hex()
+    return _RUN_ID
+
 def user_private(info, kind):
     """A real, non-symlink object of `kind` (stat.S_ISDIR or stat.S_ISREG), owned by the current
     user and closed to group and others: the one rule for everything this tool writes."""
@@ -304,13 +313,19 @@ def secure_log_fd(log_path):
 
 def log_event(log_path, fields):
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    record = {"timestamp": stamp, "pid": os.getpid(), "source": invocation_source()}
+    record = {"timestamp": stamp, "pid": os.getpid(), "run": run_id(),
+              "source": invocation_source()}
     record.update(fields)
+    line = (json.dumps(record, sort_keys=True, default=str) + "\n").encode("utf-8")
     fd = secure_log_fd(log_path)
-    with os.fdopen(fd, "a") as handle:
-        handle.write(json.dumps(record, sort_keys=True, default=str) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    try:
+        # One write on an O_APPEND descriptor, so a record longer than a pipe buffer cannot be
+        # split across another writer's. This is not a lock: it removes interleaving, it does
+        # not order two runs.
+        os.write(fd, line)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
     return record
 
 # ------------------------------------------------------------------------------- host pinning

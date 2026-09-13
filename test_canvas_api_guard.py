@@ -75,6 +75,7 @@ class FakeStdout(io.StringIO):
 class GuardTestCase(unittest.TestCase):
     def setUp(self):
         guard._SOURCE = None
+        guard._RUN_ID = None
         self.state_dir = tempfile.mkdtemp(prefix="cag-test-state-")
         os.chmod(self.state_dir, 0o700)
         self.addCleanup(shutil.rmtree, self.state_dir, True)
@@ -1093,7 +1094,7 @@ class TestEdgeSeam(GuardTestCase):
         sent = urlopen.call_args[0][0]
         self.assertNotIn("authorization", {name.lower() for name, _ in sent.header_items()})
         line = self.log_lines()[-1]
-        self.assertEqual(sorted(line), ["bytes", "event", "ok", "path", "pid", "source",
+        self.assertEqual(sorted(line), ["bytes", "event", "ok", "path", "pid", "run", "source",
                                         "status", "timestamp", "verb"])
 
     def test_the_host_credential_read_is_still_the_bearer(self):
@@ -1147,16 +1148,50 @@ class TestEdgeSeam(GuardTestCase):
         self.assertEqual(lines[-1]["event"], "read")
 
 
+class TestAuditCorrelation(GuardTestCase):
+    def test_every_record_of_one_run_shares_a_correlation_id(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            code, _ = self.run_main(["get", "courses/1"])
+        self.assertEqual(code, 0)
+        runs = set(line["run"] for line in self.log_lines())
+        self.assertEqual(len(runs), 1)
+        self.assertTrue(all(line["run"] for line in self.log_lines()))
+
+    def test_the_token_is_not_in_the_correlation_id(self):
+        self.assertNotIn(TOKEN, guard.run_id())
+
+    def test_concurrent_writers_produce_intact_lines(self):
+        """A record larger than PIPE_BUF must not interleave with another writer's."""
+        import threading
+        payload = {"event": "test", "blob": "y" * 9000}
+
+        def writer():
+            for _ in range(20):
+                guard.log_event(self.log_path, dict(payload))
+
+        threads = [threading.Thread(target=writer) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        with open(self.log_path) as handle:
+            lines = [line for line in handle if line.strip()]
+        self.assertEqual(len(lines), 80)
+        for line in lines:
+            json.loads(line)          # raises if two writers interleaved
+
+
 class TestAuditFormat(GuardTestCase):
     """The stock audit record, key by key. IT has reviewed this format; a change here is a
     change to what every existing installation writes, and must be a deliberate one."""
 
-    READ = ["bytes", "event", "ok", "path", "pid", "source", "status", "timestamp", "verb"]
+    READ = ["bytes", "event", "ok", "path", "pid", "run", "source", "status", "timestamp", "verb"]
     REQUEST = ["confirmation", "dry_run", "event", "kind", "path", "pid", "request_body",
-               "source", "timestamp", "url", "verb"]
-    EVIDENCE = ["changes", "confirmation", "event", "note", "path", "pid", "source", "status",
+               "run", "source", "timestamp", "url", "verb"]
+    EVIDENCE = ["changes", "confirmation", "event", "note", "path", "pid", "run", "source", "status",
                 "target", "timestamp", "verb", "verification"]
-    REFUSAL = ["confirmation", "event", "kind", "path", "pid", "source", "timestamp", "verb"]
+    REFUSAL = ["confirmation", "event", "kind", "path", "pid", "run", "source", "timestamp", "verb"]
 
     def test_a_stock_read_write_dry_run_and_refusal_write_exactly_these_keys(self):
         with mock.patch("urllib.request.urlopen", return_value=FakeResponse(payload={"id": 1})):
