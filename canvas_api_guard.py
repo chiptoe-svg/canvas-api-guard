@@ -344,6 +344,9 @@ def normalise_path(path):
     query = ""
     if "?" in raw:
         raw, query = raw.split("?", 1)
+    if "%" in raw:
+        raise GuardError("percent-encoding is not allowed in the path: %r; send the literal path, "
+                         "and encode only query parameters" % path)
     split = urllib.parse.urlsplit(raw)
     if split.scheme or split.netloc or raw.startswith("//") or "://" in raw:
         raise GuardError("path must not contain a scheme or a host: %r" % path)

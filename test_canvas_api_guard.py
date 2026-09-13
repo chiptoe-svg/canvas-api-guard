@@ -291,6 +291,15 @@ class TestPathNormalisation(GuardTestCase):
             with self.assertRaises(guard.GuardError):
                 guard.normalise_path(bad)
 
+    def test_percent_encoding_in_the_path_is_refused_but_allowed_in_query(self):
+        with self.assertRaises(guard.GuardError):
+            guard.normalise_path("accounts%2f1/users")
+        with self.assertRaises(guard.GuardError):
+            guard.normalise_path("developer_keys%2f1")
+        # Percent-encoding in query string is allowed
+        self.assertEqual(guard.normalise_path("courses/1?search_term=a%20b"),
+                         "/api/v1/courses/1?search_term=a%20b")
+
 
 class TestOutOfScopePaths(GuardTestCase):
     """Account administration and developer keys are outside a faculty pilot. Refused for every
@@ -327,6 +336,25 @@ class TestOutOfScopePaths(GuardTestCase):
         self.assertEqual(code, 2)
         urlopen.assert_not_called()
         self.assertEqual([line for line in self.log_lines() if line.get("event") == "read"], [])
+
+    def test_percent_encoded_account_path_is_refused(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "accounts%2f1/users"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+
+    def test_percent_encoded_developer_key_path_is_refused(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "developer_keys%2f1"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+
+    def test_percent_encoding_in_query_string_is_allowed(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload=[{"id": 1}])
+            code, _ = self.run_main(["get", "courses/1?search_term=a%20b"])
+        self.assertEqual(code, 0)
+        urlopen.assert_called_once()
 
 
 class TestConfirmation(GuardTestCase):
