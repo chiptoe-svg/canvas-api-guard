@@ -47,7 +47,7 @@ Two consequences worth naming, because they are the point rather than side effec
 | Already-graded student | `post-rubric-grade` refuses, naming what Canvas holds | The collision this workflow manufactures; changing a grade stays a guard call |
 | `create-rubric` | Attaches with `use_for_grading: false`, no flag | One behaviour; the flag that makes a review window impossible should not be the default |
 | An assignment that still auto-grades | `assess-with-rubric` refuses the whole run | If this is wrong, Canvas posts every grade the instant assess runs |
-| Student visibility | Reported in the dry run, never refused | The instructor decides; the tooling logs and confirms, it does not make Codex helpless |
+| Student visibility | **Open** — see below | Decided as report-never-refuse, then reopened: the premise that the only remedy was course-wide turned out to be wrong |
 | Overall submission comment | Out of scope; per-criterion comments only | Already supported; an overall comment is one documented guard call |
 | Guard verification | Teach the guard one named exception | The alternative proves a constant we sent and calls it verification |
 
@@ -83,9 +83,8 @@ Each criterion object requires `points`; `comments` and `rating_id` are optional
 are refused, as everywhere else in this program.
 
 **Reads.** The course; the assignment (rubric criteria, `use_rubric_for_grading`,
-`points_possible`, `html_url`); the post policy, from `courses/123/settings` and then the course
-object, reported as `unknown` if neither exposes `post_manually`; and each submission at
-`?include[]=rubric_assessment&include[]=user`.
+`points_possible`, `html_url`, and `post_manually`); and each submission at
+`?include[]=rubric_assessment&include[]=user`, which also carries `posted_at`.
 
 **Refusals, before any write.**
 
@@ -173,7 +172,7 @@ Both verbs print one object. `assess-with-rubric`:
 ```json
 {"operation": "assess-with-rubric", "phase": "dry-run",
  "course_id": "123", "assignment_id": "20",
- "course_post_policy": "automatic",
+ "post_manually": false,
  "student_visibility": "criteria and comments become visible to each student when written; no grade is posted",
  "grades": [{"student_id": 4321, "student_name": "...",
              "criteria": {"_1234": {"points": 8, "comments": "Clear thesis."}},
@@ -208,16 +207,53 @@ instructor is still deciding. `hide_comments_from_student?` (line 3256) has the 
 
 Today's released behaviour never exposes this, because criteria and grade arrive together.
 
-**What this design does about it:** reports it, refuses nothing. `assess-with-rubric` reads the
-course's post policy and states the consequence in the dry run; `SKILL.md` requires Codex to say
-it before asking for approval. The obvious remedy is worse than the problem: the only documented
-REST lever is course-wide `course[post_manually]`, and no page fetched for the authoring skill
-documents a REST endpoint that posts grades — Canvas does that through GraphQL and the gradebook
-UI. Flipping a course to manual posting would hide the final grades too, with no documented way
-for this tool to release them.
+### The post policy is per assignment, and readable
 
-If Canvas does not expose `post_manually` on a documented read, the dry run reports the policy as
-`unknown` and states the consequence conditionally. It never guesses.
+An earlier draft of this document treated the remedy as course-wide and destructive. That was
+wrong, and the correction matters enough to record.
+
+`hash["post_manually"] = assignment.post_manually?` sits unconditionally in the assignment
+serializer (source: `lib/api/v1/assignment.rb`, line 511) — not behind an `include[]`, not behind
+an option. So `assess-with-rubric` reads the policy for the specific assignment, off a read it
+already performs, and never guesses. `submission.posted_at` then states per student whether that
+submission is actually released, which is stronger than reasoning from the policy.
+
+Setting the policy is a gradebook action, not an API one. Neither `post_manually` nor the
+deprecated `muted` appears in the assignment's writable field list (source:
+`lib/api/v1/assignment.rb#API_ALLOWED_ASSIGNMENT_INPUT_FIELDS`, line 605; `muted` is output-only
+at line 255). And there is no REST route to post or hide grades at all — `config/routes.rb`
+matches nothing but `submissions/update_grades`, which is bulk *grading*. Whether Canvas offers
+this outside REST was not established and is not claimed here.
+
+So the two flows are:
+
+| | posts automatically (default) | posts manually |
+| --- | --- | --- |
+| `assess` writes criteria | student sees them immediately | hidden |
+| you adjust in SpeedGrader | student sees the change | hidden |
+| `post-rubric-grade` writes grades | visible immediately | hidden |
+| you hand-grade the rest | visible as entered | hidden |
+| release | nothing to do | **you** click Post grades in the gradebook |
+
+Manual posting makes the review window genuinely private and releases everything at one moment.
+Its cost is the last row, which this tool cannot perform: if it is forgotten, the work looks
+finished and no student has anything.
+
+Automatic posting is not merely the unsafe fallback. "Here is my feedback on each criterion, the
+grade follows once I have read the whole set" is a defensible way to teach.
+
+**Open decision.** Whether `assess-with-rubric` refuses an automatic-post assignment, and how
+hard `post-rubric-grade` works to keep the instructor oriented inside the manual flow. The
+second may matter more: a refusal you cannot bypass is one bad day, a forgotten Post grades is a
+week of students believing they were not graded. Three things the tool can do either way, none of
+them new machinery — report each student's `posted_at` after writing; end a `post-rubric-grade`
+run with a count of grades written and not visible; and answer "did I forget?" with one existing
+read:
+
+```sh
+canvas_api_guard.py get "courses/123/assignments/20/submissions?per_page=100" \
+  --all-pages --fields user_id,score,posted_at
+```
 
 ## The guard change
 
@@ -268,6 +304,31 @@ Rejected: using the dedicated `rubric_assessments` endpoint so that `assessment_
 constant we send that happens to be a response field — satisfies the guard without modifying it.
 That would print `verification: passed` for a write in which no criterion was observed to land.
 
+## Two items from the pilot review that land here
+
+A Codex review of the codebase raised eight pre-pilot changes; they are specified on
+`spec/guard-pilot-safety`. Two of them belong to this branch instead, because this change is what
+creates the condition they describe.
+
+**The Codex rules file.** `codex/canvas-api-guard.rules` lists `grade-with-rubric` and
+`bulk-grade-with-rubric` in `OPERATION_PROMPTS`. Both are being retired, and `assess-with-rubric`
+and `post-rubric-grade` take their place. This is not bookkeeping: the offline suite reads those
+lists against both argparse parsers, so a command nobody classified fails the tests — which is
+the point of writing them that way.
+
+**Cap the free text the audit log records.** `emit` (`canvas_api_guard.py:789`) logs the
+`changes` rows, and each row carries `requested`, `before` and `after`. Today a grading write's
+values are numbers. After this change they include per-criterion comments: instructor free text
+about a named student, written into an append-only log with no retention. The rest of the audit
+design is careful about exactly this — request bodies never reach the log, and `:228` states that
+response bodies and the token never do either — so the gap is new and this branch opens it.
+
+Cap any value recorded in a `changes` row at a named constant, with an explicit truncation
+marker. The cap applies to what is **logged** only. `matches` still compares the full value, and
+stdout evidence still carries it: the instructor reading the confirmation sees the whole comment,
+and only the durable record is shortened. Retention for that record is specified separately, on
+`spec/guard-pilot-safety`.
+
 ## What breaks
 
 - `grade-with-rubric` and `bulk-grade-with-rubric` no longer exist. A pinned copy calling them
@@ -282,10 +343,11 @@ That would print `verification: passed` for a write in which no criterion was ob
 
 | File | Change |
 | --- | --- |
-| `canvas_api_guard.py` | the named-exception table and its use in `compare_fields`; version 1.17.0 → 1.18.0 |
+| `canvas_api_guard.py` | the named-exception table and its use in `compare_fields`; the logged-value cap; version 1.17.0 → 1.18.0 |
 | `test_canvas_api_guard.py` | verification tests for the new resolution, plus a regression test that wrappers are unchanged |
 | `level2/canvas_api_operations.py` | remove `grade_with_rubric`, `bulk_grade_with_rubric`, `grade_one`, `verify_rubric_assessment`; add `assess_with_rubric`, `post_rubric_grade`, shared list validation and the criterion sum; `create_rubric` default; version 0.15.0 → 0.16.0 |
 | `test_canvas_api_operations.py` | the operation tests below |
+| `codex/canvas-api-guard.rules` | the retired verbs replaced in `OPERATION_PROMPTS`; the offline suite enforces it |
 | `level2/SKILL.md` | the two verbs, the review window, the visibility statement, the `use_for_grading` remedy |
 | `level2/README.md` | the operations table |
 | `docs/IT-REVIEW.md` | reviewed for anything that names the retired verbs |
@@ -323,7 +385,8 @@ use. Source is not a hosted instance, at a release, with feature flags.
 3. SpeedGrader shows the rubric filled in and leaves the grade box empty.
 4. `include[]=assignment_associations` returns the association ID, and the flip to false works.
 5. Comment text round-trips through the guard's comparison unescaped.
-6. Whether Canvas exposes `post_manually` on a documented read of the course or its settings.
+6. The same two, one assignment set to post manually and one left automatic, confirming the
+   visibility table above from the student's side.
 
 Items 1 and 2 would invalidate the design if source and reality disagree. Testing through the
 production edge does not exercise any of this: that path runs a vendored, pinned guard.
