@@ -43,6 +43,7 @@ Two consequences worth naming, because they are the point rather than side effec
 | Decision | Chosen | Why |
 | --- | --- | --- |
 | Shape | Two verbs, each taking a list of 1–50 students | One definition format per verb; the single/bulk split disappears; the operation count stays at eight |
+| The total | Excludes `ignore_for_scoring` criteria, matching Canvas | The instructor approves from SpeedGrader, which shows Canvas's total; agreeing with it beats being internally consistent |
 | Drift check | `expected_total`, a stated number per student | Readable in the definition; `grade` ≠ `expected_total` is how a penalty is expressed |
 | Already-graded student | `post-rubric-grade` refuses, naming what Canvas holds | The collision this workflow manufactures; changing a grade stays a guard call |
 | `create-rubric` | Attaches with `use_for_grading: false`, no flag | One behaviour; the flag that makes a review window impossible should not be the default |
@@ -83,7 +84,8 @@ Each criterion object requires `points`; `comments` and `rating_id` are optional
 are refused, as everywhere else in this program.
 
 **Reads.** The course; the assignment (rubric criteria, `use_rubric_for_grading`,
-`points_possible`, `html_url`, and `post_manually`); and each submission at
+`points_possible`, `html_url`, `post_manually`, and each criterion's `ignore_for_scoring`); and
+each submission at
 `?include[]=rubric_assessment&include[]=user`, which also carries `posted_at`.
 
 **Refusals, before any write.**
@@ -138,12 +140,22 @@ The second row is a late penalty: the criteria in Canvas sum to 87, the instruct
 **Reads.** The course; the assignment; each submission at
 `?include[]=rubric_assessment&include[]=user`.
 
-**The sum.** `expected_total` is compared against the sum of every criterion in the *stored*
-assessment, computed exactly as the assess run computed the total it printed. Canvas's own
-internal sum skips criteria flagged `ignore_for_scoring`
-(source: `app/models/rubric_association.rb#assess`); this tool never creates such a criterion,
-and since the grade is posted explicitly, Canvas's sum is never consulted. The two numbers being
-compared are therefore always produced by the same rule.
+**The sum, and what it must agree with.** Both runs compute a total the same way: sum each
+criterion's points, **excluding any criterion the live rubric flags `ignore_for_scoring`**, which
+is exactly what Canvas does (source: `app/models/rubric.rb`, line 574 —
+`criteria.reject { |c| c[:ignore_for_scoring] }.pluck(:points).compact.sum`; and
+`app/models/rubric_association.rb#assess`). The flag is readable on the assignment's own `rubric`
+array (source: `lib/api/v1/assignment.rb`, line 344, which slices `ignore_for_scoring` into each
+row), so it costs no extra request — `live_rubric` already performs that read.
+
+An earlier draft of this document argued the exclusion was unnecessary: this tool never creates
+such a criterion, and the grade is posted explicitly, so Canvas's own sum is never consulted and
+our two numbers would always be produced by the same rule. That is true and beside the point. The
+instructor reviews in **SpeedGrader**, which shows *Canvas's* total. A rubric built in the Canvas
+UI or imported from elsewhere can carry an `ignore_for_scoring` row, and then the number this tool
+prints disagrees with the number on the screen the instructor is approving from — in a design
+whose whole purpose is that they approve the number they reviewed. Matching Canvas is the point,
+not internal consistency.
 
 **Refusals, before any write.**
 
@@ -177,6 +189,7 @@ Both verbs print one object. `assess-with-rubric`:
  "grades": [{"student_id": 4321, "student_name": "...",
              "criteria": {"_1234": {"points": 8, "comments": "Clear thesis."}},
              "criterion_total": 14, "points_possible": 20,
+             "excluded_from_total": ["_1236"],
              "current_grade": {"workflow_state": "unsubmitted", "score": null,
                                "grade": null, "graded_at": null},
              "existing_assessment": false,
@@ -364,7 +377,10 @@ criterion. A read-back without `include[]` exposes nothing and is reported `UNVE
 confirmation lines name criteria by ID. Regression: `submission.posted_grade` still resolves to
 `score`, and every existing wrapper is unaffected.
 
-**Level 2.** Assess sends no `submission` key. Assess refuses an assignment whose
+**Level 2.** A criterion flagged `ignore_for_scoring` on the live rubric is excluded from
+`criterion_total` and from the sum `expected_total` is checked against, is reported in
+`excluded_from_total`, and is still written and read back like any other criterion — the flag
+changes the arithmetic, never what is stored. Assess sends no `submission` key. Assess refuses an assignment whose
 `use_rubric_for_grading` is true, and the message names both remedy commands. Assess refuses an
 unknown criterion, over-maximum points, duplicates, an empty list and 51 entries. A bad entry at
 position three writes nothing at all. The dry run reports the post policy and the visibility
