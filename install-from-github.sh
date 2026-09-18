@@ -98,6 +98,7 @@ cleanup_before_open() {
 }
 trap cleanup_before_open EXIT HUP INT TERM
 
+printf 'Downloading canvas-api-guard from GitHub...\n'
 "$GIT_BIN" clone --quiet "$REPOSITORY" "$CHECKOUT" || die "GitHub clone failed"
 "$GIT_BIN" -C "$CHECKOUT" checkout --quiet --detach "$SOURCE_REF" \
     || die "commit $SOURCE_REF is not available from the repository"
@@ -155,10 +156,13 @@ status_temp="$STATUS_FILE.\$\$.tmp"
 
 cd "$CHECKOUT"
 printf 'Installing reviewed canvas-api-guard commit:\n  %s\n\n' "$SOURCE_REF"
-python3 -m py_compile canvas_api_guard.py test_canvas_api_guard.py
-python3 -m unittest
+printf 'Checking the downloaded source...\n'
+/usr/bin/python3 -m py_compile canvas_api_guard.py test_canvas_api_guard.py
+printf 'Running its test suite under /usr/bin/python3, the interpreter the guard runs under (about ten seconds)...\n'
+/usr/bin/python3 -m unittest
 sh -n install.sh
 git diff --check
+printf '\nComparing this commit with what this Mac has installed...\n\n'
 plan_status=0
 ./install.sh --plan --profile "$PROFILE" --host "$CANVAS_HOST" || plan_status=\$?
 if [ "\$plan_status" -eq 3 ]; then
@@ -185,6 +189,7 @@ fi
 
 # After an install, the same plan must find nothing left to change.
 if [ "\$plan_status" -eq 0 ] || [ "\$plan_status" -eq 4 ]; then
+    printf '\nVerifying the installation...\n'
     after=0
     ./install.sh --plan --profile "$PROFILE" --host "$CANVAS_HOST" >/dev/null || after=\$?
     case "\$after" in
@@ -195,6 +200,7 @@ if [ "\$plan_status" -eq 0 ] || [ "\$plan_status" -eq 4 ]; then
 fi
 
 # Attribute lookup only (no -w): it reports whether a token item exists and never prints it.
+printf 'Checking the Keychain for a stored Canvas token...\n'
 if /usr/bin/security find-generic-password -s canvas-api-guard -a "\$(id -un)" >/dev/null 2>&1; then
     printf '\nA Canvas API token is already stored; it was not read, changed, or re-entered.\n'
     printf 'To replace it later, run: /usr/local/libexec/canvas_api_guard.py --set-token\n'

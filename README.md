@@ -250,7 +250,7 @@ newer revision; never substitute `main` or another mutable branch name.
   git -C "$guard_checkout" checkout --quiet --detach "$guard_commit"
   test "$(git -C "$guard_checkout" rev-parse HEAD)" = "$guard_commit"
   cd "$guard_checkout"
-  python3 -m unittest
+  /usr/bin/python3 -m unittest
   ./install.sh --plan --host school.instructure.com
   sudo ./install.sh --host school.instructure.com
   echo

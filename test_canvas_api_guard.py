@@ -3309,6 +3309,16 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertIn('if [ -z "\\${CANVAS_GUARD_INLINE:-}" ]; then', script)
         self.assertIn("/profile/settings", script)               # the token page, named and opened
 
+    def test_github_bootstrap_tests_under_the_interpreter_the_guard_runs_under(self):
+        """The guard pins /usr/bin/python3, so the launcher's compile-and-test gate runs there
+        too. A PATH python3 (Homebrew) can pass a suite the system 3.9 fails; the released gate
+        did exactly that, so the gate must name the interpreter, never take it from PATH."""
+        with open(self.BOOTSTRAP) as handle:
+            script = handle.read()
+        self.assertIn("/usr/bin/python3 -m py_compile canvas_api_guard.py test_canvas_api_guard.py", script)
+        self.assertIn("/usr/bin/python3 -m unittest", script)
+        self.assertNotRegex(script, r"(?<![/\w])python3 -m ")
+
     def test_github_bootstrap_refuses_an_invalid_host_before_network(self):
         proc = self.run_bootstrap("--ref", "a" * 40, "--host", "https://evil.example/x")
         self.assertEqual(proc.returncode, 1)
