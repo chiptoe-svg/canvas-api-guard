@@ -148,6 +148,15 @@ is exactly what Canvas does (source: `app/models/rubric.rb`, line 574 —
 array (source: `lib/api/v1/assignment.rb`, line 344, which slices `ignore_for_scoring` into each
 row), so it costs no extra request — `live_rubric` already performs that read.
 
+Where such a criterion comes from, which tells the implementer where to get a fixture: only from
+one linked to a Learning Outcome. `Rubric#generate_criteria` sets `ignore_for_scoring` solely
+inside its `if criterion_data[:learning_outcome_id].present?` branch (source:
+`app/models/rubric.rb#generate_criteria`), and it is not a documented request parameter at all —
+the documented `RubricCriterion` fields are `id`, `description`, `long_description`, `points`,
+`criterion_use_range` and `ratings`. So a rubric this tool creates can never carry the flag:
+`criterion()` rejects unknown fields and therefore cannot send `learning_outcome_id`. The affected
+case is an instructor who used "Find Outcome" in the Canvas rubric editor.
+
 An earlier draft of this document argued the exclusion was unnecessary: this tool never creates
 such a criterion, and the grade is posted explicitly, so Canvas's own sum is never consulted and
 our two numbers would always be produced by the same rule. That is true and beside the point. The
