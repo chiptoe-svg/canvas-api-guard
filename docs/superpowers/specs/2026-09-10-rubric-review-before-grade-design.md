@@ -2,7 +2,9 @@
 
 Date: 2026-09-10
 Branch: `feat/rubric-review-before-grade`
-Status: design approved, not implemented.
+Status: design approved, not implemented. Revised 2026-09-18: the visibility decision is closed
+(the tool switches the assignment to manual posting; the instructor releases with one click), and
+the grade-entry verb is renamed `enter-rubric-grade`.
 Background, and what was already settled before this document: `docs/superpowers/2026-09-10-rubric-grading-change-notes.md`.
 
 ## The requirement
@@ -25,10 +27,14 @@ the criteria. After this change:
 ```sh
 assess-with-rubric --course-id 123 --assignment-id 20 --definition assess.json --dry-run
 assess-with-rubric --course-id 123 --assignment-id 20 --definition assess.json --yes
-#   criteria and comments are now in Canvas; no grade exists anywhere
+#   the assignment now posts manually (switched by this run if it did not already);
+#   criteria and comments are in Canvas, hidden from every student; no grade exists anywhere
 #   the instructor reviews in SpeedGrader
-post-rubric-grade  --course-id 123 --assignment-id 20 --definition post.json --dry-run
-post-rubric-grade  --course-id 123 --assignment-id 20 --definition post.json --yes
+enter-rubric-grade --course-id 123 --assignment-id 20 --definition enter.json --dry-run
+enter-rubric-grade --course-id 123 --assignment-id 20 --definition enter.json --yes
+#   grades for the approved students are in Canvas, still hidden
+#   the instructor clicks Post grades, then Graded, in the gradebook: grade, criteria and
+#   comments appear together for those students, and nothing appears for the rest
 ```
 
 Two consequences worth naming, because they are the point rather than side effects:
@@ -37,6 +43,9 @@ Two consequences worth naming, because they are the point rather than side effec
   This is native Canvas behaviour with `use_for_grading` false, not something built here.
 - **The grade is stated, not derived.** A late penalty, a cap, extra credit, or a criterion that
   does not apply this time are all expressible for the first time.
+- **Nothing the tool does is ever visible to a student.** The assignment posts manually before
+  the first criterion is written, and the one action that releases anything is the instructor's
+  click in Canvas.
 
 ## Decisions
 
@@ -45,10 +54,13 @@ Two consequences worth naming, because they are the point rather than side effec
 | Shape | Two verbs, each taking a list of 1–50 students | One definition format per verb; the single/bulk split disappears; the operation count stays at eight |
 | The total | Excludes `ignore_for_scoring` criteria, matching Canvas | The instructor approves from SpeedGrader, which shows Canvas's total; agreeing with it beats being internally consistent |
 | Drift check | `expected_total`, a stated number per student | Readable in the definition; `grade` ≠ `expected_total` is how a penalty is expressed |
-| Already-graded student | `post-rubric-grade` refuses, naming what Canvas holds | The collision this workflow manufactures; changing a grade stays a guard call |
+| Already-graded student | `enter-rubric-grade` refuses, naming what Canvas holds | The collision this workflow manufactures; changing a grade stays a guard call |
 | `create-rubric` | Attaches with `use_for_grading: false`, no flag | One behaviour; the flag that makes a review window impossible should not be the default |
 | An assignment that still auto-grades | `assess-with-rubric` refuses the whole run | If this is wrong, Canvas posts every grade the instant assess runs |
-| Student visibility | **Open** — see below | Decided as report-never-refuse, then reopened: the premise that the only remedy was course-wide turned out to be wrong |
+| Student visibility | `assess-with-rubric` switches the assignment to manual posting before it writes, unless told `--keep-post-policy`; the instructor releases with Post grades → Graded | The review window is private by construction and the tool never makes anything visible; the Everyone / Graded choice belongs to the person looking at the gradebook |
+| The switch itself | One guard verb, `post-policy`, sending one fixed GraphQL mutation with two validated variables; read back through REST | There is no REST route; a verb that accepted a query the model composes would be unreviewable |
+| Restoring automatic posting | Never done by the tool | Under automatic policy an assessed but ungraded submission is visible at once, which exposes exactly the students the instructor has not finished |
+| Verb name | `enter-rubric-grade`, not `post-rubric-grade` | "Post" is the Canvas button that reveals grades, which this verb must never be mistaken for |
 | Overall submission comment | Out of scope; per-criterion comments only | Already supported; an overall comment is one documented guard call |
 | Guard verification | Teach the guard one named exception | The alternative proves a constant we sent and calls it verification |
 
@@ -100,9 +112,17 @@ each submission at
 4. Points above that criterion's maximum.
 5. A duplicate student ID, an empty list, or more than 50 entries.
 
-**Reported, never refused.** The course post policy and its visibility consequence; each
-student's current grade; whether a stored assessment already exists for that student, since this
-write replaces the criteria it names.
+**The post-policy switch, before any criterion write.** If the assignment's `post_manually` is
+false and the run was not given `--keep-post-policy`, the run calls the guard's `post-policy`
+verb (see "The guard change") to set the assignment to manual posting, and the guard reads the
+assignment back before returning. A switch that does not verify ends the run before the first
+criterion is written. An assignment already posting manually is left alone and reported as such.
+`--keep-post-policy` is the second flow: the assignment stays automatic, and every criterion and
+comment is visible to its student the moment it is written, which the dry run says in words.
+
+**Reported, never refused.** The post policy before and after the run and its visibility
+consequence; each student's current grade; whether a stored assessment already exists for that
+student, since this write replaces the criteria it names.
 
 **The write**, per student:
 
@@ -121,9 +141,9 @@ already refused above, before the request is built.
 The `include[]=rubric_assessment` in the path is load-bearing: it is what puts the field in the
 read-back the guard proves against. It is not decoration and there is a test on it.
 
-### `post-rubric-grade`
+### `enter-rubric-grade`
 
-**Definition** (`post.json`):
+**Definition** (`enter.json`):
 
 ```json
 {"grades": [{"student_id": 4321, "grade": 92, "expected_total": 92},
@@ -193,8 +213,8 @@ Both verbs print one object. `assess-with-rubric`:
 ```json
 {"operation": "assess-with-rubric", "phase": "dry-run",
  "course_id": "123", "assignment_id": "20",
- "post_manually": false,
- "student_visibility": "criteria and comments become visible to each student when written; no grade is posted",
+ "post_policy": {"before": "automatic", "after": "manual", "switched_by_this_run": true},
+ "student_visibility": "hidden from every student until you click Post grades in the gradebook; this run writes no grade",
  "grades": [{"student_id": 4321, "student_name": "...",
              "criteria": {"_1234": {"points": 8, "comments": "Clear thesis."}},
              "criterion_total": 14, "points_possible": 20,
@@ -205,7 +225,7 @@ Both verbs print one object. `assess-with-rubric`:
              "speedgrader_url": "..."}]}
 ```
 
-`post-rubric-grade` prints, per student, the stored criteria, the live sum, `expected_total`,
+`enter-rubric-grade` prints, per student, the stored criteria, the live sum, `expected_total`,
 `grade`, an explicit `difference` when the grade is not the sum, `points_possible`,
 `current_grade` and `speedgrader_url`.
 
@@ -240,37 +260,50 @@ an option. So `assess-with-rubric` reads the policy for the specific assignment,
 already performs, and never guesses. `submission.posted_at` then states per student whether that
 submission is actually released, which is stronger than reasoning from the policy.
 
-Setting the policy is a gradebook action, not an API one. Neither `post_manually` nor the
-deprecated `muted` appears in the assignment's writable field list (source:
+Setting the policy is not a REST action. Neither `post_manually` nor the deprecated `muted`
+appears in the assignment's writable field list (source:
 `lib/api/v1/assignment.rb#API_ALLOWED_ASSIGNMENT_INPUT_FIELDS`, line 605; `muted` is output-only
-at line 255). And there is no REST route to post or hide grades at all — `config/routes.rb`
-matches nothing but `submissions/update_grades`, which is bulk *grading*. Whether Canvas offers
-this outside REST was not established and is not claimed here.
+at line 255), and `config/routes.rb` has no REST route to post or hide grades. It is a GraphQL
+action: `setAssignmentPostPolicy(assignmentId, postManually)` (source:
+`app/graphql/mutations/set_assignment_post_policy.rb`), authorised on the course's
+`manage_grades` right, refusing `postManually: false` on an anonymous assignment or an unpublished
+moderated one, and otherwise calling `ensure_post_policy`, which writes the flag and nothing else
+(source: `app/models/abstract_assignment.rb#ensure_post_policy`). Switching in either direction
+neither posts nor hides an existing grade: `posted_at` is untouched. The one GraphQL route is
+`POST /api/graphql` (source: `config/routes.rb`, line 36).
+
+Two consequences of "the flag and nothing else":
+
+- Grades written under manual posting stay hidden after a switch back to automatic, because an
+  unposted graded submission is hidden under either policy. Restoring automatic is therefore not
+  a release, and this tool never does it: an assessed but ungraded submission *is* visible under
+  automatic policy, so restoring early exposes exactly the students the instructor has not
+  finished. The instructor restores from the gradebook when the assignment is done, if they
+  want to.
+- The release is the instructor's click. Post grades offers **Everyone** and **Graded** (source:
+  `app/graphql/mutations/post_assignment_grades.rb`, `graded_only`, over the `Submission.postable`
+  scope). Graded reveals the students who have a grade and leaves the rest hidden, which is the
+  triage this design produces. Everyone also marks ungraded submissions posted, after which a
+  grade entered by hand shows the moment it is entered.
 
 So the two flows are:
 
-| | posts automatically (default) | posts manually |
+| | manual posting (default; switched by `assess`) | automatic, kept with `--keep-post-policy` |
 | --- | --- | --- |
-| `assess` writes criteria | student sees them immediately | hidden |
-| you adjust in SpeedGrader | student sees the change | hidden |
-| `post-rubric-grade` writes grades | visible immediately | hidden |
-| you hand-grade the rest | visible as entered | hidden |
-| release | nothing to do | **you** click Post grades in the gradebook |
+| `assess` writes criteria | hidden | student sees them immediately |
+| you adjust in SpeedGrader | hidden | student sees the change |
+| `enter-rubric-grade` writes grades | hidden | visible immediately |
+| you hand-grade the rest | hidden | visible as entered |
+| release | **you** click Post grades → Graded; grade, criteria and comments appear together | nothing to do |
 
-Manual posting makes the review window genuinely private and releases everything at one moment.
-Its cost is the last row, which this tool cannot perform: if it is forgotten, the work looks
-finished and no student has anything.
-
-Automatic posting is not merely the unsafe fallback. "Here is my feedback on each criterion, the
-grade follows once I have read the whole set" is a defensible way to teach.
-
-**Open decision.** Whether `assess-with-rubric` refuses an automatic-post assignment, and how
-hard `post-rubric-grade` works to keep the instructor oriented inside the manual flow. The
-second may matter more: a refusal you cannot bypass is one bad day, a forgotten Post grades is a
-week of students believing they were not graded. Three things the tool can do either way, none of
-them new machinery — report each student's `posted_at` after writing; end a `post-rubric-grade`
-run with a count of grades written and not visible; and answer "did I forget?" with one existing
-read:
+**Decision.** The default is the first column. Automatic posting is not merely the unsafe
+fallback — "here is my feedback on each criterion, the grade follows once I have read the whole
+set" is a defensible way to teach — so the second column stays reachable, by a flag the dry run
+names, on an assignment that already posts automatically. A forgotten click is the cost of the
+first column: the work looks finished and no student has anything. Three things keep the
+instructor oriented, none of them new machinery: the dry run and the `--yes` output state the
+policy and the visibility in words; `enter-rubric-grade` ends with a count of grades written and
+not yet visible; and "did I forget?" is one existing read:
 
 ```sh
 canvas_api_guard.py get "courses/123/assignments/20/submissions?per_page=100" \
@@ -326,6 +359,43 @@ Rejected: using the dedicated `rubric_assessments` endpoint so that `assessment_
 constant we send that happens to be a response field — satisfies the guard without modifying it.
 That would print `verification: passed` for a write in which no criterion was observed to land.
 
+### The post-policy verb
+
+The guard gains one verb:
+
+```sh
+canvas_api_guard.py post-policy --course-id 123 --assignment-id 20 manual --dry-run
+canvas_api_guard.py post-policy --course-id 123 --assignment-id 20 manual --yes
+```
+
+It sends `POST /api/graphql` with one fixed document, a module-level constant, and two variables
+the guard validates itself — the assignment id as a string of digits, the policy as a boolean:
+
+```graphql
+mutation ($id: ID!, $manual: Boolean!) {
+  setAssignmentPostPolicy(input: {assignmentId: $id, postManually: $manual}) {
+    postPolicy { postManually }
+  }
+}
+```
+
+No other document can be sent. The verb takes no query text; `post` cannot address
+`/api/graphql`, because `normalise_path` still prefixes `api/v1/` to everything; and the URL
+builder admits that one path only when this verb asks for it. So the guard's statement to IT
+stays "paths under `/api/v1/`, plus one fixed mutation string", not "GraphQL".
+
+Its contract is the guard's usual one. Dry run: read the assignment, print the current and the
+requested policy, send nothing. `--yes`: pre-read, send, then read the assignment back through
+REST (`courses/123/assignments/20`, whose `post_manually` the serializer exposes
+unconditionally) and compare. GraphQL reports a refusal as HTTP 200 with an `errors` array — an
+anonymous assignment, a moderated one, a missing `manage_grades` right — and the guard treats
+that as a refused write: exit 2, nothing changed, the message quoted. A 200 without `errors`
+whose read-back does not show the requested policy is exit 3, and `WRITE STATUS UNCERTAIN` means
+what it always means: read the assignment and ask, never resend. The audit record names the verb,
+the assignment and both policies; the request body never reaches the log, as today.
+
+The Codex rules file lists it with the other guard writes: it changes an assignment, so it prompts.
+
 ## Two items from the pilot review that land here
 
 A Codex review of the codebase raised eight pre-pilot changes; they are specified on
@@ -334,7 +404,7 @@ creates the condition they describe.
 
 **The Codex rules file.** `codex/canvas-api-guard.rules` lists `grade-with-rubric` and
 `bulk-grade-with-rubric` in `OPERATION_PROMPTS`. Both are being retired, and `assess-with-rubric`
-and `post-rubric-grade` take their place. This is not bookkeeping: the offline suite reads those
+and `enter-rubric-grade` take their place. This is not bookkeeping: the offline suite reads those
 lists against both argparse parsers, so a command nobody classified fails the tests — which is
 the point of writing them that way.
 
@@ -359,20 +429,21 @@ and only the durable record is shortened. Retention for that record is specified
   attached are unaffected until someone flips them; `assess-with-rubric` refuses those and says
   how.
 - The assess definition is today's per-student payload wrapped in `{"grades": [...]}`, which is
-  already the bulk shape. The post definition is new.
+  already the bulk shape. The enter definition is new.
 
 ## Files
 
 | File | Change |
 | --- | --- |
-| `canvas_api_guard.py` | the named-exception table and its use in `compare_fields`; the logged-value cap; version 1.17.0 → 1.18.0 |
+| `canvas_api_guard.py` | the named-exception table and its use in `compare_fields`; the logged-value cap; the `post-policy` verb with its one fixed document and REST read-back; version 1.18.0 → 1.19.0 |
 | `test_canvas_api_guard.py` | verification tests for the new resolution, plus a regression test that wrappers are unchanged |
-| `level2/canvas_api_operations.py` | remove `grade_with_rubric`, `bulk_grade_with_rubric`, `grade_one`, `verify_rubric_assessment`; add `assess_with_rubric`, `post_rubric_grade`, shared list validation and the criterion sum; `create_rubric` default; version 0.15.0 → 0.16.0 |
+| `level2/canvas_api_operations.py` | remove `grade_with_rubric`, `bulk_grade_with_rubric`, `grade_one`, `verify_rubric_assessment`; add `assess_with_rubric` (with the post-policy switch step and `--keep-post-policy`), `enter_rubric_grade`, shared list validation and the criterion sum; `create_rubric` default; version 0.15.0 → 0.16.0 |
 | `test_canvas_api_operations.py` | the operation tests below |
-| `codex/canvas-api-guard.rules` | the retired verbs replaced in `OPERATION_PROMPTS`; the offline suite enforces it |
-| `level2/SKILL.md` | the two verbs, the review window, the visibility statement, the `use_for_grading` remedy |
+| `codex/canvas-api-guard.rules` | the retired verbs replaced in `OPERATION_PROMPTS`; the guard's `post-policy` verb added to its prompting list; the offline suite enforces both |
+| `codex/skills/canvas-api-guard/SKILL.md` | the `post-policy` verb, inside the 130-line cap |
+| `level2/SKILL.md` | the two verbs, the review window, the visibility statement, the release (Post grades → Graded, never done by the tool), the `use_for_grading` remedy |
 | `level2/README.md` | the operations table |
-| `docs/IT-REVIEW.md` | reviewed for anything that names the retired verbs |
+| `docs/IT-REVIEW.md` | reviewed for anything that names the retired verbs; the one-fixed-mutation statement about `/api/graphql` |
 | release pin | advanced only after asking the owner |
 
 ## Tests
@@ -384,7 +455,10 @@ counts as evidence.
 one row per criterion ID. One criterion reading back wrong reports uncertain and names that
 criterion. A read-back without `include[]` exposes nothing and is reported `UNVERIFIABLE`. The
 confirmation lines name criteria by ID. Regression: `submission.posted_grade` still resolves to
-`score`, and every existing wrapper is unaffected.
+`score`, and every existing wrapper is unaffected. `post-policy` sends the constant document and
+only its two validated variables; a GraphQL `errors` array is exit 2 with the message quoted; a
+clean 200 whose read-back still shows the old policy is exit 3; and `post` cannot reach
+`/api/graphql`, because `normalise_path` prefixes `api/v1/`, which a test pins.
 
 **Level 2.** A criterion flagged `ignore_for_scoring` on the live rubric is excluded from
 `criterion_total` and from the sum `expected_total` is checked against, is reported in
@@ -393,32 +467,46 @@ changes the arithmetic, never what is stored. Assess sends no `submission` key. 
 `use_rubric_for_grading` is true, and the message names both remedy commands. Assess refuses an
 unknown criterion, over-maximum points, duplicates, an empty list and 51 entries. A bad entry at
 position three writes nothing at all. The dry run reports the post policy and the visibility
-statement. Post refuses a student with no stored assessment; refuses on an `expected_total`
+statement. Enter refuses a student with no stored assessment; refuses on an `expected_total`
 mismatch, naming both numbers; refuses a student Canvas already scored, naming what it holds.
-Post writes `posted_grade` alone, and a grade that is not the sum is written and labelled. A
+Enter writes `posted_grade` alone, and a grade that is not the sum is written and labelled. A
 Canvas failure part-way through a pre-flighted batch raises `GuardUncertain` naming the count.
-`create_rubric` attaches with `use_for_grading: false`.
+`create_rubric` attaches with `use_for_grading: false`. Assess on an automatic assignment performs
+the switch before the first criterion write and reports the policy before and after; with
+`--keep-post-policy` it does not, and the dry run says the criteria will be visible; on an
+assignment already manual it does not, and says so; a switch the guard reports refused or
+uncertain ends the run with no criterion written. Enter ends with the count of grades written and
+not yet visible.
 
 ## The live gate
 
 Merge waits on watching this happen once, in a sandbox course on the instance faculty actually
 use. Source is not a hosted instance, at a release, with feature flags.
 
-1. With `use_for_grading` false, a rubric assessment written alone posts no grade — gradebook
+1. `POST /api/graphql` answers an ordinary instructor access token on the faculty instance, and
+   `setAssignmentPostPolicy` succeeds for an instructor on a sandbox assignment; the REST read of
+   that assignment then shows `post_manually` true.
+2. With `use_for_grading` false, a rubric assessment written alone posts no grade — gradebook
    stays empty.
-2. What the test student can see during the window.
-3. SpeedGrader shows the rubric filled in and leaves the grade box empty.
-4. `include[]=assignment_associations` returns the association ID, and the flip to false works.
-5. Comment text round-trips through the guard's comparison unescaped.
-6. The same two, one assignment set to post manually and one left automatic, confirming the
-   visibility table above from the student's side.
+3. Under manual posting, the test student (Student View) sees no criterion, comment or grade
+   during the window, and still nothing after `enter-rubric-grade`.
+4. SpeedGrader shows the rubric filled in and leaves the grade box empty.
+5. `include[]=assignment_associations` returns the association ID, and the flip to false works.
+6. Comment text round-trips through the guard's comparison unescaped.
+7. Post grades → Graded: the graded test student sees grade, criteria and comments together; an
+   assessed but ungraded one still sees nothing.
+8. Switching an automatic assignment to manual leaves a grade that was already posted visible.
+9. The second flow, `--keep-post-policy` on an automatic assignment: the test student sees the
+   criteria as soon as assess writes them, confirming the table's right-hand column.
 
-Items 1 and 2 would invalidate the design if source and reality disagree. Testing through the
+Items 1 to 3 would invalidate the design if source and reality disagree. Testing through the
 production edge does not exercise any of this: that path runs a vendored, pinned guard.
 
 ## Out of scope
 
 Moderated grading, which solves several independent graders and one designated picker — a
 different problem, deferred deliberately. Overall submission comments. Letter, percentage and
-pass/fail grade strings, which stay reachable through the guard's own `PUT`. Assignment-level
-post policies, which have no documented REST endpoint. Advancing the release pin without asking.
+pass/fail grade strings, which stay reachable through the guard's own `PUT`. Posting grades
+from the tool: the instructor's click is the release, by design. Restoring an assignment to
+automatic posting, for the reason given above. The course-level post policy, untouched. Advancing
+the release pin without asking.
