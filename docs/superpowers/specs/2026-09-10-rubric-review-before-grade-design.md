@@ -486,6 +486,11 @@ use. Source is not a hosted instance, at a release, with feature flags.
 1. `POST /api/graphql` answers an ordinary instructor access token on the faculty instance, and
    `setAssignmentPostPolicy` succeeds for an instructor on a sandbox assignment; the REST read of
    that assignment then shows `post_manually` true.
+   **Observed 2026-09-18** on the faculty instance, through GraphiQL (browser session) and the
+   installed guard: the mutation succeeded with an instructor's own right and returned
+   `postManually: true`; a GraphQL re-query and a guard `get` of the assignment both showed the
+   new policy; assignment ids are the same numbers REST uses. Still unobserved: the same request
+   with an access token instead of a session, which the guard verb proves on its first run.
 2. With `use_for_grading` false, a rubric assessment written alone posts no grade — gradebook
    stays empty.
 3. Under manual posting, the test student (Student View) sees no criterion, comment or grade
