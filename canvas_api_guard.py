@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 # canvas_api_guard - an audited passthrough to the Canvas REST API.
 #
 # WHAT IT IS. A single-file, stdlib-only wrapper around the Canvas REST API. It gives the user
@@ -60,7 +60,7 @@ import argparse, datetime, getpass, hashlib, json, os, pwd, re, stat, subprocess
 import urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
-USER_AGENT = "canvas-api-guard/1.17.0"
+USER_AGENT = "canvas-api-guard/1.18.0"
 KEYCHAIN_SERVICE = "canvas-api-guard"
 SECURITY_BIN = "/usr/bin/security"
 SECRET_TOOL_PATHS = ("/usr/bin/secret-tool", "/usr/local/bin/secret-tool")
@@ -73,14 +73,17 @@ INSTALLED_CONFIG_PATH = CONFIG_PATH          # the offline-test seam: the suite 
                                              # provenance check below stands down. The
                                              # installed guard never does that.
 WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
-READ_VERBS = ("GET", "DOWNLOAD")   # evidence verbs already logged as their own single line
+READ_VERBS = ("GET", "DOWNLOAD", "AUDIT")   # evidence verbs already logged as their own single line
 TIMEOUT = 30
 PAGE_CAP = 200                     # --all-pages: an upper bound, not a promise. A server that
                                    # keeps returning the same rel="next" would otherwise loop.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024   # one response body. --all-pages is bounded separately by
+                                       # PAGE_CAP; this bounds the single read underneath it.
 REDACTED = "Bearer <redacted>"
 AGENT_MARKERS = ("AI_AGENT", "CLAUDE_CODE_SESSION_ID", "CODEX_SANDBOX",
                  "CODEX_SANDBOX_NETWORK_DISABLED")   # names recorded if present; never values
 _SOURCE = None
+_RUN_ID = os.urandom(6).hex()
 
 class GuardError(Exception):
     """Any refusal or failure the user should see as one clear line."""
@@ -139,11 +142,22 @@ def installed_guard_file():
         raise GuardError("the guard cannot prove its own path: __file__ is not set")
     return os.path.realpath(running)
 
+def trusted_interpreter():
+    """The interpreter executing this file must clear the same bar as the file itself. The
+    shebang names an absolute path, but `python3 canvas_api_guard.py` still runs whatever
+    python the caller's PATH supplies, and that process is the one that reads the keychain."""
+    running = sys.executable
+    if not running:
+        raise GuardError("the guard cannot prove its interpreter: sys.executable is not set")
+    return trusted_path(running, "the Python interpreter")
+
 def check_provenance():
-    """Prove the running guard is the installed, root-owned one before any credential use."""
+    """Prove the running guard is the installed, root-owned one, and that an equally trusted
+    interpreter is executing it, before any credential use."""
     if CONFIG_PATH != INSTALLED_CONFIG_PATH:
         return                       # test seam: a throwaway config is never an installation
     trusted_path(installed_guard_file(), "the guard executable")
+    trusted_interpreter()
 
 # ------------------------------------------------------------------------------------- token
 # read_token() is the only credential reader. Its value is used only to make an Authorization
@@ -251,6 +265,15 @@ def invocation_source():
                    "agent_env": sorted(name for name in AGENT_MARKERS if name in os.environ)}
     return _SOURCE
 
+def run_id():
+    """One id for every record this process writes. A PID is reused; this is not, so a
+    request, its evidence and its refusal cannot be read as belonging to a different run.
+    Assigned at import, so no two threads can ever race to create it."""
+    global _RUN_ID
+    if _RUN_ID is None:          # only a test resets it
+        _RUN_ID = os.urandom(6).hex()
+    return _RUN_ID
+
 def user_private(info, kind):
     """A real, non-symlink object of `kind` (stat.S_ISDIR or stat.S_ISREG), owned by the current
     user and closed to group and others: the one rule for everything this tool writes."""
@@ -289,15 +312,30 @@ def secure_log_fd(log_path):
                          % log_path)
     return fd
 
+def write_all(fd, payload, label):
+    """os.write is not guaranteed to write every byte in one call; an unchecked short write here
+    silently truncates a record. Used by log_event and by audit prune's temp-file write, where a
+    short write just before os.replace would swap in a truncated log. Fail loudly instead."""
+    written = os.write(fd, payload)
+    if written != len(payload):
+        raise GuardError("%s: short write (%d of %d bytes); refusing to continue"
+                         % (label, written, len(payload)))
+
 def log_event(log_path, fields):
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    record = {"timestamp": stamp, "pid": os.getpid(), "source": invocation_source()}
+    record = {"timestamp": stamp, "pid": os.getpid(), "run": run_id(),
+              "source": invocation_source()}
     record.update(fields)
+    line = (json.dumps(record, sort_keys=True, default=str) + "\n").encode("utf-8")
     fd = secure_log_fd(log_path)
-    with os.fdopen(fd, "a") as handle:
-        handle.write(json.dumps(record, sort_keys=True, default=str) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    try:
+        # One write on an O_APPEND descriptor, so a record longer than a pipe buffer cannot be
+        # split across another writer's. This is not a lock: it removes interleaving, it does
+        # not order two runs.
+        write_all(fd, line, "audit log write")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
     return record
 
 # ------------------------------------------------------------------------------- host pinning
@@ -315,6 +353,9 @@ def normalise_path(path):
     query = ""
     if "?" in raw:
         raw, query = raw.split("?", 1)
+    if "%" in raw:
+        raise GuardError("percent-encoding is not allowed in the path: %r; send the literal path, "
+                         "and encode only query parameters" % path)
     split = urllib.parse.urlsplit(raw)
     if split.scheme or split.netloc or raw.startswith("//") or "://" in raw:
         raise GuardError("path must not contain a scheme or a host: %r" % path)
@@ -325,13 +366,26 @@ def normalise_path(path):
         clean = "api/v1/" + clean
     return "/" + clean + (("?" + query) if query else "")
 
+# Two path prefixes a faculty pilot never needs, refused for every verb including reads. This is
+# deliberately not a list of "dangerous" operations: such a list invites the belief that what is
+# missing from it is safe. Every other write is gated the way it always was, by a person seeing
+# the URL and the changed fields and confirming.
+OUT_OF_SCOPE = re.compile(r"^/api/v1/(accounts|developer_keys)(/|$)")
+
+def refuse_out_of_scope(npath):
+    if OUT_OF_SCOPE.match(npath):
+        raise GuardError("this tool does not reach %s: account administration and developer "
+                         "keys are outside its scope" % npath.split("?")[0])
+
 def canvas_url(host, path):
     """The only place a URL is built. Pins the scheme and the host."""
     if not host:
         raise GuardError("no Canvas host configured in %s" % CONFIG_PATH)
     if "://" in host or "/" in host or "@" in host or any(c.isspace() for c in host):
         raise GuardError("invalid Canvas host: %r" % host)
-    url = "https://" + host + normalise_path(path)
+    npath = normalise_path(path)
+    refuse_out_of_scope(npath)
+    url = "https://" + host + npath
     check = urllib.parse.urlsplit(url)
     if check.scheme != "https" or check.netloc != host:
         raise GuardError("refusing a URL that leaves the pinned host: %r" % url)
@@ -483,7 +537,7 @@ def send_request(cfg, method, path, body=None):
     event = "response" if is_write else "read"
     try:
         raw = open_request(request)
-        status, head, text = raw.status, dict(raw.headers), raw.read()
+        status, head, text = raw.status, dict(raw.headers), raw.read(MAX_RESPONSE_BYTES + 1)
         raw.close()
     except Exception as err:                       # HTTPError, DNS, TLS, timeout, ...
         status = getattr(err, "code", None)
@@ -491,6 +545,14 @@ def send_request(cfg, method, path, body=None):
                                  "status": status, "error": type(err).__name__})
         raise RequestFailure("%s %s failed: %s: %s"
                              % (method, url, type(err).__name__, err), status=status)
+    if len(text) > MAX_RESPONSE_BYTES:
+        log_event(cfg.log_path, {"event": event, "verb": method, "path": npath, "ok": False,
+                                 "status": status, "error": "ResponseTooLarge"})
+        # RequestFailure, not GuardError: on a write this reaches send_write, which treats a
+        # non-4xx as uncertain. The write was sent; only its result is unreadable.
+        raise RequestFailure("%s %s returned more than the %d-byte limit; narrow the request "
+                             "with --fields, a smaller per_page, or a more specific path"
+                             % (method, npath, MAX_RESPONSE_BYTES), status=status)
     log_event(cfg.log_path, {"event": event, "verb": method, "path": npath, "status": status,
                              "ok": True, "bytes": len(text)})
     try:
@@ -556,6 +618,11 @@ def prove_draft(cfg, method, path, body):
         reason = ("draft only writes courses/N/quizzes, assignments, pages or discussion_topics, "
                   "an item of one, or its questions, groups or overrides, with no query string; "
                   "anything else is a normal write with approval")
+    elif method.lower() == "delete" and not match.group(4):
+        reason = ("draft never deletes courses/%s/%s: unpublished work is still faculty work "
+                  "and deleting it is not reversible. Use delete with --dry-run, then --yes. "
+                  "Draft may still delete the questions, groups or overrides under an "
+                  "unpublished item." % (match.group(1), match.group(2)))
     elif unsafe:
         reason = ("draft never turns %s on; publishing is a normal write with approval"
                   % " or ".join(unsafe))
@@ -1036,7 +1103,13 @@ def do_update(cfg, method, path, body):
         return
     try:
         after = send_request(cfg, "GET", path)
-    except RequestFailure as err:
+    except GuardError as err:                  # RequestFailure (network/HTTP) and a bare
+                                                # GuardError (e.g. read_token() on a keychain
+                                                # failure, or secure_log_fd() if the audit log's
+                                                # ownership/mode changed mid-run) both mean the
+                                                # read-back could not happen; the write was
+                                                # already sent, so this is uncertain, never a
+                                                # refusal.
         evidence["target"] = target_identity(before_obj, resp.get("data") if resp else None)
         uncertain(cfg, evidence, "the write returned, but read-back failed: %s" % err)
     after_obj = after["data"]
@@ -1103,7 +1176,12 @@ def do_post(cfg, path, body):
                   "the created object could not be read back")
     try:
         back = send_request(cfg, "GET", read_path)
-    except RequestFailure as err:
+    except GuardError as err:                 # RequestFailure (a network/HTTP failure) and a
+                                                # bare GuardError (read_path itself refused, e.g.
+                                                # a created id that could not be percent-encoded
+                                                # back into a legal path) are both a read-back
+                                                # that could not happen - the write was already
+                                                # sent, so this is uncertain, never a refusal.
         evidence["target"] = target_identity(resp.get("data"))
         uncertain(cfg, evidence, "the create returned, but read-back at %s failed: %s"
                   % (read_path, err))
@@ -1139,8 +1217,12 @@ def do_delete(cfg, path, body):
         return
     try:
         after = send_request(cfg, "GET", path)
-    except RequestFailure as err:
-        if err.status == 404:
+    except GuardError as err:                  # as in do_update: RequestFailure and a bare
+                                                # GuardError both mean the read-back could not
+                                                # happen. A bare GuardError has no .status - use
+                                                # getattr so the 404-means-gone check below never
+                                                # raises AttributeError on one.
+        if getattr(err, "status", None) == 404:
             evidence.update({"verification": "passed", "note": "read-back after delete: 404 gone"})
             emit(cfg, evidence)
             return
@@ -1155,6 +1237,94 @@ def do_delete(cfg, path, body):
         return
     uncertain(cfg, evidence, "read-back after delete still returned the object, not marked "
                              "deleted (workflow_state %r)" % after_obj.get("workflow_state"))
+
+RETENTION_DAYS = 180           # the pilot default, documented in SKILL.md; never automatic
+
+def prune_filter(raw, cutoff):
+    """Split raw JSONL bytes into (kept lines, dropped count) by the retention rule: a line
+    whose timestamp cannot be read is always kept, never silently discarded."""
+    kept, dropped = [], 0
+    for line in raw.splitlines(keepends=True):
+        if not line.strip():
+            continue
+        try:
+            stamp = json.loads(line)["timestamp"]
+            when = datetime.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=datetime.timezone.utc)
+        except (ValueError, TypeError, KeyError):
+            kept.append(line)                   # unreadable: kept, never silently discarded
+            continue
+        if when >= cutoff:
+            kept.append(line)
+        else:
+            dropped += 1
+    return kept, dropped
+
+def do_audit_prune(cfg, days):
+    """Rewrite the audit log keeping only records newer than the cutoff. The same ownership and
+    mode gate applies on the way in, the replacement is written privately and moved into place,
+    and the file is never deleted. A line whose timestamp cannot be read is always kept.
+
+    Two Codex sessions running concurrently is Task 4's own design assumption, so a record
+    another guard appends while this one is reading, filtering and writing must not just vanish:
+    the byte offset the first read stopped at is kept, and just before the atomic swap the log
+    is read again from that offset and anything new is carried into the replacement. A short
+    window between that second read and os.replace remains - see docs/IT-REVIEW.md."""
+    if days < 1:
+        raise GuardError("--older-than must be at least 1 day")
+    os.close(secure_log_fd(cfg.log_path))       # the ownership and mode gate, before reading
+    cutoff = (datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(days=days))
+    with open(cfg.log_path, "rb") as handle:
+        first_pass = handle.read()
+        offset = handle.tell()
+    kept, dropped = prune_filter(first_pass, cutoff)
+    if kept and not kept[-1].endswith(b"\n"):
+        kept[-1] += b"\n"           # never let the prune's own record land on the same
+                                     # physical line as the last kept one (I3)
+
+    temporary = cfg.log_path + ".prune"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(temporary, flags, 0o600)
+    except FileExistsError:
+        raise GuardError("a previous audit prune left %s in place; an interrupted prune is "
+                         "never resumed or cleaned up automatically, so retention has silently "
+                         "stopped - inspect that file, then remove it by hand before running "
+                         "prune again" % temporary)
+    try:
+        write_all(fd, b"".join(kept), "audit prune")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+    # A concurrent guard may have appended a record while the rewrite above ran; carry it into
+    # the replacement rather than losing it in the os.replace below.
+    with open(cfg.log_path, "rb") as handle:
+        handle.seek(offset)
+        late = handle.read()
+    if late.strip():
+        late_kept, late_dropped = prune_filter(late, cutoff)
+        if late_kept and not late_kept[-1].endswith(b"\n"):
+            late_kept[-1] += b"\n"
+        if late_kept:
+            fd = os.open(temporary, os.O_WRONLY | os.O_APPEND)
+            try:
+                write_all(fd, b"".join(late_kept), "audit prune (late record)")
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            kept.extend(late_kept)
+        dropped += late_dropped
+
+    os.replace(temporary, cfg.log_path)
+    log_event(cfg.log_path, {"event": "audit-prune", "older_than_days": days,
+                             "records_kept": len(kept), "records_dropped": dropped})
+    emit(cfg, {"verb": "AUDIT", "path": cfg.log_path,
+               "note": "audit records older than %d days removed" % days,
+               "object": {"records_kept": len(kept), "records_dropped": dropped}})
 
 VERBS = {"get": do_get, "post": do_post, "delete": do_delete,
          "put": lambda c, p, b: do_update(c, "PUT", p, b),
@@ -1260,7 +1430,38 @@ def build_parser():
     download.add_argument("--submission-id", required=True)
     download.add_argument("--suffix", default=".bin", help="safe local filename extension, for example .pdf")
     download.add_argument("-o", "--output", choices=("text", "json"), default=None)
+    audit = subs.add_parser("audit", help="maintain the local audit log; reaches no network")
+    audit_subs = audit.add_subparsers(dest="audit_action", required=True)
+    prune = audit_subs.add_parser("prune", help="remove audit records older than --older-than days")
+    prune.add_argument("--older-than", type=int, required=True, metavar="DAYS",
+                       help="keep records newer than this many days (pilot default: %d)"
+                            % RETENTION_DAYS)
+    prune.add_argument("-o", "--output", choices=("text", "json"), default=None)
     return parser
+
+def log_scoped_or_percent_refusal(cfg, verb, kind, raw_path):
+    """canvas_url() just refused raw_path. refuse_out_of_scope and the % rule are the two
+    refusals docs/IT-REVIEW.md presents as a security control, so - like every other policy
+    refusal in this file (see refused-no-tty, refused-not-draft) - they must leave exactly one
+    refusal record, never a silent exit 2. normalise_path and canvas_url are pure functions with
+    no cfg and no log path, so the record is written here instead, at the one place in main()
+    that validates args.path before anything else happens.
+
+    Every other normalise_path refusal (an empty path, whitespace, a scheme, a host, '..') stays
+    unlogged here, exactly as before: those are a malformed argument, not a scoped or encoded
+    path, and the pre-existing test that no log line precedes that refusal must keep holding."""
+    body_only = (raw_path or "").strip().split("?", 1)[0]
+    if "%" in body_only:
+        log_event(cfg.log_path, {"event": "refusal", "verb": verb, "kind": kind,
+                                 "path": raw_path, "confirmation": "refused-percent-encoded"})
+        return
+    try:
+        npath = normalise_path(raw_path)
+    except GuardError:
+        return                          # a different, unlogged malformed-path refusal
+    if OUT_OF_SCOPE.match(npath):
+        log_event(cfg.log_path, {"event": "refusal", "verb": verb, "kind": kind,
+                                 "path": npath, "confirmation": "refused-out-of-scope"})
 
 def main(argv=None):
     parser = build_parser()
@@ -1277,9 +1478,21 @@ def main(argv=None):
                                                   yes=False, all_pages=False, fields=None))
             do_download_submission_file(cfg, args.course_id, args.file_id, args.submission_id, args.suffix)
             return 0
+        if args.verb == "audit":
+            cfg = make_config(argparse.Namespace(output=args.output, dry_run=False,
+                                                  yes=False, all_pages=False, fields=None))
+            do_audit_prune(cfg, args.older_than)
+            return 0
         body = json.loads(args.data) if args.data else None
         cfg = make_config(args)
-        canvas_url(cfg.host, args.path)              # fail before anything else happens
+        verb_for_log = (args.method if args.verb == "draft" else args.verb).upper()
+        try:
+            canvas_url(cfg.host, args.path)          # fail before anything else happens
+        except GuardError:
+            log_scoped_or_percent_refusal(
+                cfg, verb_for_log, "write" if verb_for_log in WRITE_METHODS else "read",
+                args.path)
+            raise
         if args.verb == "draft":
             do_draft(cfg, args.method, args.path, body)
             return 0

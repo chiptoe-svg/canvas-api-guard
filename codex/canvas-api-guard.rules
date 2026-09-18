@@ -17,6 +17,7 @@ READS = ["get"]
 DRAFTS = ["draft"]
 WRITES = ["post", "put", "patch", "delete"]
 DOWNLOADS = ["download-submission-file"]
+MAINTENANCE = ["audit"]
 OPERATION_READS = ["student-attention"]
 OPERATION_PROMPTS = ["prepare-submission-review", "download-assignment-submissions",
                      "create-rubric", "grade-with-rubric", "bulk-grade-with-rubric",
@@ -67,6 +68,14 @@ prefix_rule(
     match = ["/usr/local/libexec/canvas_api_guard.py download-submission-file --course-id 1 --file-id 10 --submission-id 20 --suffix .pdf"],
     not_match = ["/usr/local/libexec/canvas_api_guard.py get files/10",
                  "./canvas_api_guard.py download-submission-file --course-id 1"],
+)
+
+prefix_rule(
+    pattern = [GUARD, MAINTENANCE],
+    decision = "prompt",
+    justification = "removes local audit records: a person sees the retention window first",
+    match = ["/usr/local/libexec/canvas_api_guard.py audit prune --older-than 180"],
+    not_match = ["/usr/local/libexec/canvas_api_guard.py get courses"],
 )
 
 # Specialized Functions have no credential or HTTP code; they invoke API Only above for every

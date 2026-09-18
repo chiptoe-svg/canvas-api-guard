@@ -14,6 +14,7 @@ and it is the ONLY way you talk to Canvas: never curl, urllib, or a browser agai
 the credential store (`security`, `secret-tool`); never ask for or write a token anywhere.
 Every documented Canvas endpoint works through it as documented, with `get`, `put`, `post`, `patch`
 and `delete`; the Canvas API documentation is your reference, and a named operation is never required.
+Every documented Canvas endpoint is reachable except `accounts/...`, developer keys, and any path with a literal `%`, all refused by the program itself for every verb, not a rule here; encode only query parameters, never the path.
 
 ## How to call it
 
@@ -53,6 +54,15 @@ a private review directory, bearer-free, and prints the local path and its sha25
 /usr/local/libexec/canvas_api_guard.py download-submission-file --course-id 123 --file-id 456 --submission-id 789 --suffix .pdf
 ```
 `--file-id` is that submission's `attachments[].id`; show it first, like a write; the file stays here (rule below).
+
+## audit prune
+
+The audit log holds identifiers, changed field values and verification results. `prune` removes
+records older than the window and keeps anything whose timestamp it cannot read. The pilot default
+is 180 days. It reaches no network:
+```sh
+/usr/local/libexec/canvas_api_guard.py audit prune --older-than 180
+```
 
 ## The five disciplines
 

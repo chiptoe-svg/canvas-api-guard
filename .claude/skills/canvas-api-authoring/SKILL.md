@@ -98,3 +98,15 @@ material; a reader wanting a claim's source should look at the citation on the c
 A clean run proves every recorded claim still appears on its page. It does not prove a list is
 complete or exclusive. A reference that names 21 values checked clean has confirmed 21 values
 still appear, not that no 22nd exists.
+
+`tools/canvas-source-check.py` does the same job for the Source-confirmed tier, which
+`sources.md` does not cover. It scans the references and the design specs for every
+``source: `path#symbol``` citation, fetches each file once from `master`, and reports whether the
+symbol is still defined there - the anchor this skill already says to trust over a line number.
+It also changes nothing, and needs no token.
+
+What it proves is narrower than it looks, and the narrowness is the point: that the anchor still
+exists, not that it still means what the claim says. A method can keep its name and reverse its
+behaviour, and only a person reading it will notice. `MISSING` means Canvas moved or the citation
+was wrong when written, and this tool cannot tell those apart. `WEAK` means the name survives only
+as prose, which is usually a rename in progress.

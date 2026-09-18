@@ -54,8 +54,8 @@ class FakeResponse(object):
         self.headers = headers or {}
         self._payload = json.dumps(payload if payload is not None else {}).encode("utf-8")
 
-    def read(self):
-        return self._payload
+    def read(self, amt=None):
+        return self._payload if amt is None else self._payload[:amt]
 
     def close(self):
         pass
@@ -75,6 +75,7 @@ class FakeStdout(io.StringIO):
 class GuardTestCase(unittest.TestCase):
     def setUp(self):
         guard._SOURCE = None
+        guard._RUN_ID = None
         self.state_dir = tempfile.mkdtemp(prefix="cag-test-state-")
         os.chmod(self.state_dir, 0o700)
         self.addCleanup(shutil.rmtree, self.state_dir, True)
@@ -229,6 +230,52 @@ class TestFixedProductionConfig(GuardTestCase):
         self.assertEqual(code, 0)
 
 
+class TestTrustedInterpreter(GuardTestCase):
+    """The guard proves its own file is root-owned; the interpreter executing that file has to
+    clear the same bar, or PATH still chooses the code that reads the keychain."""
+
+    def test_a_user_owned_interpreter_is_refused(self):
+        fake = os.path.join(self.state_dir, "python3")
+        with open(fake, "w"):
+            pass
+        os.chmod(fake, 0o755)
+        with mock.patch.object(guard.sys, "executable", fake):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.trusted_interpreter()
+        self.assertIn("Python interpreter", str(caught.exception))
+
+    def test_a_root_owned_interpreter_is_accepted(self):
+        with mock.patch.object(guard.sys, "executable", "/bin/sh"):
+            self.assertEqual(guard.trusted_interpreter(), os.path.realpath("/bin/sh"))
+
+    def test_an_unset_interpreter_is_refused(self):
+        with mock.patch.object(guard.sys, "executable", ""):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.trusted_interpreter()
+        self.assertIn("sys.executable", str(caught.exception))
+
+    def test_provenance_checks_the_interpreter_when_the_config_is_the_installed_one(self):
+        """check_provenance runs before read_token and before the network; the interpreter
+        check has to sit inside it, not beside it."""
+        fake = os.path.join(self.state_dir, "python3")
+        with open(fake, "w"):
+            pass
+        os.chmod(fake, 0o755)
+        with mock.patch.object(guard, "INSTALLED_CONFIG_PATH", guard.CONFIG_PATH), \
+                mock.patch.object(guard, "installed_guard_file", lambda: "/bin/sh"), \
+                mock.patch.object(guard.sys, "executable", fake):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.check_provenance()
+        self.assertIn("Python interpreter", str(caught.exception))
+
+    def test_both_programs_name_an_absolute_interpreter(self):
+        root = os.path.dirname(os.path.abspath(__file__))
+        for name in ("canvas_api_guard.py", os.path.join("level2", "canvas_api_operations.py")):
+            with open(os.path.join(root, name)) as handle:
+                first = handle.readline().strip()
+            self.assertEqual(first, "#!/usr/bin/python3", name)
+
+
 class TestPathNormalisation(GuardTestCase):
     def test_all_three_forms_normalise_to_one(self):
         for given in ("/api/v1/courses/123", "api/v1/courses/123", "courses/123",
@@ -243,6 +290,112 @@ class TestPathNormalisation(GuardTestCase):
         for bad in ("", "   ", "courses/1 2", "courses\\1"):
             with self.assertRaises(guard.GuardError):
                 guard.normalise_path(bad)
+
+    def test_percent_encoding_in_the_path_is_refused_but_allowed_in_query(self):
+        with self.assertRaises(guard.GuardError):
+            guard.normalise_path("accounts%2f1/users")
+        with self.assertRaises(guard.GuardError):
+            guard.normalise_path("developer_keys%2f1")
+        # Percent-encoding in query string is allowed
+        self.assertEqual(guard.normalise_path("courses/1?search_term=a%20b"),
+                         "/api/v1/courses/1?search_term=a%20b")
+
+
+class TestOutOfScopePaths(GuardTestCase):
+    """Account administration and developer keys are outside a faculty pilot. Refused for every
+    verb, reads included, because that needs no judgement about which are dangerous."""
+
+    def test_an_account_path_is_refused_on_read(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "accounts/1/users"])
+        self.assertEqual(code, 2)
+        self.assertIn("outside its scope", self.last_stderr)
+        urlopen.assert_not_called()
+
+    def test_an_account_path_is_refused_on_write(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["post", "accounts/1/courses", "-d", "{}", "--yes"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+
+    def test_a_developer_key_path_is_refused(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "developer_keys"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+
+    def test_a_course_path_naming_accounts_further_down_is_allowed(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            code, _ = self.run_main(["get", "courses/1/accounts"])
+        self.assertEqual(code, 0)
+
+    def test_the_refusal_happens_before_any_network_or_log_line(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "accounts/1"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+        self.assertEqual([line for line in self.log_lines() if line.get("event") == "read"], [])
+
+    def test_percent_encoded_account_path_is_refused(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "accounts%2f1/users"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+
+    def test_percent_encoded_developer_key_path_is_refused(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "developer_keys%2f1"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+
+    def test_percent_encoding_in_query_string_is_allowed(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload=[{"id": 1}])
+            code, _ = self.run_main(["get", "courses/1?search_term=a%20b"])
+        self.assertEqual(code, 0)
+        urlopen.assert_called_once()
+
+    def test_a_refused_read_leaves_exactly_one_refusal_record(self):
+        """I4: docs/IT-REVIEW.md presents the account refusal as a security control; a control
+        that leaves no trace is weaker than that implies."""
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "accounts/1/users"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+        refusals = [line for line in self.log_lines() if line["event"] == "refusal"]
+        self.assertEqual(len(refusals), 1)
+        self.assertEqual(refusals[0]["kind"], "read")
+        self.assertIn("refused", refusals[0]["confirmation"])
+
+    def test_a_refused_write_leaves_exactly_one_refusal_record(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["post", "accounts/1/courses", "-d", "{}", "--yes"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+        refusals = [line for line in self.log_lines() if line["event"] == "refusal"]
+        self.assertEqual(len(refusals), 1)
+        self.assertEqual(refusals[0]["kind"], "write")
+        self.assertIn("refused", refusals[0]["confirmation"])
+
+    def test_a_refused_percent_encoded_path_leaves_exactly_one_refusal_record(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "courses/1/pages%2fsyllabus"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+        refusals = [line for line in self.log_lines() if line["event"] == "refusal"]
+        self.assertEqual(len(refusals), 1)
+        self.assertIn("percent", refusals[0]["confirmation"])
+
+    def test_a_scheme_refusal_still_leaves_no_log_line_at_all(self):
+        """Every other normalise_path refusal - a scheme, a host, '..', whitespace - is a
+        malformed argument, not a scoped-path or percent-encoding refusal, and stays unlogged,
+        as TestHostPinning.test_the_verb_refuses_before_any_log_line_is_written already covers."""
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["get", "https://evil.example.com/api/v1/courses/1"])
+        self.assertEqual(code, 2)
+        urlopen.assert_not_called()
+        self.assertEqual(self.log_lines(), [])
 
 
 class TestConfirmation(GuardTestCase):
@@ -630,6 +783,41 @@ class TestEvidence(GuardTestCase):
         self.assertIn("evil.example.com", self.last_stderr)
         self.assertEqual(urlopen.call_count, 1)          # the POST, and nothing after it
 
+    def test_a_post_whose_created_id_cannot_round_trip_is_uncertain_not_refused(self):
+        """C1: created_object_id percent-encodes the created object's id (a Canvas slug can
+        carry a non-ASCII character); the normalise_path % rule then refuses that read-back
+        path. The write already happened, so this must be reported uncertain (exit 3, with an
+        evidence record), never as an ordinary refusal (exit 2, nothing logged)."""
+        responses = [FakeResponse(status=201, headers={},
+                                  payload={"url": "café-notes", "page_id": 1})]
+        with mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen:
+            code, output = self.run_main(
+                ["post", "courses/1/pages", "--created-id", "url", "--yes",
+                 "-d", '{"wiki_page": {"title": "x"}}'])
+        self.assertEqual(code, 3)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+        self.assertIn("read-back at", output)
+        self.assertEqual(urlopen.call_count, 1)           # the POST, and nothing after it
+        evidence = [line for line in self.log_lines() if line["event"] == "evidence"]
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["verification"], "failed")
+
+    def test_a_post_read_back_via_a_percent_encoded_location_header_is_uncertain_not_refused(self):
+        """Same failure, reached through the Location-header fallback instead of --created-id."""
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(
+                status=201,
+                headers={"Location": "https://" + HOST + "/api/v1/courses/1/pages/caf%C3%A9"},
+                payload={"ok": True})
+            code, output = self.run_main(
+                ["post", "courses/1/pages", "--yes", "-d", '{"wiki_page": {"title": "x"}}'])
+        self.assertEqual(code, 3)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+        self.assertEqual(urlopen.call_count, 1)
+        evidence = [line for line in self.log_lines() if line["event"] == "evidence"]
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["verification"], "failed")
+
     def rubric_create(self, read_back):
         """One create-rubric POST, with the exact body Level 2's rubric_body() builds."""
         operations = load_operations()
@@ -758,7 +946,7 @@ class TestEvidence(GuardTestCase):
     def test_delete_reports_that_the_object_is_gone(self):
         responses = [FakeResponse(payload={"id": 2, "name": "Lab 4"}),  # before
                      FakeResponse(status=200, payload={"id": 2}),       # the delete
-                     urllib.error.HTTPError("https://" + HOST, 404, "Not Found", {}, None)]
+                     urllib.error.HTTPError("https://" + HOST, 404, "Not Found", {}, io.BytesIO(b""))]
         with mock.patch("urllib.request.urlopen", side_effect=responses):
             code, output = self.run_main(["delete", "courses/1/assignments/2", "--yes"])
         self.assertEqual(code, 0)
@@ -824,6 +1012,50 @@ class TestEvidence(GuardTestCase):
         self.assertIn("WRITE STATUS UNCERTAIN", output)
         self.assertNotIn("404 gone", output)
 
+    def flaky_token_on_third_call(self):
+        """A token reader that behaves normally for the pre-write read and the write itself,
+        then raises a bare GuardError - never a RequestFailure - on the post-write read-back,
+        the way a keychain failure or a mid-run audit-log rotation (secure_log_fd) would."""
+        calls = {"n": 0}
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] == 3:
+                raise guard.GuardError("keychain rotated mid-run: no token")
+            return TOKEN
+        return mock.patch.object(guard, "read_token", flaky)
+
+    def test_a_put_whose_post_write_read_back_raises_guarderror_is_uncertain_not_refused(self):
+        """C1 follow-up (do_update): the post-write read-back must catch any GuardError, not
+        only RequestFailure - a completed PUT must never report exit 2/nothing applied."""
+        responses = [FakeResponse(payload={"id": 1, "name": "A"}),        # pre-read
+                     FakeResponse(payload={"id": 1, "name": "X"})]        # the write
+        with self.flaky_token_on_third_call(), \
+                mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, output = self.run_main(
+                ["put", "courses/1", "-d", '{"course": {"name": "X"}}', "--yes"])
+        self.assertEqual(code, 3)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+        self.assertIn("read-back failed", output)
+        evidence = [line for line in self.log_lines() if line["event"] == "evidence"]
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["verification"], "failed")
+
+    def test_a_delete_whose_post_write_read_back_raises_guarderror_is_uncertain_not_refused(self):
+        """C1 follow-up (do_delete): same as the PUT case, and must not be swallowed or
+        mis-handled by the 404-means-gone branch, which a bare GuardError never satisfies."""
+        responses = [FakeResponse(payload={"id": 2, "name": "Lab 4"}),    # pre-read
+                     FakeResponse(status=200, payload={"id": 2})]         # the delete
+        with self.flaky_token_on_third_call(), \
+                mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, output = self.run_main(["delete", "courses/1/assignments/2", "--yes"])
+        self.assertEqual(code, 3)
+        self.assertIn("WRITE STATUS UNCERTAIN", output)
+        self.assertIn("read-back failed", output)
+        self.assertNotIn("404 gone", output)
+        evidence = [line for line in self.log_lines() if line["event"] == "evidence"]
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["verification"], "failed")
+
 
 class TestAFailedWriteRequest(GuardTestCase):
     """Canvas answering 4xx means it did not apply the write; anything else - a timeout, a
@@ -846,7 +1078,7 @@ class TestAFailedWriteRequest(GuardTestCase):
         self.assertEqual(len(self.evidence_lines()), 1)
 
     def test_a_5xx_write_is_uncertain(self):
-        error = urllib.error.HTTPError("https://" + HOST, 500, "Server Error", {}, None)
+        error = urllib.error.HTTPError("https://" + HOST, 500, "Server Error", {}, io.BytesIO(b""))
         code, output = self.put(error)
         error.close()
         self.assertEqual(code, 3)
@@ -854,7 +1086,7 @@ class TestAFailedWriteRequest(GuardTestCase):
         self.assertEqual(len(self.evidence_lines()), 1)
 
     def test_a_4xx_write_stays_a_plain_failure_with_no_evidence_line(self):
-        error = urllib.error.HTTPError("https://" + HOST, 403, "Forbidden", {}, None)
+        error = urllib.error.HTTPError("https://" + HOST, 403, "Forbidden", {}, io.BytesIO(b""))
         code, output = self.put(error)
         error.close()
         self.assertEqual(code, 2)
@@ -998,7 +1230,7 @@ class TestRedirectsAreRefused(unittest.TestCase):
 
     def test_attachment_download_error_records_status_not_signed_url(self):
         signed_url = "https://cdn.example.edu/file?X-Amz-Signature=do-not-log"
-        error = urllib.error.HTTPError(signed_url, 403, "Forbidden", {}, None)
+        error = urllib.error.HTTPError(signed_url, 403, "Forbidden", {}, io.BytesIO(b""))
         failure = guard.safe_download_failure(error)
         error.close()
         self.assertEqual(failure, {"error": "HTTPError", "http_status": 403,
@@ -1047,7 +1279,7 @@ class TestEdgeSeam(GuardTestCase):
         sent = urlopen.call_args[0][0]
         self.assertNotIn("authorization", {name.lower() for name, _ in sent.header_items()})
         line = self.log_lines()[-1]
-        self.assertEqual(sorted(line), ["bytes", "event", "ok", "path", "pid", "source",
+        self.assertEqual(sorted(line), ["bytes", "event", "ok", "path", "pid", "run", "source",
                                         "status", "timestamp", "verb"])
 
     def test_the_host_credential_read_is_still_the_bearer(self):
@@ -1101,16 +1333,53 @@ class TestEdgeSeam(GuardTestCase):
         self.assertEqual(lines[-1]["event"], "read")
 
 
+class TestAuditCorrelation(GuardTestCase):
+    def test_every_record_of_one_run_shares_a_correlation_id(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload={"id": 1})
+            code, _ = self.run_main(["get", "courses/1"])
+        self.assertEqual(code, 0)
+        runs = set(line["run"] for line in self.log_lines())
+        self.assertEqual(len(runs), 1)
+        self.assertTrue(all(line["run"] for line in self.log_lines()))
+
+    def test_the_token_is_not_in_the_correlation_id(self):
+        self.assertNotIn(TOKEN, guard.run_id())
+
+    def test_concurrent_writers_produce_intact_lines(self):
+        """A record larger than PIPE_BUF must not interleave with another writer's."""
+        import threading
+        expected = guard.run_id()      # as at import: established before any concurrency exists
+        payload = {"event": "test", "blob": "y" * 9000}
+
+        def writer():
+            for _ in range(20):
+                guard.log_event(self.log_path, dict(payload))
+
+        threads = [threading.Thread(target=writer) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        with open(self.log_path) as handle:
+            lines = [line for line in handle if line.strip()]
+        self.assertEqual(len(lines), 80)
+        for line in lines:
+            json.loads(line)          # raises if two writers interleaved
+        runs = set(json.loads(line)["run"] for line in lines)
+        self.assertEqual(runs, {expected})
+
+
 class TestAuditFormat(GuardTestCase):
     """The stock audit record, key by key. IT has reviewed this format; a change here is a
     change to what every existing installation writes, and must be a deliberate one."""
 
-    READ = ["bytes", "event", "ok", "path", "pid", "source", "status", "timestamp", "verb"]
+    READ = ["bytes", "event", "ok", "path", "pid", "run", "source", "status", "timestamp", "verb"]
     REQUEST = ["confirmation", "dry_run", "event", "kind", "path", "pid", "request_body",
-               "source", "timestamp", "url", "verb"]
-    EVIDENCE = ["changes", "confirmation", "event", "note", "path", "pid", "source", "status",
+               "run", "source", "timestamp", "url", "verb"]
+    EVIDENCE = ["changes", "confirmation", "event", "note", "path", "pid", "run", "source", "status",
                 "target", "timestamp", "verb", "verification"]
-    REFUSAL = ["confirmation", "event", "kind", "path", "pid", "source", "timestamp", "verb"]
+    REFUSAL = ["confirmation", "event", "kind", "path", "pid", "run", "source", "timestamp", "verb"]
 
     def test_a_stock_read_write_dry_run_and_refusal_write_exactly_these_keys(self):
         with mock.patch("urllib.request.urlopen", return_value=FakeResponse(payload={"id": 1})):
@@ -1137,6 +1406,169 @@ class TestAuditFormat(GuardTestCase):
             ("evidence", self.EVIDENCE),
             ("refusal", self.REFUSAL),
         ])
+
+
+class TestAuditPrune(GuardTestCase):
+    def seed(self, ages_in_days):
+        """Write one record per age, oldest first, bypassing log_event's own timestamp."""
+        lines = []
+        now = guard.datetime.datetime.now(guard.datetime.timezone.utc)
+        for age in ages_in_days:
+            stamp = (now - guard.datetime.timedelta(days=age)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            lines.append(json.dumps({"timestamp": stamp, "event": "read", "age": age}))
+        with open(self.log_path, "w") as handle:
+            handle.write("\n".join(lines) + "\n")
+        os.chmod(self.log_path, 0o600)
+
+    def test_records_older_than_the_cutoff_are_dropped_and_newer_ones_kept(self):
+        self.seed([400, 200, 10, 1])
+        code, _ = self.run_main(["audit", "prune", "--older-than", "180"])
+        self.assertEqual(code, 0)
+        ages = [line.get("age") for line in self.log_lines() if "age" in line]
+        self.assertEqual(ages, [10, 1])
+
+    def test_the_prune_logs_itself(self):
+        self.seed([400, 1])
+        self.run_main(["audit", "prune", "--older-than", "180"])
+        pruned = [line for line in self.log_lines() if line.get("event") == "audit-prune"]
+        self.assertEqual(len(pruned), 1)
+        self.assertEqual(pruned[0]["records_dropped"], 1)
+        self.assertEqual(pruned[0]["records_kept"], 1)
+
+    def test_an_unparseable_line_is_kept_never_silently_discarded(self):
+        self.seed([400])
+        with open(self.log_path, "a") as handle:
+            handle.write("this is not json\n")
+        self.run_main(["audit", "prune", "--older-than", "180"])
+        with open(self.log_path) as handle:
+            self.assertIn("this is not json", handle.read())
+
+    def test_the_pruned_log_keeps_its_private_mode(self):
+        self.seed([400, 1])
+        self.run_main(["audit", "prune", "--older-than", "180"])
+        self.assertEqual(os.stat(self.log_path).st_mode & 0o777, 0o600)
+
+    def test_a_zero_day_retention_is_refused(self):
+        self.seed([1])
+        code, _ = self.run_main(["audit", "prune", "--older-than", "0"])
+        self.assertEqual(code, 2)
+        self.assertIn("at least 1 day", self.last_stderr)
+
+    def test_the_prune_reaches_no_network(self):
+        self.seed([400])
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            self.run_main(["audit", "prune", "--older-than", "180"])
+        urlopen.assert_not_called()
+
+    def test_one_prune_writes_exactly_one_record(self):
+        """emit logs anything whose verb is not in READ_VERBS. Without "AUDIT" there, one prune
+        writes its own audit-prune record AND a second evidence record for the same action."""
+        self.seed([400, 1])
+        before = len(self.log_lines())
+        code, _ = self.run_main(["audit", "prune", "--older-than", "180"])
+        self.assertEqual(code, 0)
+        after = self.log_lines()
+        self.assertEqual(len(after) - (before - 1), 1, after)
+        self.assertEqual([line for line in after
+                          if line.get("verb") == "AUDIT" and line.get("event") == "evidence"], [])
+
+    def test_a_record_appended_between_the_read_and_the_swap_survives_the_prune(self):
+        """I2: prune reads the whole log, filters it, and only swaps in the replacement at the
+        end. A concurrent guard's record, appended after that read but before the swap, must be
+        carried into the replacement rather than silently lost - Task 4's own design doc counts
+        on two Codex sessions running at once."""
+        self.seed([400, 1])
+        real_open = os.open
+        appended = {"done": False}
+
+        def concurrent_write_then_open(path, flags, *a, **kw):
+            if not appended["done"] and path == self.log_path + ".prune":
+                appended["done"] = True
+                # Simulate a second guard's write landing in the window between this prune's
+                # read and its os.replace.
+                guard.log_event(self.log_path, {"event": "read", "verb": "GET",
+                                                "path": "/api/v1/courses/999", "ok": True})
+            return real_open(path, flags, *a, **kw)
+
+        with mock.patch("os.open", side_effect=concurrent_write_then_open):
+            code, _ = self.run_main(["audit", "prune", "--older-than", "180"])
+        self.assertEqual(code, 0)
+        self.assertTrue(appended["done"])
+        self.assertTrue(any(line.get("path") == "/api/v1/courses/999"
+                            for line in self.log_lines()))
+
+    def test_the_last_kept_line_gets_a_newline_before_the_prune_appends_its_own(self):
+        """I3: a log whose final line lacks a trailing newline must not merge with the prune's
+        own audit-prune record into one unparseable physical line. The existing "unparseable
+        line is kept" test appends its bad line WITH a newline, which is why this was missed."""
+        self.seed([1])
+        with open(self.log_path) as handle:
+            content = handle.read()
+        with open(self.log_path, "w") as handle:
+            handle.write(content.rstrip("\n"))       # drop the trailing newline
+        os.chmod(self.log_path, 0o600)
+        code, _ = self.run_main(["audit", "prune", "--older-than", "180"])
+        self.assertEqual(code, 0)
+        with open(self.log_path) as handle:
+            lines = [line for line in handle if line.strip()]
+        for line in lines:
+            json.loads(line)                         # every physical line is one JSON object
+        self.assertEqual(len(lines), 2)               # the kept record, plus audit-prune's own
+
+    def test_a_stale_prune_temp_file_is_refused_with_a_named_remedy(self):
+        """M9: an interrupted prune can leave audit.jsonl.prune behind. Every later prune must
+        refuse with a message naming that file and telling the operator to remove it - not die
+        on a bare FileExistsError, and never silently unlink it itself."""
+        self.seed([400, 1])
+        stale = self.log_path + ".prune"
+        with open(stale, "w") as handle:
+            handle.write("leftover\n")
+        os.chmod(stale, 0o600)
+        code, _ = self.run_main(["audit", "prune", "--older-than", "180"])
+        self.assertEqual(code, 2)
+        self.assertIn(stale, self.last_stderr)
+        self.assertIn("remove it by hand", self.last_stderr)
+        self.assertTrue(os.path.exists(stale))        # never silently unlinked
+        with open(stale) as handle:
+            self.assertEqual(handle.read(), "leftover\n")   # left untouched
+
+
+class TestShortWritesAreNeverSilent(GuardTestCase):
+    """M8: os.write is not guaranteed to write every byte in one call. An unchecked short write
+    would silently truncate a log record, or truncate the whole rewritten audit log just before
+    os.replace destroys the original."""
+
+    def test_a_short_write_in_log_event_is_refused(self):
+        with mock.patch("os.write", return_value=1):
+            with self.assertRaises(guard.GuardError) as caught:
+                guard.log_event(self.log_path, {"event": "read"})
+        self.assertIn("short write", str(caught.exception))
+
+    def test_a_short_write_in_audit_prune_is_refused(self):
+        """The seeded record must be inside the retention window, so `kept` is non-empty and
+        the prune's own temp-file write is a real, multi-byte payload. A record outside the
+        window leaves `kept` empty, and a globally-short-circuited os.write would then be
+        caught by log_event's separate, already-checked write of the audit-prune record
+        itself - proving nothing about the prune site under test here. Only the FIRST os.write
+        call in do_audit_prune is the prune's own write (nothing writes before it); every call
+        after is let through for real, so a short return only from that first call isolates it."""
+        now = guard.datetime.datetime.now(guard.datetime.timezone.utc)
+        stamp = (now - guard.datetime.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with open(self.log_path, "w") as handle:
+            handle.write(json.dumps({"timestamp": stamp, "event": "read"}) + "\n")
+        os.chmod(self.log_path, 0o600)
+        real_write = os.write
+        calls = {"n": 0}
+        def short_first_write(fd, data):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return 1                         # short: far less than the real payload
+            return real_write(fd, data)
+        with mock.patch("os.write", side_effect=short_first_write):
+            code, _ = self.run_main(["audit", "prune", "--older-than", "180"])
+        self.assertEqual(code, 2)
+        self.assertIn("short write", self.last_stderr)
+        self.assertGreaterEqual(calls["n"], 1)
 
 
 class TestAttachmentDownload(GuardTestCase):
@@ -1179,7 +1611,7 @@ class TestAttachmentDownload(GuardTestCase):
         cfg = type("Config", (), {"log_path": self.log_path, "out": "json", "host": HOST,
                             "dry_run": False, "dry_run_request": None})()
         file_url = "https://%s/files/9/download?verifier=not-for-output" % HOST
-        transient = urllib.error.HTTPError(file_url, 500, "Server Error", {}, None)
+        transient = urllib.error.HTTPError(file_url, 500, "Server Error", {}, io.BytesIO(b""))
         with mock.patch.object(guard, "send_request", return_value={"data": {"url": file_url}}) as send, \
                 mock.patch.object(guard, "secure_review_dir", return_value=self.state_dir), \
                 mock.patch.object(guard, "open_attachment_request", side_effect=[transient, io.BytesIO(b"student work")]) as open_it, \
@@ -1199,8 +1631,8 @@ class TestAttachmentDownload(GuardTestCase):
                             "dry_run": False, "dry_run_request": None})()
         file_url = "https://%s/files/9/download?verifier=not-for-output" % HOST
         public_url = "https://cdn.example.edu/submission-file?signature=not-for-output"
-        first = urllib.error.HTTPError(file_url, 500, "Server Error", {}, None)
-        second = urllib.error.HTTPError(file_url, 500, "Server Error", {}, None)
+        first = urllib.error.HTTPError(file_url, 500, "Server Error", {}, io.BytesIO(b""))
+        second = urllib.error.HTTPError(file_url, 500, "Server Error", {}, io.BytesIO(b""))
         responses = [{"data": {"url": file_url}}, {"data": {"url": file_url}},
                      {"data": {"public_url": public_url}}]
         with mock.patch.object(guard, "send_request", side_effect=responses) as send, \
@@ -1769,12 +2201,13 @@ class TestCodexRules(unittest.TestCase):
     # are generated from these plus whatever the rules file's own lists currently declare, so a
     # subcommand nobody hand-copied into this test still gets checked against real Codex.
     DECISION_FOR_LIST = {"READS": "allow", "DRAFTS": "allow", "WRITES": "prompt",
-                         "DOWNLOADS": "prompt", "OPERATION_READS": "allow",
-                         "OPERATION_PROMPTS": "prompt"}
+                         "DOWNLOADS": "prompt", "MAINTENANCE": "prompt",
+                         "OPERATION_READS": "allow", "OPERATION_PROMPTS": "prompt"}
 
     def test_the_matrix(self):
         program_for_list = {"READS": self.GUARD, "DRAFTS": self.GUARD, "WRITES": self.GUARD,
-                            "DOWNLOADS": self.GUARD, "OPERATION_READS": self.OPERATIONS,
+                            "DOWNLOADS": self.GUARD, "MAINTENANCE": self.GUARD,
+                            "OPERATION_READS": self.OPERATIONS,
                             "OPERATION_PROMPTS": self.OPERATIONS}
         lists = rule_lists(self.RULES)
         rows = []
@@ -1807,7 +2240,8 @@ class TestRulesCoverage(unittest.TestCase):
 
     def test_every_guard_subcommand_is_classified_exactly_once(self):
         lists = rule_lists(self.RULES)
-        classified = lists["READS"] + lists["DRAFTS"] + lists["WRITES"] + lists["DOWNLOADS"]
+        classified = (lists["READS"] + lists["DRAFTS"] + lists["WRITES"]
+                      + lists["DOWNLOADS"] + lists["MAINTENANCE"])
         self.assertEqual(sorted(classified), subcommand_names(guard.build_parser()))
         self.assertEqual(len(classified), len(set(classified)))
 
@@ -1828,7 +2262,8 @@ class TestRulesCoverage(unittest.TestCase):
         self.assertEqual(lists["OPERATION_READS"], ALLOWED_WITHOUT_PROMPT[2:])
         for name in subcommand_names(guard.build_parser()):
             if name not in lists["READS"] + lists["DRAFTS"]:
-                self.assertIn(name, lists["WRITES"] + lists["DOWNLOADS"], name)
+                self.assertIn(name, lists["WRITES"] + lists["DOWNLOADS"] + lists["MAINTENANCE"],
+                              name)
         for name in subcommand_names(load_operations().parser()):
             if name not in lists["OPERATION_READS"]:
                 self.assertIn(name, lists["OPERATION_PROMPTS"], name)
@@ -1868,7 +2303,7 @@ class TestSkillDocuments(unittest.TestCase):
 
     def test_the_level_1_skill_stays_short_enough_to_be_read(self):
         with open(self.GUARD_SKILL) as handle:
-            self.assertLess(len(handle.read().splitlines()), 120)  # was 90; publishing, updates and the failure rules earned theirs
+            self.assertLess(len(handle.read().splitlines()), 130)  # was 90, then 120; audit prune earned its nine
 
     def test_the_level_1_skill_shows_only_verbs_the_guard_has(self):
         known = set(subcommand_names(guard.build_parser()))
@@ -2120,7 +2555,7 @@ class TestDraft(GuardTestCase):
     def test_an_object_whose_state_cannot_be_read_is_refused(self):
         with mock.patch("urllib.request.urlopen",
                         return_value=FakeResponse(payload={"id": 5})) as urlopen:
-            code, _ = self.run_main(["draft", "delete", "courses/1/assignments/5"])
+            code, _ = self.run_main(["draft", "delete", "courses/1/quizzes/5/questions/9"])
         self.assertEqual(code, 2)
         self.assertEqual(urlopen.call_count, 1)
         self.assertEqual(self.refusal()["verb"], "DELETE")
@@ -2230,6 +2665,47 @@ class TestDraft(GuardTestCase):
         self.assertEqual(self.log_lines()[-1]["confirmation"], "refused-no-tty")
 
 
+class TestDraftNeverDeletesTopLevel(GuardTestCase):
+    """Unpublished is not the same as recoverable. Draft may remove a question from a quiz it
+    is building; it may not remove the quiz."""
+
+    def test_deleting_an_unpublished_quiz_is_refused(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["draft", "delete", "courses/1/quizzes/5"])
+        self.assertEqual(code, 2)
+        self.assertIn("never deletes", self.last_stderr)
+        urlopen.assert_not_called()
+        self.assertEqual([line["confirmation"] for line in self.log_lines()
+                          if line.get("event") == "refusal"], ["refused-not-draft"])
+
+    def test_deleting_a_collection_is_refused(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            code, _ = self.run_main(["draft", "delete", "courses/1/assignments"])
+        self.assertEqual(code, 2)
+        self.assertIn("never deletes", self.last_stderr)
+        urlopen.assert_not_called()
+
+    def test_deleting_a_question_of_an_unpublished_quiz_is_allowed(self):
+        responses = [FakeResponse(payload={"id": 5, "published": False}),   # prove_draft's parent
+                     FakeResponse(payload={"id": 9}),                        # do_delete's pre-read
+                     FakeResponse(status=200, payload={"id": 9}),            # the DELETE
+                     urllib.error.HTTPError("https://" + HOST, 404,          # gone on read-back
+                                            "Not Found", {}, io.BytesIO(b""))]
+        with mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen:
+            code, _ = self.run_main(["draft", "delete", "courses/1/quizzes/5/questions/9"])
+        self.assertEqual(code, 0)
+        self.assertTrue(urlopen.called)
+
+    def test_an_ordinary_delete_with_approval_is_unaffected(self):
+        responses = [FakeResponse(payload={"id": 5, "name": "Quiz 5"}),      # do_delete's pre-read
+                     FakeResponse(status=200, payload={"id": 5}),            # the DELETE
+                     urllib.error.HTTPError("https://" + HOST, 404,          # gone on read-back
+                                            "Not Found", {}, io.BytesIO(b""))]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, _ = self.run_main(["delete", "courses/1/quizzes/5", "--yes"])
+        self.assertEqual(code, 0)
+
+
 class TestGuardHeader(unittest.TestCase):
     """The header is the map a reviewer reads first; it must describe the file that exists."""
 
@@ -2239,8 +2715,8 @@ class TestGuardHeader(unittest.TestCase):
         with open(self.SOURCE) as handle:
             return handle.read()
 
-    def test_the_version_is_1_17_0(self):
-        self.assertEqual(guard.USER_AGENT, "canvas-api-guard/1.17.0")
+    def test_the_version_is_1_18_0(self):
+        self.assertEqual(guard.USER_AGENT, "canvas-api-guard/1.18.0")
 
     def test_the_header_reading_order_matches_the_files_banners_exactly(self):
         """The map must be derived truth, not a copy that can silently go stale."""
@@ -2833,6 +3309,16 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertIn('if [ -z "\\${CANVAS_GUARD_INLINE:-}" ]; then', script)
         self.assertIn("/profile/settings", script)               # the token page, named and opened
 
+    def test_github_bootstrap_tests_under_the_interpreter_the_guard_runs_under(self):
+        """The guard pins /usr/bin/python3, so the launcher's compile-and-test gate runs there
+        too. A PATH python3 (Homebrew) can pass a suite the system 3.9 fails; the released gate
+        did exactly that, so the gate must name the interpreter, never take it from PATH."""
+        with open(self.BOOTSTRAP) as handle:
+            script = handle.read()
+        self.assertIn("/usr/bin/python3 -m py_compile canvas_api_guard.py test_canvas_api_guard.py", script)
+        self.assertIn("/usr/bin/python3 -m unittest", script)
+        self.assertNotRegex(script, r"(?<![/\w])python3 -m ")
+
     def test_github_bootstrap_refuses_an_invalid_host_before_network(self):
         proc = self.run_bootstrap("--ref", "a" * 40, "--host", "https://evil.example/x")
         self.assertEqual(proc.returncode, 1)
@@ -2988,6 +3474,44 @@ class TestDocumentClaims(unittest.TestCase):
         self.assertIn("test_canvas_api_operations.py", review)
         self.assertIn("submission-reviews", review)
         self.assertNotIn("clemson.instructure.com", readme)
+
+
+class TestResponseSizeCap(GuardTestCase):
+    """--all-pages is bounded by PAGE_CAP; one response body was not bounded at all."""
+
+    def test_an_oversized_read_is_refused(self):
+        big = {"blob": "x" * 500}
+        with mock.patch.object(guard, "MAX_RESPONSE_BYTES", 64), \
+                mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload=big)
+            code, _ = self.run_main(["get", "courses/1"])
+        self.assertEqual(code, 2)
+        self.assertIn("64-byte limit", self.last_stderr)
+        self.assertTrue(any(line.get("error") == "ResponseTooLarge" for line in self.log_lines()))
+
+    def test_a_response_at_the_limit_is_accepted(self):
+        payload = {"id": 1, "blob": "x" * 400}
+        exact = len(json.dumps(payload).encode("utf-8"))
+        with mock.patch.object(guard, "MAX_RESPONSE_BYTES", exact), \
+                mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value = FakeResponse(payload=payload)
+            code, _ = self.run_main(["get", "courses/1"])
+        self.assertEqual(code, 0)
+
+    def test_an_oversized_read_back_after_a_write_is_uncertain_not_refused(self):
+        """The write was sent. Exit 2 would claim nothing happened."""
+        responses = [FakeResponse(payload={"id": 1, "name": "before"}),
+                     FakeResponse(payload={"id": 1, "name": "after"}),
+                     FakeResponse(payload={"id": 1, "name": "after",
+                                           "description": "x" * 500})]
+        with mock.patch.object(guard, "MAX_RESPONSE_BYTES", 64), \
+                mock.patch("urllib.request.urlopen", side_effect=responses):
+            code, _ = self.run_main(["put", "courses/1", "-d", '{"course": {"name": "after"}}',
+                                     "--yes"])
+        self.assertEqual(code, 3)
+        notes = [line.get("note") for line in self.log_lines() if line.get("note")]
+        self.assertTrue(any("read-back failed" in note for note in notes), notes)
+        self.assertFalse(any("did not match requested field" in note for note in notes), notes)
 
 
 if __name__ == "__main__":
