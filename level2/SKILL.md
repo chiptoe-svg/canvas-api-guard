@@ -67,7 +67,6 @@ which is enough for OCR and reading handwriting. Otherwise render once per page 
 ```sh
 /usr/local/libexec/canvas_api_operations.py create-rubric --course-id 123 --assignment-id 20 --definition rubric.json --dry-run
 /usr/local/libexec/canvas_api_operations.py grade-with-rubric --course-id 123 --assignment-id 20 --definition grade.json --dry-run
-/usr/local/libexec/canvas_api_operations.py bulk-grade-with-rubric --course-id 123 --assignment-id 20 --definition grades.json --dry-run
 /usr/local/libexec/canvas_api_operations.py regrade-quiz-question --course-id 123 --definition regrade.json --dry-run
 /usr/local/libexec/canvas_api_operations.py run-plan --course-id 123 --definition plan.json --dry-run
 /usr/local/libexec/canvas_api_operations.py regrade-quiz-question --course-id 123 --definition regrade.json --expect-plan DIGEST --yes
@@ -93,8 +92,6 @@ which is enough for OCR and reading handwriting. Otherwise render once per page 
   criterion is not a field of the submission object API Only reads back. The rubric only has
   to be attached to the assignment (its criteria arrive on the assignment object); the
   "use for grading" setting is not required.
-- `bulk-grade-with-rubric` does that for up to 50 students, refusing duplicates, as
-  individually audited and read-back writes - never an opaque bulk request.
 - `regrade-quiz-question` rewrites one classic multiple-choice or true/false question's answer
   key and rescores every completed attempt of that question. It refuses anything that is not a
   graded classic quiz (a New Quizzes quiz is not in this API at all) and any other question
