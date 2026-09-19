@@ -568,7 +568,9 @@ class GradeFixtures(object):
             calls.append((verb, path, body, phase))
             if fail_write and len([c for c in calls if c[0] == "put"]) == fail_write:
                 raise operations.OperationError("API Only guard failed: 500")
-            return None if phase == "dry-run" else {"verification": "passed"}
+            return None if phase == "dry-run" else {"verification": "passed",
+                "changes": [{"field": "posted_grade", "match": True},
+                            {"field": "rubric_assessment._1", "match": True}]}
         with mock.patch.object(operations, "definition_file", return_value=self.definition), \
                 mock.patch.object(operations, "guard_get", side_effect=self.reads(assignment, submissions)), \
                 mock.patch.object(operations, "guard_post_policy", side_effect=policy), \
@@ -723,6 +725,26 @@ class TestGradeWithRubric(GradeFixtures, unittest.TestCase):
         with self.assertRaises(operations.GuardUncertain) as caught:
             self.run_grade(self.args(), fail_write=2)
         self.assertIn("1 of 2", str(caught.exception))
+
+    def test_a_grade_the_guard_did_not_prove_is_uncertain(self):
+        seen = []
+        def put(verb, path, body, phase, extra=None):
+            seen.append(path)
+            rows = [{"field": "rubric_assessment._1", "match": True}]
+            if "submission" in body and len(seen) == 1:
+                rows.append({"field": "posted_grade", "match": None})   # score not exposed
+            elif "submission" in body:
+                rows.append({"field": "posted_grade", "match": True})
+            return {"verification": "passed", "changes": rows}
+        with mock.patch.object(operations, "definition_file", return_value=self.DEFINITION), \
+                mock.patch.object(operations, "guard_get", side_effect=self.reads()), \
+                mock.patch.object(operations, "guard_post_policy", return_value={"verification": "passed"}), \
+                mock.patch.object(operations, "guard_write", side_effect=put), \
+                mock.patch("sys.stdout", io.StringIO()):
+            with self.assertRaises(operations.GuardUncertain) as caught:
+                operations.grade_with_rubric(self.args())
+        self.assertIn("student 4", str(caught.exception))
+        self.assertIn("0 of 2", str(caught.exception))
 
     def test_guard_post_policy_delegates_to_the_fixed_guard(self):
         completed = mock.Mock(return_value=mock.Mock(returncode=0, stdout='{"verification": "passed"}\n', stderr=""))

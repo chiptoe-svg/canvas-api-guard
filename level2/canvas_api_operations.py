@@ -519,7 +519,16 @@ def grade_with_rubric(args):
     written = 0
     try:
         for path, body in writes:
-            guard_write("put", path, body, phase)
+            evidence = guard_write("put", path, body, phase)
+            if phase != "dry-run" and "submission" in body:
+                rows_by_field = {row.get("field"): row for row in (evidence or {}).get("changes") or []}
+                if (rows_by_field.get("posted_grade") or {}).get("match") is not True:
+                    raise GuardUncertain("WRITE STATUS UNCERTAIN: the grade for student %s was sent "
+                                         "but the read-back did not prove it; %d of %d students "
+                                         "written; inspect Canvas and the audit log rather than "
+                                         "running this again"
+                                         % (path.split("/submissions/")[1].split("?")[0],
+                                            written, len(writes)))
             written += 1
     except GuardUncertain:
         raise

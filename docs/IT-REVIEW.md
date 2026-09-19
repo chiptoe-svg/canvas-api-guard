@@ -159,6 +159,11 @@ correlation sources.
   is disproved. For a quiz-submission score write this means the guard's `verification: passed`
   proves only that the named attempt number was accepted, not the score itself; the Level 2
   regrade operation proves each score by its own read-back of the resulting attempt.
+- For a rubric grading write the guard proves each criterion at `rubric_assessment.<id>`: a
+  criterion the returned assessment omits is disproved, and only an assessment Canvas does not
+  return at all is unknown. The grade itself is proved through `score`; the Level 2 grading
+  operation additionally refuses to count a student as written unless that `posted_grade` row
+  proved, so one proved criterion can never carry an unproved grade.
 - `POST` must locate the created object first, in this order: the response field named by
   `--created-id`, which defaults to the response's own top-level `id`; then, only when
   `--created-id` was not given and no `id` came back, a usable same-host `Location` header. An
