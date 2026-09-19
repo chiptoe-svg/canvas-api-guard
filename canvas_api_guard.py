@@ -377,14 +377,29 @@ def refuse_out_of_scope(npath):
         raise GuardError("this tool does not reach %s: account administration and developer "
                          "keys are outside its scope" % npath.split("?")[0])
 
-def canvas_url(host, path):
-    """The only place a URL is built. Pins the scheme and the host."""
+GRAPHQL_PATH = "/api/graphql"
+# The only GraphQL document this program can send: one mutation, two typed variables, no text
+# the caller composes. Canvas has no REST route for an assignment's post policy (source:
+# config/routes.rb; lib/api/v1/assignment.rb#API_ALLOWED_ASSIGNMENT_INPUT_FIELDS), and the
+# mutation writes the flag and nothing else (source: app/models/abstract_assignment.rb
+# #ensure_post_policy): switching neither posts nor hides an existing grade.
+POST_POLICY_MUTATION = ("mutation ($id: ID!, $manual: Boolean!) { "
+                        "setAssignmentPostPolicy(input: {assignmentId: $id, postManually: $manual}) "
+                        "{ postPolicy { postManually } } }")
+
+def canvas_url(host, path, graphql=False):
+    """The only place a URL is built. Pins the scheme and the host. graphql=True builds the one
+    fixed non-REST path, for do_post_policy alone; every other caller goes through
+    normalise_path, which prefixes /api/v1/ and therefore cannot reach it."""
     if not host:
         raise GuardError("no Canvas host configured in %s" % CONFIG_PATH)
     if "://" in host or "/" in host or "@" in host or any(c.isspace() for c in host):
         raise GuardError("invalid Canvas host: %r" % host)
-    npath = normalise_path(path)
-    refuse_out_of_scope(npath)
+    if graphql:
+        npath = GRAPHQL_PATH
+    else:
+        npath = normalise_path(path)
+        refuse_out_of_scope(npath)
     url = "https://" + host + npath
     check = urllib.parse.urlsplit(url)
     if check.scheme != "https" or check.netloc != host:
@@ -497,14 +512,15 @@ def safe_response_hop(response):
 def redirect_stage(trace):
     return ",".join(hop["scope"] for hop in trace) or "none"
 
-def send_request(cfg, method, path, body=None):
+def send_request(cfg, method, path, body=None, graphql=False):
     """Perform an authenticated request to the pinned Canvas host, and log it.
 
     A write is logged before the call - so an interrupted write leaves a request line with no
     response beside it - and again afterwards. A read is logged once, after the fact: one line
     saying what was read, with what status, and how many bytes came back."""
     method = method.upper()
-    url, npath = canvas_url(cfg.host, path), normalise_path(path)
+    url = canvas_url(cfg.host, path, graphql)
+    npath = GRAPHQL_PATH if graphql else normalise_path(path)
     is_write = method in WRITE_METHODS
     if is_write:
         log_event(cfg.log_path, {
@@ -1282,6 +1298,70 @@ def do_delete(cfg, path, body):
     uncertain(cfg, evidence, "read-back after delete still returned the object, not marked "
                              "deleted (workflow_state %r)" % after_obj.get("workflow_state"))
 
+def do_post_policy(cfg, course_id, assignment_id, policy):
+    """Set one assignment's grade post policy through Canvas's GraphQL mutation, the only route
+    that writes it. manual hides new grades and rubric assessments from students until the
+    instructor posts them; automatic shows a grade as it is entered. Pre-read and read-back
+    are the REST assignment object, whose post_manually the serializer exposes unconditionally
+    (source: lib/api/v1/assignment.rb:511)."""
+    course_id = numeric_id(course_id, "course id")
+    assignment_id = numeric_id(assignment_id, "assignment id")
+    want = policy == "manual"
+    read_path = "courses/%s/assignments/%s" % (course_id, assignment_id)
+    before = send_request(cfg, "GET", read_path)
+    before_obj = before["data"] if before and isinstance(before.get("data"), dict) else {}
+    lines = ["about to set the post policy of assignment %s (%s) to %s"
+             % (assignment_id, before_obj.get("name"), policy),
+             "  %-22s %s -> %s" % ("post_manually", json.dumps(before_obj.get("post_manually")),
+                                   json.dumps(want))]
+    cfg.confirmation = confirm(cfg, lines)
+    body = {"query": POST_POLICY_MUTATION, "variables": {"id": assignment_id, "manual": want}}
+    evidence = {"verb": "POST-POLICY", "path": GRAPHQL_PATH,
+                "url": canvas_url(cfg.host, GRAPHQL_PATH, graphql=True),
+                "confirmation": cfg.confirmation, "status": None,
+                "target": {"course_id": course_id, "assignment_id": assignment_id,
+                           "assignment_name": before_obj.get("name")}}
+    row = {"field": "post_manually", "read_field": "post_manually", "requested": want,
+           "before": before_obj.get("post_manually"), "after": None, "match": None}
+    if cfg.dry_run:
+        send_request(cfg, "POST", GRAPHQL_PATH, body, graphql=True)   # records the request only
+        evidence.update({"changes": [row], "verification": "not-run",
+                         "note": "dry run: nothing was sent"})
+        emit(cfg, evidence)
+        return
+    try:
+        resp = send_request(cfg, "POST", GRAPHQL_PATH, body, graphql=True)
+    except RequestFailure as err:
+        if isinstance(err.status, int) and 400 <= err.status < 500:
+            raise
+        uncertain(cfg, evidence,
+                  "the write itself failed and may or may not have been applied: %s" % err)
+    evidence["status"] = resp["status"]
+    data = resp["data"] if isinstance(resp.get("data"), dict) else {}
+    if data.get("errors"):
+        # GraphQL answers a refusal as HTTP 200 with an errors array (anonymous or moderated
+        # assignment, a missing manage_grades right): Canvas applied nothing. A refusal record,
+        # like every other policy refusal in this file, then exit 2.
+        messages = "; ".join(str(e.get("message", e)) if isinstance(e, dict) else str(e)
+                             for e in data["errors"])
+        log_event(cfg.log_path, {"event": "refusal", "verb": "POST-POLICY", "kind": "write",
+                                 "path": GRAPHQL_PATH, "confirmation": "refused-by-canvas"})
+        raise GuardError("Canvas refused the post-policy change and applied nothing: %s" % messages)
+    try:
+        after = send_request(cfg, "GET", read_path)
+    except GuardError as err:
+        uncertain(cfg, evidence, "the write returned, but read-back failed: %s" % err)
+    after_obj = after["data"] if isinstance(after.get("data"), dict) else {}
+    got = after_obj.get("post_manually")
+    row.update({"after": got, "match": (got == want) if isinstance(got, bool) else None})
+    evidence["changes"] = [row]
+    if row["match"] is False:
+        uncertain(cfg, evidence, "read-back did not match requested field(s): post_manually")
+    if row["match"] is None:
+        uncertain(cfg, evidence, UNVERIFIABLE)
+    evidence["verification"] = "passed"
+    emit(cfg, evidence)
+
 RETENTION_DAYS = 180           # the pilot default, documented in SKILL.md; never automatic
 
 def prune_filter(raw, cutoff):
@@ -1481,6 +1561,15 @@ def build_parser():
                        help="keep records newer than this many days (pilot default: %d)"
                             % RETENTION_DAYS)
     prune.add_argument("-o", "--output", choices=("text", "json"), default=None)
+    policy = subs.add_parser("post-policy", help="set one assignment's grade post policy; manual "
+                             "hides new grades and rubric assessments until the instructor "
+                             "clicks Post grades, automatic shows a grade as it is entered")
+    policy.add_argument("--course-id", required=True)
+    policy.add_argument("--assignment-id", required=True)
+    policy.add_argument("policy", choices=("manual", "automatic"))
+    policy.add_argument("--dry-run", action="store_true", help="print the request, send nothing")
+    policy.add_argument("--yes", action="store_true", help="confirm the write non-interactively")
+    policy.add_argument("-o", "--output", choices=("text", "json"), default=None)
     return parser
 
 def log_scoped_or_percent_refusal(cfg, verb, kind, raw_path):
@@ -1526,6 +1615,14 @@ def main(argv=None):
             cfg = make_config(argparse.Namespace(output=args.output, dry_run=False,
                                                   yes=False, all_pages=False, fields=None))
             do_audit_prune(cfg, args.older_than)
+            return 0
+        if args.verb == "post-policy":
+            cfg = make_config(argparse.Namespace(output=args.output, dry_run=args.dry_run,
+                                                  yes=args.yes, all_pages=False, fields=None))
+            refuse_unconfirmed_write(cfg, "POST", "courses/%s/assignments/%s"
+                                     % (numeric_id(args.course_id, "course id"),
+                                        numeric_id(args.assignment_id, "assignment id")))
+            do_post_policy(cfg, args.course_id, args.assignment_id, args.policy)
             return 0
         body = json.loads(args.data) if args.data else None
         cfg = make_config(args)

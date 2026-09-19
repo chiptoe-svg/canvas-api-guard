@@ -374,15 +374,17 @@ No other document can be sent. The verb takes no query text; `post` cannot addre
 builder admits that one path only when this verb asks for it. So the guard's statement to IT
 stays "paths under `/api/v1/`, plus one fixed mutation string", not "GraphQL".
 
-Its contract is the guard's usual one. Dry run: read the assignment, print the current and the
-requested policy, send nothing. `--yes`: pre-read, send, then read the assignment back through
-REST (`courses/123/assignments/20`, whose `post_manually` the serializer exposes
-unconditionally) and compare. GraphQL reports a refusal as HTTP 200 with an `errors` array — an
-anonymous assignment, a moderated one, a missing `manage_grades` right — and the guard treats
-that as a refused write: exit 2, nothing changed, the message quoted. A 200 without `errors`
-whose read-back does not show the requested policy is exit 3, and `WRITE STATUS UNCERTAIN` means
-what it always means: read the assignment and ask, never resend. The audit record names the verb,
-the assignment and both policies; the request body never reaches the log, as today.
+Its contract is the guard's usual one. Dry run: print the request and send nothing, reading
+nothing either, as every guard dry run does; the current policy is what Level 2 reports from its
+own read. `--yes`: pre-read, send, then read the assignment back through REST
+(`courses/123/assignments/20`, whose `post_manually` the serializer exposes unconditionally) and
+compare. GraphQL reports a refusal as HTTP 200 with an `errors` array — an anonymous assignment, a
+moderated one, a missing `manage_grades` right — and the guard treats that as a refused write:
+exit 2, nothing changed, the message quoted. A 200 without `errors` whose read-back does not show
+the requested policy is exit 3, and `WRITE STATUS UNCERTAIN` means what it always means: read the
+assignment and ask, never resend. The audit record names the verb, the assignment and both
+policies; the request record carries the body as every write's does, and it holds the constant
+document and two variables, nothing else.
 
 The Codex rules file lists it with the other guard writes: it changes an assignment, so it prompts.
 

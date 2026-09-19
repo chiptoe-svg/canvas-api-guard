@@ -15,7 +15,7 @@ GUARD = "/usr/local/libexec/canvas_api_guard.py"
 OPERATIONS = "/usr/local/libexec/canvas_api_operations.py"
 READS = ["get"]
 DRAFTS = ["draft"]
-WRITES = ["post", "put", "patch", "delete"]
+WRITES = ["post", "put", "patch", "delete", "post-policy"]
 DOWNLOADS = ["download-submission-file"]
 MAINTENANCE = ["audit"]
 OPERATION_READS = ["student-attention"]
@@ -53,7 +53,8 @@ prefix_rule(
     decision = "prompt",
     justification = "Canvas WRITE: review the path and the body before it is sent",
     match = ["/usr/local/libexec/canvas_api_guard.py put courses/1/assignments/2 -d {} --yes",
-             "/usr/local/libexec/canvas_api_guard.py delete courses/1/assignments/2 --yes"],
+             "/usr/local/libexec/canvas_api_guard.py delete courses/1/assignments/2 --yes",
+             "/usr/local/libexec/canvas_api_guard.py post-policy --course-id 1 --assignment-id 2 manual --yes"],
     not_match = ["/usr/local/libexec/canvas_api_guard.py get courses/1",
                  "python3 /usr/local/libexec/canvas_api_guard.py put courses/1 --yes",
                  "./canvas_api_guard.py post courses/1/assignments -d {} --yes"],

@@ -264,6 +264,112 @@ class TestLoggedValueCap(GuardTestCase):
         self.assertEqual(guard.logged_changes([]), [])
 
 
+class TestPostPolicy(GuardTestCase):
+    """One fixed GraphQL mutation, the only non-REST request this program can send; pre-read
+    and read-back are the REST assignment object, whose post_manually is always serialised."""
+
+    ARGS = ["post-policy", "--course-id", "12", "--assignment-id", "22", "manual"]
+    ASSIGNMENT = {"id": 22, "name": "Essay 1", "post_manually": False}
+    ACCEPTED = {"data": {"setAssignmentPostPolicy": {"postPolicy": {"postManually": True}}}}
+
+    def run_switch(self, after, graphql=None):
+        responses = [FakeResponse(payload=self.ASSIGNMENT),
+                     FakeResponse(payload=self.ACCEPTED if graphql is None else graphql),
+                     FakeResponse(payload=after)]
+        with mock.patch("urllib.request.urlopen", side_effect=responses) as opened:
+            code, out = self.run_main(self.ARGS + ["--yes", "-o", "json"])
+        return code, out, opened
+
+    def test_the_switch_sends_the_fixed_document_and_reads_the_assignment_back(self):
+        code, out, opened = self.run_switch(dict(self.ASSIGNMENT, post_manually=True))
+        self.assertEqual(code, 0, self.last_stderr)
+        evidence = json.loads(out)
+        self.assertEqual(evidence["verification"], "passed")
+        self.assertEqual(evidence["verb"], "POST-POLICY")
+        self.assertEqual(evidence["url"], "https://" + HOST + "/api/graphql")
+        self.assertEqual(evidence["changes"], [
+            {"field": "post_manually", "read_field": "post_manually", "requested": True,
+             "before": False, "after": True, "match": True}])
+        self.assertEqual(evidence["target"]["assignment_name"], "Essay 1")
+        requests = [call[0][0] for call in opened.call_args_list]
+        self.assertEqual([r.get_method() for r in requests], ["GET", "POST", "GET"])
+        self.assertEqual(requests[1].full_url, "https://" + HOST + "/api/graphql")
+        self.assertEqual(json.loads(requests[1].data.decode("utf-8")),
+                         {"query": guard.POST_POLICY_MUTATION,
+                          "variables": {"id": "22", "manual": True}})
+        self.assertTrue(requests[0].full_url.endswith("/api/v1/courses/12/assignments/22"))
+        self.assertEqual(requests[0].full_url, requests[2].full_url)
+        self.assertNotIn(TOKEN, out)
+        self.assertNotIn(TOKEN, self.log_text())
+
+    def test_automatic_sends_false(self):
+        args = self.ARGS[:-1] + ["automatic"]
+        responses = [FakeResponse(payload=dict(self.ASSIGNMENT, post_manually=True)),
+                     FakeResponse(payload=self.ACCEPTED), FakeResponse(payload=self.ASSIGNMENT)]
+        with mock.patch("urllib.request.urlopen", side_effect=responses) as opened:
+            code, out = self.run_main(args + ["--yes", "-o", "json"])
+        self.assertEqual(code, 0, self.last_stderr)
+        sent = json.loads(opened.call_args_list[1][0][0].data.decode("utf-8"))
+        self.assertEqual(sent["variables"], {"id": "22", "manual": False})
+
+    def test_a_graphql_error_is_a_refusal_with_the_message_and_no_read_back(self):
+        code, _, opened = self.run_switch(
+            self.ASSIGNMENT,
+            graphql={"errors": [{"message": "Anonymous assignments must be manually posted"}]})
+        self.assertEqual(code, 2)
+        self.assertIn("Anonymous assignments must be manually posted", self.last_stderr)
+        self.assertEqual(opened.call_count, 2)              # pre-read, mutation; no read-back
+        refusal = [r for r in self.log_lines() if r.get("event") == "refusal"][-1]
+        self.assertEqual(refusal["confirmation"], "refused-by-canvas")
+        self.assertEqual(refusal["verb"], "POST-POLICY")
+
+    def test_a_read_back_still_showing_the_old_policy_is_uncertain(self):
+        code, _, _ = self.run_switch(self.ASSIGNMENT)     # post_manually still False
+        self.assertEqual(code, 3)
+        self.assertIn("WRITE STATUS UNCERTAIN", self.last_stderr)
+        self.assertIn("post_manually", self.last_stderr)
+
+    def test_a_read_back_without_the_field_is_uncertain(self):
+        code, _, _ = self.run_switch({"id": 22, "name": "Essay 1"})
+        self.assertEqual(code, 3)
+        self.assertIn("exposed none", self.last_stderr)
+
+    def test_a_dry_run_sends_nothing_and_shows_the_document(self):
+        with mock.patch("urllib.request.urlopen") as opened:
+            code, out = self.run_main(self.ARGS + ["--dry-run", "-o", "json"])
+        self.assertEqual(code, 0, self.last_stderr)
+        opened.assert_not_called()
+        evidence = json.loads(out)
+        self.assertEqual(evidence["verification"], "not-run")
+        self.assertEqual(evidence["body"]["query"], guard.POST_POLICY_MUTATION)
+        self.assertEqual(evidence["body"]["variables"], {"id": "22", "manual": True})
+        self.assertEqual(evidence["url"], "https://" + HOST + "/api/graphql")
+
+    def test_without_a_terminal_or_yes_it_is_refused_before_any_request(self):
+        with mock.patch("urllib.request.urlopen") as opened:
+            code, _ = self.run_main(self.ARGS)
+        self.assertEqual(code, 2)
+        opened.assert_not_called()
+        self.assertIn("refused-no-tty", self.log_text())
+
+    def test_ids_are_validated_before_any_request(self):
+        with mock.patch("urllib.request.urlopen") as opened:
+            code, _ = self.run_main(["post-policy", "--course-id", "12", "--assignment-id",
+                                     "22; drop", "manual", "--yes"])
+        self.assertEqual(code, 2)
+        opened.assert_not_called()
+        self.assertIn("assignment id must be a positive Canvas numeric ID", self.last_stderr)
+
+    def test_post_cannot_reach_the_graphql_endpoint(self):
+        """normalise_path prefixes api/v1/ to everything, so the model's post verb lands on a
+        REST 404, never on GraphQL; only the graphql keyword builds that URL."""
+        for spelling in ("api/graphql", "/api/graphql", "graphql"):
+            self.assertTrue(guard.canvas_url(HOST, spelling).startswith(
+                "https://" + HOST + "/api/v1/"), spelling)
+        self.assertEqual(guard.canvas_url(HOST, "ignored", graphql=True),
+                         "https://" + HOST + "/api/graphql")
+
+
 class TestFixedProductionConfig(GuardTestCase):
     """The host and audit destination are fixed outside the agent-controlled arguments."""
 
