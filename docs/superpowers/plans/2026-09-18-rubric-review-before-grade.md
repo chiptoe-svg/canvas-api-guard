@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Split rubric grading into an assessment write that hides itself (manual post policy, criteria and comments, no grade) and a separate grade-entry write of a number the instructor approved, so nothing reaches a student until the instructor clicks Post grades.
+**Goal:** Make rubric grading one run that hides itself: switch the assignment to manual posting, write every student's criteria and comments plus a stated grade for the students the instructor named, and leave release to the instructor's Post grades click.
 
-**Architecture:** Three guard changes in `canvas_api_guard.py` (a named exception so a `rubric_assessment`-only write can be proved; a cap on logged change values; a `post-policy` verb sending one fixed GraphQL mutation), then two Level 2 verbs in `level2/canvas_api_operations.py` replacing `grade-with-rubric` and `bulk-grade-with-rubric`, then the rules file, skills and docs. Every Canvas request still goes through the guard; Level 2 gains no token or HTTP code.
+**Architecture:** Three guard changes in `canvas_api_guard.py` (a named exception so a `rubric_assessment`-only write can be proved; a cap on logged change values; a `post-policy` verb sending one fixed GraphQL mutation), then one rewritten Level 2 verb in `level2/canvas_api_operations.py` — `grade-with-rubric` takes a list with an optional grade per entry and retires `bulk-grade-with-rubric` — then the rules file, skills and docs. Every Canvas request still goes through the guard; Level 2 gains no token or HTTP code.
 
 **Tech Stack:** Python 3.9 standard library only (the guard pins `/usr/bin/python3`); `unittest`; Codex execpolicy rules.
 
@@ -18,7 +18,7 @@
 - Exit-code contract, unchanged: 0 done and verified; 2 refused or failed with nothing sent; 3 sent but unverified (`WRITE STATUS UNCERTAIN`), never retried.
 - `codex/skills/canvas-api-guard/SKILL.md` stays under 130 lines (a test enforces `< 130`).
 - Every regression test is red-proofed: run it with only its fix reverted and see it fail before it counts.
-- Versions: guard `1.18.0 → 1.19.0`, Level 2 `0.15.0 → 0.16.0` (Task 6 only).
+- Versions: guard `1.18.0 → 1.19.0`, Level 2 `0.15.0 → 0.16.0` (Task 5 only).
 - Commit messages carry the session trailer:
   ```
   Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
@@ -34,9 +34,9 @@
 | --- | --- |
 | `canvas_api_guard.py` | trust root: `RESPONSE_FIELDS` in `compare_fields`; `cap_logged`/`logged_changes` for the audit copy; `GRAPHQL_PATH`, `POST_POLICY_MUTATION`, `do_post_policy`; `canvas_url`/`send_request` gain a `graphql` keyword |
 | `test_canvas_api_guard.py` | new classes `TestRubricAssessmentVerification`, `TestLoggedValueCap`, `TestPostPolicy` |
-| `level2/canvas_api_operations.py` | `guard_command` (shared runner), `guard_post_policy`, `criterion_limits`, `assessment_entry`, `grade_list`, `stored_total`, `submission_path`, `refuse_auto_grading`, `assess_with_rubric`, `enter_entry`, `enter_rubric_grade`; `create_rubric` attaches with `use_for_grading: False`; retired: `grade_payload`, `verify_rubric_assessment`, `grade_one`, `grade_with_rubric`, `bulk_grade_with_rubric` |
+| `level2/canvas_api_operations.py` | `guard_command` (shared runner), `guard_post_policy`, `criterion_limits`, `grade_entry`, `grade_list`, `submission_path`, `VISIBILITY`, `refuse_auto_grading`, `grade_with_rubric` rewritten; `create_rubric` attaches with `use_for_grading: False`; retired: `grade_payload`, `verify_rubric_assessment`, `grade_one`, `bulk_grade_with_rubric` |
 | `test_canvas_api_operations.py` | tests for the above; retired tests removed |
-| `codex/canvas-api-guard.rules` | `post-policy` in `WRITES`; `assess-with-rubric`, `enter-rubric-grade` in `OPERATION_PROMPTS` |
+| `codex/canvas-api-guard.rules` | `post-policy` in `WRITES`; `bulk-grade-with-rubric` out of `OPERATION_PROMPTS` |
 | `codex/skills/canvas-api-guard/SKILL.md`, `level2/SKILL.md`, `level2/README.md`, `README.md`, `docs/IT-REVIEW.md` | operator and reviewer text |
 
 ---
@@ -603,29 +603,28 @@ git commit -m "feat(guard): post-policy verb - one fixed GraphQL mutation, read 
 
 ---
 
-### Task 4: `assess-with-rubric` replaces `grade-with-rubric`; `create-rubric` stops auto-grading
+### Task 4: `grade-with-rubric` takes a list with an optional grade; `bulk-grade-with-rubric` retired; `create-rubric` stops auto-grading
 
 **Files:**
-- Modify: `level2/canvas_api_operations.py` (`guard_write` 62-89 → `guard_command`; `create_rubric` 202-248; `live_rubric` 250-260; new helpers; `OPERATIONS` 838-843; `parser` 846-878)
+- Modify: `level2/canvas_api_operations.py` (`guard_write` 62-89 → `guard_command`; `create_rubric` 202-248; `live_rubric` 250-260; `grade_payload` 262-280 → helpers; delete `verify_rubric_assessment`, `grade_one`, `grade_with_rubric` 283-318 and `bulk_grade_with_rubric` 424-447; new `grade_with_rubric`; `OPERATIONS` 838-843; `parser` 846-878)
 - Modify: `codex/canvas-api-guard.rules` (`OPERATION_PROMPTS` and its `match` examples)
 - Test: `test_canvas_api_operations.py`
 
 **Interfaces:**
 - Consumes (Task 3): guard CLI `post-policy --course-id N --assignment-id N manual|automatic -o json --dry-run|--yes`, which prints one JSON evidence object with `"verification": "passed"` on success.
-- Consumes (Task 1): a `rubric_assessment`-only PUT now verifies in the guard, so Level 2 reads nothing back itself.
+- Consumes (Task 1): a `rubric_assessment`-only PUT, and a combined `submission` + `rubric_assessment` PUT, both verify in the guard, so Level 2 reads nothing back itself.
 - Produces:
   - `guard_command(command, phase)` — runs `[GUARD, ...] + ["-o", "json", "--dry-run"|"--yes"]`, prints the guard's stdout, maps exit 3 → `GuardUncertain`, other non-zero → `OperationError`, returns `None` on dry-run else the parsed evidence, which must say `"verification": "passed"`.
   - `guard_write(verb, path, body, phase, extra=None)` — same contract as today, now via `guard_command`.
   - `guard_post_policy(course_id, assignment_id, policy, phase)`.
   - `criterion_limits(rubric) -> {id: (max_points, ignore_for_scoring)}`.
-  - `assessment_entry(value, limits) -> (student_id, criteria, total, excluded_ids)`.
-  - `grade_list(definition, label) -> list` (the `{"grades": [...]}` envelope, 1–50, no duplicate student).
-  - `stored_total(assessment, limits) -> number`.
+  - `grade_entry(value, limits) -> (student_id, criteria, total, excluded_ids, grade_or_None)`.
+  - `grade_list(definition) -> list` (the `{"grades": [...]}` envelope, 1–50, no duplicate student; the old single-student shape refused by name).
   - `submission_path(args, student_id, includes) -> str`.
   - `VISIBILITY` dict keyed `"manual"` / `"automatic"`.
   - `refuse_auto_grading(args, assignment)`.
-  - `assess_with_rubric(args)`; CLI flag `--keep-post-policy`.
-  - `OPERATIONS` key `"assess-with-rubric"`; `"grade-with-rubric"` and `"bulk-grade-with-rubric"` removed (their functions and tests go in this task, so no stub survives between tasks).
+  - `grade_with_rubric(args)`; CLI flag `--keep-post-policy`.
+  - `OPERATIONS`: `"bulk-grade-with-rubric"` removed; seven operations remain.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -634,51 +633,52 @@ In `test_canvas_api_operations.py`:
 (a) Replace `test_rubric_grade_uses_only_live_criterion_ids` (lines 73-81) with:
 
 ```python
-    def test_an_assessment_entry_uses_live_ids_and_excludes_ignored_criteria_from_the_total(self):
+    def test_a_grade_entry_uses_live_ids_and_excludes_ignored_criteria_from_the_total(self):
         limits = operations.criterion_limits({"data": [
             {"id": "_1", "points": 10}, {"id": "_2", "points": 5, "ignore_for_scoring": True}]})
         self.assertEqual(limits, {"_1": (10, False), "_2": (5, True)})
-        student, criteria, total, excluded = operations.assessment_entry(
-            {"student_id": 4, "criteria": {"_1": {"points": 8}, "_2": {"points": 5, "comments": "n/a"}}},
-            limits)
-        self.assertEqual((student, total, excluded), ("4", 8, ["_2"]))
+        student, criteria, total, excluded, grade = operations.grade_entry(
+            {"student_id": 4, "grade": 7,
+             "criteria": {"_1": {"points": 8}, "_2": {"points": 5, "comments": "n/a"}}}, limits)
+        self.assertEqual((student, total, excluded, grade), ("4", 8, ["_2"], 7))
         self.assertEqual(criteria["_2"], {"points": 5, "comments": "n/a"})   # still sent as given
-        with self.assertRaises(operations.OperationError) as caught:
-            operations.assessment_entry({"student_id": 4, "criteria": {"_404": {"points": 8}}}, limits)
-        self.assertIn("_404", str(caught.exception))
-        with self.assertRaises(operations.OperationError) as caught:
-            operations.assessment_entry({"student_id": 4, "criteria": {"_1": {"points": 11}}}, limits)
-        self.assertIn("exceeds the live maximum 10", str(caught.exception))
-        with self.assertRaises(operations.OperationError):
-            operations.assessment_entry({"student_id": 4, "criteria": {"_1": {"points": 1, "x": 1}}}, limits)
+        _, _, _, _, grade = operations.grade_entry({"student_id": 4, "criteria": {"_1": {"points": 8}}}, limits)
+        self.assertIsNone(grade)
+        _, _, _, _, grade = operations.grade_entry({"student_id": 4, "grade": None, "criteria": {"_1": {"points": 8}}}, limits)
+        self.assertIsNone(grade)
+        for bad, message in (
+                ({"student_id": 4, "criteria": {"_404": {"points": 8}}}, "_404"),
+                ({"student_id": 4, "criteria": {"_1": {"points": 11}}}, "exceeds the live maximum 10"),
+                ({"student_id": 4, "criteria": {"_1": {"points": 1, "x": 1}}}, "unsupported field"),
+                ({"student_id": 4, "grade": -1, "criteria": {"_1": {"points": 1}}}, "non-negative"),
+                ({"student_id": 4, "grade": "A", "criteria": {"_1": {"points": 1}}}, "non-negative")):
+            with self.assertRaises(operations.OperationError) as caught:
+                operations.grade_entry(bad, limits)
+            self.assertIn(message, str(caught.exception))
 
-    def test_the_grades_envelope_is_bounded_and_free_of_duplicates(self):
+    def test_the_grades_envelope_is_bounded_free_of_duplicates_and_names_the_old_shape(self):
         grades = [{"student_id": n} for n in range(1, 51)]
-        self.assertEqual(len(operations.grade_list({"grades": grades}, "assess-with-rubric")), 50)
+        self.assertEqual(len(operations.grade_list({"grades": grades})), 50)
         for bad, message in (({"grades": []}, "non-empty"),
                              ({"grades": grades + [{"student_id": 51}]}, "50 students"),
                              ({"grades": [{"student_id": 1}, {"student_id": 1}]}, "repeats student ID 1"),
-                             ({"grades": grades, "extra": 1}, "unsupported field")):
+                             ({"grades": grades, "extra": 1}, "unsupported field"),
+                             ({"student_id": 4, "criteria": {"_1": {"points": 8}}}, 'wrap this entry')):
             with self.assertRaises(operations.OperationError) as caught:
-                operations.grade_list(bad, "assess-with-rubric")
+                operations.grade_list(bad)
             self.assertIn(message, str(caught.exception))
-
-    def test_stored_total_follows_canvas_and_skips_ignored_criteria(self):
-        limits = {"_1": (10, False), "_2": (5, True)}
-        self.assertEqual(operations.stored_total(
-            {"_1": {"points": 7.5}, "_2": {"points": 5.0}, "_9": {"points": 1.0}}, limits), 8.5)
 ```
 
 (b) In `test_create_rubric_with_an_assignment_attaches_it_in_the_same_write` (line ~267), change the expected association to `"purpose": "grading", "use_for_grading": False`.
 
-(c) Delete these tests, which exercise code this task retires: `grade_args`, `graded`, `test_a_graded_rubric_criterion_is_read_back_by_level_2_itself`, `test_a_graded_rubric_criterion_that_does_not_read_back_is_uncertain`, `test_a_grade_with_no_rubric_assessment_at_all_is_uncertain`, `test_a_dry_run_grade_reads_nothing_back`, `test_a_bulk_batch_that_stops_after_a_write_is_uncertain`, `test_a_bulk_batch_that_stops_before_any_write_is_an_ordinary_refusal` (lines ~415-492). Then in `test_only_the_eight_operations_remain` make the sorted list `["assess-with-rubric", "create-rubric", "download-assignment-submissions", "prepare-submission-review", "regrade-quiz-question", "run-plan", "student-attention"]` (seven until Task 5) and add `"def grade_one", "def grade_with_rubric", "def bulk_grade_with_rubric", "def verify_rubric_assessment", "def grade_payload"` to the `gone` tuple.
+(c) Delete these tests, which exercise code this task retires: `grade_args`, `graded`, `test_a_graded_rubric_criterion_is_read_back_by_level_2_itself`, `test_a_graded_rubric_criterion_that_does_not_read_back_is_uncertain`, `test_a_grade_with_no_rubric_assessment_at_all_is_uncertain`, `test_a_dry_run_grade_reads_nothing_back`, `test_a_bulk_batch_that_stops_after_a_write_is_uncertain`, `test_a_bulk_batch_that_stops_before_any_write_is_an_ordinary_refusal` (lines ~415-492). Rename `test_only_the_eight_operations_remain` to `test_only_the_seven_operations_remain`, make its sorted list `["create-rubric", "download-assignment-submissions", "grade-with-rubric", "prepare-submission-review", "regrade-quiz-question", "run-plan", "student-attention"]`, and add `"def grade_one", "def bulk_grade_with_rubric", "def verify_rubric_assessment", "def grade_payload"` to the `gone` tuple.
 
-(d) Update `test_level2_write_delegates_to_the_fixed_guard_with_a_phase` — the assertion `command[:3]` still holds; add `self.assertEqual(command[-3:], ["-o", "json", "--dry-run"])`.
+(d) In `test_level2_write_delegates_to_the_fixed_guard_with_a_phase`, add `self.assertEqual(command[-3:], ["-o", "json", "--dry-run"])`.
 
-(e) Add a new class:
+(e) Add a fixtures mixin and a test class:
 
 ```python
-class AssessFixtures(object):
+class GradeFixtures(object):
     ASSIGNMENT = {"id": 22, "points_possible": 20, "post_manually": False,
                   "use_rubric_for_grading": False, "rubric_settings": {"id": 9},
                   "html_url": "https://canvas.example.edu/courses/12/assignments/22",
@@ -687,8 +687,8 @@ class AssessFixtures(object):
                              {"id": "_3", "points": 5, "description": "Outcome",
                               "ignore_for_scoring": True}]}
     DEFINITION = {"grades": [
-        {"student_id": 4, "criteria": {"_1": {"points": 8, "comments": "Clear thesis."},
-                                        "_2": {"points": 6}, "_3": {"points": 5}}},
+        {"student_id": 4, "grade": 14,
+         "criteria": {"_1": {"points": 8, "comments": "Clear thesis."}, "_2": {"points": 6}, "_3": {"points": 5}}},
         {"student_id": 5, "criteria": {"_1": {"points": 10}}}]}
 
     def args(self, dry_run=False, keep=False, definition=None):
@@ -699,8 +699,9 @@ class AssessFixtures(object):
         return args
 
     def submission(self, student_id, assessment=None, score=None):
-        return {"id": 100 + student_id, "user_id": student_id, "score": score, "grade": None,
-                "graded_at": None, "workflow_state": "submitted", "posted_at": None,
+        return {"id": 100 + student_id, "user_id": student_id, "score": score,
+                "grade": None if score is None else str(score), "graded_at": None,
+                "workflow_state": "submitted", "posted_at": None,
                 "user": {"id": student_id, "name": "Student %d" % student_id},
                 "rubric_assessment": assessment or {}}
 
@@ -711,7 +712,7 @@ class AssessFixtures(object):
                 return {"object": {"id": 12}}
             if path == "courses/12/assignments/22":
                 return {"object": assignment}
-            for student_id in (4, 5):
+            for student_id in (4, 5, 6):
                 if "/submissions/%d?" % student_id in path:
                     self.assertIn("include[]=rubric_assessment", path)
                     self.assertIn("include[]=user", path)
@@ -719,7 +720,7 @@ class AssessFixtures(object):
             raise AssertionError("unexpected read %s" % path)
         return read
 
-    def run(self, args, assignment=None, submissions=None, switch=None, write=None):
+    def run(self, args, assignment=None, submissions=None, switch=None, fail_write=None):
         calls = []
         def policy(course_id, assignment_id, policy, phase):
             calls.append(("post-policy", course_id, assignment_id, policy, phase))
@@ -728,21 +729,21 @@ class AssessFixtures(object):
             return None if phase == "dry-run" else {"verification": "passed"}
         def put(verb, path, body, phase, extra=None):
             calls.append((verb, path, body, phase))
-            if write:
-                raise write
+            if fail_write and len([c for c in calls if c[0] == "put"]) == fail_write:
+                raise operations.OperationError("API Only guard failed: 500")
             return None if phase == "dry-run" else {"verification": "passed"}
         with mock.patch.object(operations, "definition_file", return_value=self.definition), \
                 mock.patch.object(operations, "guard_get", side_effect=self.reads(assignment, submissions)), \
                 mock.patch.object(operations, "guard_post_policy", side_effect=policy), \
                 mock.patch.object(operations, "guard_write", side_effect=put), \
                 mock.patch("sys.stdout", io.StringIO()) as out:
-            result = operations.assess_with_rubric(args)
+            result = operations.grade_with_rubric(args)
         plan = json.loads(out.getvalue().split("\n}\n")[0] + "\n}")
         return plan, result, calls
 
 
-class TestAssessWithRubric(AssessFixtures, unittest.TestCase):
-    def test_an_automatic_assignment_is_switched_to_manual_before_the_first_criterion_write(self):
+class TestGradeWithRubric(GradeFixtures, unittest.TestCase):
+    def test_an_automatic_assignment_is_switched_to_manual_before_the_first_write(self):
         plan, result, calls = self.run(self.args())
         self.assertEqual(plan["post_policy"], {"before": "automatic", "after": "manual",
                                                "switched_by_this_run": True})
@@ -750,39 +751,62 @@ class TestAssessWithRubric(AssessFixtures, unittest.TestCase):
         self.assertEqual(calls[0], ("post-policy", "12", "22", "manual", "yes"))
         self.assertEqual([c[0] for c in calls[1:]], ["put", "put"])
         self.assertEqual(result["students_written"], 2)
+        self.assertEqual(result["grades_written"], 1)
+        self.assertEqual(result["assessments_only"], 1)
+        self.assertEqual(result["grades_not_yet_visible"], 1)
+        self.assertIn("Post grades, then Graded", result["release"])
         self.assertEqual(result["post_policy"]["switched_by_this_run"], True)
 
-    def test_the_write_carries_only_the_rubric_assessment(self):
+    def test_an_entry_with_a_grade_writes_both_and_an_entry_without_writes_criteria_only(self):
         _, _, calls = self.run(self.args())
-        verb, path, body, phase = calls[1]
+        _, path, body, phase = calls[1]
         self.assertEqual(path, "courses/12/assignments/22/submissions/4"
                                "?include[]=rubric_assessment&include[]=user")
-        self.assertEqual(sorted(body), ["rubric_assessment"])
-        self.assertEqual(body["rubric_assessment"]["_1"], {"points": 8, "comments": "Clear thesis."})
+        self.assertEqual(body, {"submission": {"posted_grade": 14},
+                                "rubric_assessment": {"_1": {"points": 8, "comments": "Clear thesis."},
+                                                      "_2": {"points": 6}, "_3": {"points": 5}}})
         self.assertEqual(phase, "yes")
+        _, path, body, _ = calls[2]
+        self.assertIn("/submissions/5?", path)
+        self.assertEqual(body, {"rubric_assessment": {"_1": {"points": 10}}})
 
-    def test_the_dry_run_reports_totals_visibility_and_current_state_and_writes_nothing_live(self):
+    def test_the_dry_run_reports_totals_grades_visibility_and_current_state_and_writes_nothing_live(self):
         plan, result, calls = self.run(self.args(dry_run=True),
                                        submissions={4: self.submission(4, {"_1": {"points": 3.0}})})
         self.assertIsNone(result)
         self.assertEqual(plan["phase"], "dry-run")
         self.assertTrue(all(c[-1] == "dry-run" for c in calls))
-        first = plan["grades"][0]
-        self.assertEqual(first["criterion_total"], 14)             # _3 excluded
+        first, second = plan["grades"]
+        self.assertEqual((first["criterion_total"], first["grade"]), (14, 14))   # _3 excluded
+        self.assertNotIn("difference", first)
         self.assertEqual(first["excluded_from_total"], ["_3"])
         self.assertEqual(first["points_possible"], 20)
         self.assertEqual(first["student_name"], "Student 4")
         self.assertTrue(first["existing_assessment"])
-        self.assertFalse(plan["grades"][1]["existing_assessment"])
+        self.assertIsNone(first["posted_at"])
         self.assertEqual(first["current_grade"]["score"], None)
         self.assertTrue(first["speedgrader_url"].endswith("speed_grader?assignment_id=22&student_id=4"))
+        self.assertIsNone(second["grade"])
+        self.assertFalse(second["existing_assessment"])
 
-    def test_keep_post_policy_skips_the_switch_and_says_the_criteria_will_be_visible(self):
-        plan, _, calls = self.run(self.args(keep=True))
+    def test_a_stated_grade_that_is_not_the_sum_is_written_and_labelled(self):
+        definition = {"grades": [{"student_id": 4, "grade": 12,
+                                  "criteria": {"_1": {"points": 8}, "_2": {"points": 6}}}]}
+        plan, _, calls = self.run(self.args(definition=definition))
+        self.assertEqual(plan["grades"][0]["difference"], -2)
+        self.assertEqual(calls[1][2]["submission"], {"posted_grade": 12})
+        extra = {"grades": [{"student_id": 4, "grade": 25, "criteria": {"_1": {"points": 8}}}]}
+        plan, _, _ = self.run(self.args(definition=extra))
+        self.assertEqual(plan["grades"][0]["difference"], 17)          # extra credit is allowed
+
+    def test_keep_post_policy_skips_the_switch_and_says_everything_will_be_visible(self):
+        plan, result, calls = self.run(self.args(keep=True))
         self.assertEqual(plan["post_policy"], {"before": "automatic", "after": "automatic",
                                                "switched_by_this_run": False})
         self.assertIn("visible to its student when written", plan["student_visibility"])
         self.assertNotIn("post-policy", [c[0] for c in calls])
+        self.assertEqual(result["grades_not_yet_visible"], 0)
+        self.assertIn("posted automatically", result["release"])
 
     def test_an_assignment_already_manual_is_left_alone(self):
         plan, _, calls = self.run(self.args(), assignment=dict(self.ASSIGNMENT, post_manually=True))
@@ -790,27 +814,50 @@ class TestAssessWithRubric(AssessFixtures, unittest.TestCase):
                                                "switched_by_this_run": False})
         self.assertNotIn("post-policy", [c[0] for c in calls])
 
-    def test_a_switch_the_guard_refuses_or_cannot_prove_ends_the_run_before_any_criterion(self):
+    def test_a_switch_the_guard_refuses_or_cannot_prove_ends_the_run_before_any_write(self):
         for failure in (operations.OperationError("API Only guard failed: Canvas refused"),
                         operations.GuardUncertain("WRITE STATUS UNCERTAIN: post_manually")):
             with self.assertRaises(type(failure)):
                 self.run(self.args(), switch=failure)
 
     def test_refusals_happen_before_any_write(self):
+        fifty_one = {"grades": [{"student_id": n, "criteria": {"_1": {"points": 1}}} for n in range(1, 52)]}
         cases = [
-            (dict(self.ASSIGNMENT, rubric=[]), None, "no attached Canvas rubric"),
-            (dict(self.ASSIGNMENT, use_rubric_for_grading=True), None, "use_rubric_for_grading"),
-            (None, {"grades": [{"student_id": 4, "criteria": {"_9": {"points": 1}}}]}, "_9"),
-            (None, {"grades": [{"student_id": 4, "criteria": {"_1": {"points": 11}}}]}, "exceeds"),
+            (dict(self.ASSIGNMENT, rubric=[]), None, None, "no attached Canvas rubric"),
+            (dict(self.ASSIGNMENT, use_rubric_for_grading=True), None, None, "use_rubric_for_grading"),
+            (None, {"grades": [{"student_id": 4, "criteria": {"_9": {"points": 1}}}]}, None, "_9"),
+            (None, {"grades": [{"student_id": 4, "criteria": {"_1": {"points": 11}}}]}, None, "exceeds"),
+            (None, {"grades": [{"student_id": 4, "grade": -1, "criteria": {"_1": {"points": 1}}}]}, None, "non-negative"),
             (None, {"grades": [{"student_id": 4, "criteria": {"_1": {"points": 1}}},
-                               {"student_id": 4, "criteria": {"_1": {"points": 1}}}]}, "repeats"),
-            (None, {"grades": []}, "non-empty"),
+                               {"student_id": 4, "criteria": {"_1": {"points": 1}}}]}, None, "repeats"),
+            (None, {"grades": []}, None, "non-empty"),
+            (None, fifty_one, None, "50 students"),
+            (None, {"student_id": 4, "criteria": {"_1": {"points": 1}}}, None, "wrap this entry"),
+            (None, {"grades": [{"student_id": 4, "grade": 14, "criteria": {"_1": {"points": 8}}}]},
+             {4: self.submission(4, {"_1": {"points": 8.0}}, score=12.0)}, "already has score 12.0"),
         ]
-        for assignment, definition, message in cases:
+        for assignment, definition, submissions, message in cases:
             with self.subTest(message=message):
                 with self.assertRaises(operations.OperationError) as caught:
-                    self.run(self.args(definition=definition), assignment=assignment)
+                    self.run(self.args(definition=definition), assignment=assignment, submissions=submissions)
                 self.assertIn(message, str(caught.exception))
+                self.assertNotIsInstance(caught.exception, operations.GuardUncertain)
+
+    def test_a_criteria_only_entry_may_replace_criteria_on_a_student_already_scored(self):
+        definition = {"grades": [{"student_id": 4, "criteria": {"_1": {"points": 9}}}]}
+        plan, result, calls = self.run(self.args(definition=definition),
+                                       submissions={4: self.submission(4, {"_1": {"points": 8.0}}, score=12.0)})
+        self.assertEqual(result["assessments_only"], 1)
+        self.assertEqual(calls[-1][2], {"rubric_assessment": {"_1": {"points": 9}}})
+        self.assertEqual(plan["grades"][0]["current_grade"]["score"], 12.0)
+
+    def test_the_already_scored_refusal_names_the_guard_call_that_changes_a_grade(self):
+        definition = {"grades": [{"student_id": 4, "grade": 14, "criteria": {"_1": {"points": 8}}}]}
+        with self.assertRaises(operations.OperationError) as caught:
+            self.run(self.args(definition=definition),
+                     submissions={4: self.submission(4, {"_1": {"points": 8.0}}, score=12.0)})
+        self.assertIn("put courses/12/assignments/22/submissions/4", str(caught.exception))
+        self.assertIn("graded_at", str(caught.exception))
 
     def test_the_auto_grading_refusal_names_both_remedy_commands(self):
         with self.assertRaises(operations.OperationError) as caught:
@@ -821,33 +868,23 @@ class TestAssessWithRubric(AssessFixtures, unittest.TestCase):
         self.assertIn('"use_for_grading": false', text)
 
     def test_a_bad_third_entry_writes_nothing_at_all(self):
-        definition = {"grades": self.DEFINITION["grades"] + [{"student_id": 6, "criteria": {"_1": {"points": 99}}}]}
-        calls_seen = []
-        def put(*a, **k):
-            calls_seen.append(a)
+        definition = {"grades": self.DEFINITION["grades"]
+                      + [{"student_id": 6, "criteria": {"_1": {"points": 99}}}]}
+        seen = []
+        def record(*a, **k):
+            seen.append(a)
         with mock.patch.object(operations, "definition_file", return_value=definition), \
                 mock.patch.object(operations, "guard_get", side_effect=self.reads()), \
-                mock.patch.object(operations, "guard_post_policy", side_effect=put), \
-                mock.patch.object(operations, "guard_write", side_effect=put), \
+                mock.patch.object(operations, "guard_post_policy", side_effect=record), \
+                mock.patch.object(operations, "guard_write", side_effect=record), \
                 mock.patch("sys.stdout", io.StringIO()):
             with self.assertRaises(operations.OperationError):
-                operations.assess_with_rubric(self.args(definition=definition))
-        self.assertEqual(calls_seen, [])
+                operations.grade_with_rubric(self.args(definition=definition))
+        self.assertEqual(seen, [])
 
     def test_a_canvas_failure_part_way_through_is_uncertain_and_counts(self):
-        seen = []
-        def put(verb, path, body, phase, extra=None):
-            seen.append(path)
-            if len(seen) == 2:
-                raise operations.OperationError("API Only guard failed: 500")
-            return {"verification": "passed"}
-        with mock.patch.object(operations, "definition_file", return_value=self.DEFINITION), \
-                mock.patch.object(operations, "guard_get", side_effect=self.reads()), \
-                mock.patch.object(operations, "guard_post_policy", return_value={"verification": "passed"}), \
-                mock.patch.object(operations, "guard_write", side_effect=put), \
-                mock.patch("sys.stdout", io.StringIO()):
-            with self.assertRaises(operations.GuardUncertain) as caught:
-                operations.assess_with_rubric(self.args())
+        with self.assertRaises(operations.GuardUncertain) as caught:
+            self.run(self.args(), fail_write=2)
         self.assertIn("1 of 2", str(caught.exception))
 
     def test_guard_post_policy_delegates_to_the_fixed_guard(self):
@@ -861,10 +898,10 @@ class TestAssessWithRubric(AssessFixtures, unittest.TestCase):
             "manual", "-o", "json", "--yes"])
 ```
 
-(f) In `TestGuardWriteContract`, add the cross-layer test:
+(f) In `TestGuardWriteContract`, add two cross-layer tests:
 
 ```python
-    def test_the_real_guard_proves_an_assessment_only_write(self):
+    def test_the_real_guard_proves_a_criteria_only_write(self):
         path = "courses/12/assignments/22/submissions/34?include[]=rubric_assessment&include[]=user"
         body = {"rubric_assessment": {"_1": {"points": 8, "comments": "Clear thesis."}}}
         stored = {"id": 34, "user_id": 34, "rubric_assessment": {"_1": {"points": 8.0, "comments": "Clear thesis."}}}
@@ -879,12 +916,31 @@ class TestAssessWithRubric(AssessFixtures, unittest.TestCase):
             evidence = operations.guard_write("put", path, body, "yes")
         self.assertEqual(evidence["verification"], "passed")
         self.assertEqual([row["field"] for row in evidence["changes"]], ["rubric_assessment._1"])
+
+    def test_the_real_guard_proves_a_grade_and_criteria_in_one_write(self):
+        path = "courses/12/assignments/22/submissions/34?include[]=rubric_assessment&include[]=user"
+        body = {"submission": {"posted_grade": 8}, "rubric_assessment": {"_1": {"points": 8}}}
+        stored = {"id": 34, "user_id": 34, "score": 8.0, "entered_score": 8.0,
+                  "rubric_assessment": {"_1": {"points": 8.0}}}
+        with mock.patch("urllib.request.urlopen", side_effect=[
+                FakeResponse(payload={"id": 34, "user_id": 34, "score": None}),
+                FakeResponse(payload=stored), FakeResponse(payload=stored)]):
+            code, captured = self.run_main(["put", path, "--yes", "-o", "json", "-d", json.dumps(body)])
+        self.assertEqual(code, 0)
+        completed = mock.Mock(returncode=0, stdout=captured, stderr="")
+        with mock.patch.object(operations.subprocess, "run", return_value=completed), \
+                mock.patch("sys.stdout", io.StringIO()):
+            evidence = operations.guard_write("put", path, body, "yes")
+        self.assertEqual(evidence["verification"], "passed")
+        self.assertEqual(sorted(row["field"] for row in evidence["changes"]),
+                         ["posted_grade", "rubric_assessment._1"])
+        self.assertTrue(all(row["match"] is True for row in evidence["changes"]))
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `/usr/bin/python3 -m unittest test_canvas_api_operations -v 2>&1 | tail -30`
-Expected: the new tests ERROR with `AttributeError: module 'canvas_api_operations' has no attribute 'assess_with_rubric'` (and `criterion_limits`, `grade_list`, `stored_total`, `guard_post_policy`); the `use_for_grading` test FAILS on `True != False`; `test_only_the_eight_operations_remain` FAILS on the list.
+Expected: the new tests ERROR with `AttributeError: module 'canvas_api_operations' has no attribute 'grade_entry'` (and `criterion_limits`, `grade_list`, `guard_post_policy`); `test_an_automatic_assignment_is_switched...` fails because today's `grade_with_rubric` takes a single object; the `use_for_grading` test FAILS on `True != False`; the seven-operations test FAILS on the list.
 
 - [ ] **Step 3: Implement**
 
@@ -938,11 +994,12 @@ def guard_post_policy(course_id, assignment_id, policy, phase):
     """One write. With --assignment-id, Canvas's create call also attaches the new rubric to
     that assignment, with "use this rubric for grading" OFF: a rubric assessment saved on an
     association with use_for_grading false stores criteria and comments and returns before
-    touching the grade (source: app/models/rubric_assessment.rb#update_artifact), which is the
-    review window assess-with-rubric relies on. The assignment is then read back to prove it."""
+    touching the grade (source: app/models/rubric_assessment.rb#update_artifact), which is what
+    lets grade-with-rubric write criteria for a student and no grade. The assignment is then
+    read back to prove it."""
 ```
 
-3c. Replace `live_rubric`'s docstring and keep its body:
+3c. Replace `live_rubric`'s docstring, keeping its body:
 
 ```python
 def live_rubric(args):
@@ -952,7 +1009,7 @@ def live_rubric(args):
     preflight; Canvas exposes no read for the association itself."""
 ```
 
-3d. Replace `grade_payload` (lines 262-280) with the shared helpers:
+3d. Replace `grade_payload` (lines 262-280) with:
 
 ```python
 def criterion_limits(rubric):
@@ -961,13 +1018,17 @@ def criterion_limits(rubric):
             for row in rubric.get("data") or []}
 
 
-def assessment_entry(value, limits):
-    """One assess entry -> (student_id, criteria exactly as they will be sent, the total Canvas
-    would compute, the ids excluded from it). The total skips ignore_for_scoring criteria,
-    matching Canvas (source: app/models/rubric_association.rb#assess); the flag changes the
-    arithmetic, never what is stored."""
-    definition = exact_object(value, ("student_id", "criteria"), ())
+def grade_entry(value, limits):
+    """One entry -> (student_id, criteria exactly as they will be sent, the total Canvas would
+    compute, the ids excluded from it, the stated grade or None). The total skips
+    ignore_for_scoring criteria, matching Canvas (source:
+    app/models/rubric_association.rb#assess); the flag changes the arithmetic, never what is
+    stored. A missing or null grade means criteria only: the instructor's own marker."""
+    definition = exact_object(value, ("student_id", "criteria"), ("grade",))
     student_id = canvas_id(str(definition["student_id"]), "student ID")
+    grade = definition.get("grade")
+    if grade is not None:
+        grade = nonnegative(grade, "grade")
     criteria = definition["criteria"]
     if not isinstance(criteria, dict) or not criteria:
         raise OperationError("criteria must be a non-empty object keyed by live criterion ID")
@@ -988,17 +1049,21 @@ def assessment_entry(value, limits):
             excluded.append(str(criterion_id))
         else:
             total += points
-    return student_id, normalized, total, sorted(excluded)
+    return student_id, normalized, total, sorted(excluded), grade
 
 
-def grade_list(definition, label):
-    """The {"grades": [...]} envelope both rubric verbs take: 1-50 entries, no student twice."""
+def grade_list(definition):
+    """The {"grades": [...]} envelope: 1-50 entries, no student twice. The old single-student
+    shape is named so a pinned caller fails loudly rather than confusingly."""
+    if isinstance(definition, dict) and "student_id" in definition and "grades" not in definition:
+        raise OperationError('grade-with-rubric now takes {"grades": [...]}: wrap this entry in '
+                             "that list (a grade per entry is optional)")
     definition = exact_object(definition, ("grades",), ())
     grades = definition["grades"]
     if not isinstance(grades, list) or not grades:
         raise OperationError("grades must be a non-empty array")
     if len(grades) > 50:
-        raise OperationError("%s is limited to 50 students per reviewed batch" % label)
+        raise OperationError("grade-with-rubric is limited to 50 students per reviewed batch")
     seen = set()
     for index, entry in enumerate(grades):
         student_id = str(entry.get("student_id")) if isinstance(entry, dict) else ""
@@ -1006,16 +1071,6 @@ def grade_list(definition, label):
             raise OperationError("entry %d repeats student ID %s" % (index + 1, student_id))
         seen.add(student_id)
     return grades
-
-
-def stored_total(assessment, limits):
-    """Canvas's own sum of a stored assessment: every scored criterion the live rubric does
-    not flag ignore_for_scoring."""
-    total = 0
-    for criterion_id, scored in (assessment or {}).items():
-        if isinstance(scored, dict) and not limits.get(str(criterion_id), (0, False))[1]:
-            total += number(scored.get("points"))
-    return total
 
 
 def submission_path(args, student_id, includes):
@@ -1030,33 +1085,33 @@ def submission_path(args, student_id, includes):
 
 ```python
 VISIBILITY = {
-    "manual": "hidden from every student until you click Post grades in the gradebook; "
-              "this run writes no grade",
-    "automatic": "each criterion and comment becomes visible to its student when written; "
-                 "this run writes no grade",
+    "manual": "hidden from every student until you click Post grades in the gradebook",
+    "automatic": "each grade, criterion and comment becomes visible to its student when written",
 }
 
 
 def refuse_auto_grading(args, assignment):
-    """With use_for_grading on, Canvas sums the criteria and posts the grade the instant an
-    assessment is saved, so no review window can exist."""
+    """With use_for_grading on, Canvas re-derives the grade from the criteria the instant an
+    assessment is saved: a stated grade is overridden and an entry without one is graded."""
     if not assignment.get("use_rubric_for_grading"):
         return
     rubric_id = (assignment.get("rubric_settings") or {}).get("id")
     raise OperationError(
         "assignment %s grades automatically from its rubric (use_rubric_for_grading is true), so "
-        "no review window can exist; turn it off with two guard calls, then rerun:\n"
+        "a stated grade would be overridden and an entry without one would be graded; turn it off "
+        "with two guard calls, then rerun:\n"
         "  get \"courses/%s/rubrics/%s?include[]=assignment_associations\"   # find the association id\n"
         "  put courses/%s/rubric_associations/<ID> -d '{\"rubric_association\": "
         "{\"use_for_grading\": false}}' --dry-run"
         % (args.assignment_id, args.course_id, rubric_id, args.course_id))
 
 
-def assess_with_rubric(args):
-    """Write every criterion and comment for 1-50 students and no grade. On an assignment that
-    posts automatically the run first switches it to manual posting (unless --keep-post-policy),
-    so nothing here is visible to a student until the instructor clicks Post grades."""
-    grades = grade_list(definition_file(args.definition), "assess-with-rubric")
+def grade_with_rubric(args):
+    """Write every criterion and comment for 1-50 students, and the stated grade for the
+    entries that carry one. On an assignment that posts automatically the run first switches
+    it to manual posting (unless --keep-post-policy), so nothing here is visible to a student
+    until the instructor clicks Post grades. Everything is validated before anything is sent."""
+    grades = grade_list(definition_file(args.definition))
     guard_get("courses/%s" % args.course_id)
     assignment, rubric = live_rubric(args)
     refuse_auto_grading(args, assignment)
@@ -1066,26 +1121,39 @@ def assess_with_rubric(args):
     after_policy = "manual" if switch else before_policy
     rows, writes = [], []
     for entry in grades:                                      # every entry, before any write
-        student_id, criteria, total, excluded = assessment_entry(entry, limits)
+        student_id, criteria, total, excluded, grade = grade_entry(entry, limits)
         path = submission_path(args, student_id, ("rubric_assessment", "user"))
         submission = guard_get(path).get("object") or {}
+        if grade is not None and submission.get("score") is not None:
+            raise OperationError(
+                "student %s already has score %s (grade %s, graded_at %s); changing a grade is a "
+                "guard call: put courses/%s/assignments/%s/submissions/%s -d "
+                "'{\"submission\": {\"posted_grade\": N}}' --dry-run; an entry without a grade "
+                "would replace the criteria only"
+                % (student_id, submission.get("score"), submission.get("grade"),
+                   submission.get("graded_at"), args.course_id, args.assignment_id, student_id))
         stored = submission.get("rubric_assessment")
-        rows.append({"student_id": student_id,
-                     "student_name": (submission.get("user") or {}).get("name"),
-                     "criteria": criteria, "criterion_total": total,
-                     "points_possible": assignment.get("points_possible"),
-                     "excluded_from_total": excluded,
-                     "current_grade": current_grade(submission),
-                     "existing_assessment": isinstance(stored, dict) and bool(stored),
-                     "speedgrader_url": speedgrader_url(assignment, student_id)})
-        writes.append((path, {"rubric_assessment": criteria}))
+        row = {"student_id": student_id,
+               "student_name": (submission.get("user") or {}).get("name"),
+               "criteria": criteria, "criterion_total": total, "excluded_from_total": excluded,
+               "points_possible": assignment.get("points_possible"), "grade": grade,
+               "current_grade": current_grade(submission), "posted_at": submission.get("posted_at"),
+               "existing_assessment": isinstance(stored, dict) and bool(stored),
+               "speedgrader_url": speedgrader_url(assignment, student_id)}
+        if grade is not None and abs(grade - total) > SCORE_TOLERANCE:
+            row["difference"] = grade - total
+        rows.append(row)
+        body = {"rubric_assessment": criteria}
+        if grade is not None:
+            body["submission"] = {"posted_grade": grade}
+        writes.append((path, body))
     phase = operation_phase(args)
     policy = {"before": before_policy, "after": after_policy, "switched_by_this_run": switch}
-    print(json.dumps({"operation": "assess-with-rubric", "phase": phase,
+    print(json.dumps({"operation": "grade-with-rubric", "phase": phase,
                       "course_id": args.course_id, "assignment_id": args.assignment_id,
                       "post_policy": policy, "student_visibility": VISIBILITY[after_policy],
                       "grades": rows}, indent=2, sort_keys=True))
-    if switch:                                    # before the first criterion; a refusal or an
+    if switch:                                # before the first student; a refusal or an
         guard_post_policy(args.course_id, args.assignment_id, "manual", phase)   # uncertain ends it
     written = 0
     try:
@@ -1097,283 +1165,63 @@ def assess_with_rubric(args):
     except OperationError as err:
         if not written or phase == "dry-run":
             raise                      # nothing was written, so this is an ordinary refusal
-        raise GuardUncertain("assess-with-rubric stopped after %d of %d students; the assessments "
-                             "already written stand and are not retried: %s"
+        raise GuardUncertain("grade-with-rubric stopped after %d of %d students; the writes "
+                             "already made stand and are not retried: %s"
                              % (written, len(writes), err))
     if phase == "dry-run":
         return None
-    return {"operation": "assess-with-rubric", "phase": phase, "students_written": written,
-            "post_policy": policy, "student_visibility": VISIBILITY[after_policy]}
+    graded = sum(1 for _, body in writes[:written] if "submission" in body)
+    hidden = graded if after_policy == "manual" else 0
+    return {"operation": "grade-with-rubric", "phase": phase, "students_written": written,
+            "grades_written": graded, "assessments_only": written - graded,
+            "grades_not_yet_visible": hidden, "post_policy": policy,
+            "student_visibility": VISIBILITY[after_policy],
+            "release": ("click Post grades, then Graded, in the gradebook to release these grades "
+                        "with their criteria and comments" if hidden
+                        else "posted automatically as written")}
 ```
 
-3g. `OPERATIONS`: replace `"grade-with-rubric": grade_with_rubric,` and `"bulk-grade-with-rubric": bulk_grade_with_rubric,` with `"assess-with-rubric": assess_with_rubric,`.
+3g. `OPERATIONS`: delete the `"bulk-grade-with-rubric": bulk_grade_with_rubric,` entry; `"grade-with-rubric": grade_with_rubric` stays.
 
 3h. `parser()`: replace the `for name in ("grade-with-rubric", "bulk-grade-with-rubric"):` loop (three lines) with:
 
 ```python
-    assess = subs.add_parser("assess-with-rubric", parents=[write])
-    assess.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)
-    assess.add_argument("--keep-post-policy", action="store_true",
-                        help="leave an automatic-posting assignment automatic: every criterion and "
-                             "comment is visible to its student the moment it is written")
+    grade = subs.add_parser("grade-with-rubric", parents=[write])
+    grade.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)
+    grade.add_argument("--keep-post-policy", action="store_true",
+                       help="leave an automatic-posting assignment automatic: every grade, criterion "
+                            "and comment is visible to its student the moment it is written")
 ```
 
-3i. `codex/canvas-api-guard.rules`: in `OPERATION_PROMPTS` replace `"grade-with-rubric", "bulk-grade-with-rubric",` with `"assess-with-rubric",`; in that rule's `match` list replace the `bulk-grade-with-rubric` example with
-`"/usr/local/libexec/canvas_api_operations.py assess-with-rubric --course-id 1 --assignment-id 2 --definition assess.json --yes"`.
+3i. `codex/canvas-api-guard.rules`: in `OPERATION_PROMPTS` delete `"bulk-grade-with-rubric",`; in that rule's `match` list replace the `bulk-grade-with-rubric` example with
+`"/usr/local/libexec/canvas_api_operations.py grade-with-rubric --course-id 1 --assignment-id 2 --definition grades.json --yes"`.
 
 - [ ] **Step 4: Run the tests, then the whole suite**
 
 Run: `/usr/bin/python3 -m unittest test_canvas_api_operations -v 2>&1 | tail -5` — Expected: OK.
 Run: `/usr/bin/python3 -m unittest` — Expected: OK (the rules coverage test passes because the parser and the rules file changed together).
+Run: `grep -n "grade_one\|bulk_grade\|verify_rubric_assessment\|grade_payload" level2/canvas_api_operations.py` — Expected: no output.
 
 - [ ] **Step 5: Red-proof**
 
-(a) Move the `guard_post_policy` call to after the write loop: the "switched before the first criterion" test must fail. (b) Add `"submission": {}` to the write body: `test_the_write_carries_only_the_rubric_assessment` must fail. (c) In `assessment_entry` count ignored criteria in the total: the dry-run totals test must fail. Restore each; record.
+(a) Move the `guard_post_policy` call to after the write loop: the "switched before the first write" test must fail. (b) Always add `body["submission"]`: the criteria-only half of `test_an_entry_with_a_grade_writes_both...` must fail. (c) In `grade_entry` count ignored criteria in the total: the dry-run totals test must fail. (d) Drop the already-scored check: the refusals test must fail on its last case. Restore each; record.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add level2/canvas_api_operations.py test_canvas_api_operations.py codex/canvas-api-guard.rules
-git commit -m "feat(level2): assess-with-rubric - criteria and comments, no grade, hidden by manual posting"
+git commit -m "feat(level2): grade-with-rubric takes a list, grade optional per entry, hidden by manual posting"
 ```
 
 ---
 
-### Task 5: `enter-rubric-grade` replaces `bulk-grade-with-rubric`
-
-**Files:**
-- Modify: `level2/canvas_api_operations.py` (add `enter_entry`, `enter_rubric_grade`; `OPERATIONS`; `parser`)
-- Modify: `codex/canvas-api-guard.rules` (`OPERATION_PROMPTS` and its `match` examples)
-- Test: `test_canvas_api_operations.py`
-
-**Interfaces:**
-- Consumes (Task 4): `grade_list`, `live_rubric`, `criterion_limits`, `stored_total`, `submission_path`, `current_grade`, `speedgrader_url`, `guard_write`, `SCORE_TOLERANCE`.
-- Produces: `enter_entry(value) -> (student_id, grade, expected_total)`; `enter_rubric_grade(args)`; `OPERATIONS` key `"enter-rubric-grade"`.
-
-- [ ] **Step 1: Write the failing tests**
-
-(a) Nothing to delete; Task 4 retired the old code and tests.
-
-(b) In `test_only_the_eight_operations_remain`, add `"enter-rubric-grade"` so the sorted list is `["assess-with-rubric", "create-rubric", "download-assignment-submissions", "enter-rubric-grade", "prepare-submission-review", "regrade-quiz-question", "run-plan", "student-attention"]`.
-
-(c) Add a class:
-
-```python
-class TestEnterRubricGrade(AssessFixtures, unittest.TestCase):
-    STORED = {"_1": {"points": 8.0, "comments": "Clear thesis."}, "_2": {"points": 6.0},
-              "_3": {"points": 5.0}}                                   # _3 is ignore_for_scoring
-    ENTER = {"grades": [{"student_id": 4, "grade": 14, "expected_total": 14},
-                        {"student_id": 5, "grade": 9, "expected_total": 10}]}
-
-    def enter(self, args, assignment=None, submissions=None, write=None):
-        calls = []
-        def put(verb, path, body, phase, extra=None):
-            calls.append((verb, path, body, phase))
-            if write and len(calls) == write:
-                raise operations.OperationError("API Only guard failed: 500")
-            return None if phase == "dry-run" else {"verification": "passed"}
-        submissions = submissions or {4: self.submission(4, self.STORED),
-                                      5: self.submission(5, {"_1": {"points": 10.0}})}
-        with mock.patch.object(operations, "definition_file", return_value=self.definition), \
-                mock.patch.object(operations, "guard_get", side_effect=self.reads(assignment, submissions)), \
-                mock.patch.object(operations, "guard_write", side_effect=put), \
-                mock.patch("sys.stdout", io.StringIO()) as out:
-            result = operations.enter_rubric_grade(args)
-        plan = json.loads(out.getvalue().split("\n}\n")[0] + "\n}")
-        return plan, result, calls
-
-    def enter_args(self, dry_run=False, definition=None):
-        args = self.args(dry_run=dry_run, definition=definition or self.ENTER)
-        return args
-
-    def test_the_write_is_posted_grade_alone_and_the_summary_counts_hidden_grades(self):
-        plan, result, calls = self.enter(self.enter_args(), assignment=dict(self.ASSIGNMENT, post_manually=True))
-        self.assertEqual(calls[0][1], "courses/12/assignments/22/submissions/4?include[]=user")
-        self.assertEqual(calls[0][2], {"submission": {"posted_grade": 14}})
-        self.assertEqual(result["grades_written"], 2)
-        self.assertEqual(result["grades_not_yet_visible"], 2)
-        self.assertIn("Post grades, then Graded", result["release"])
-        self.assertEqual(plan["post_policy"], "manual")
-
-    def test_under_automatic_posting_nothing_is_hidden(self):
-        _, result, _ = self.enter(self.enter_args())
-        self.assertEqual(result["grades_not_yet_visible"], 0)
-        self.assertIn("posted automatically", result["release"])
-
-    def test_the_dry_run_shows_stored_criteria_both_totals_and_a_labelled_difference(self):
-        plan, result, calls = self.enter(self.enter_args(dry_run=True))
-        self.assertIsNone(result)
-        self.assertTrue(all(c[-1] == "dry-run" for c in calls))
-        first, second = plan["grades"]
-        self.assertEqual(first["stored_criteria"], self.STORED)
-        self.assertEqual((first["criterion_total"], first["expected_total"], first["grade"]), (14, 14, 14))
-        self.assertNotIn("difference", first)
-        self.assertEqual((second["criterion_total"], second["grade"], second["difference"]), (10, 9, -1))
-        self.assertEqual(first["points_possible"], 20)
-        self.assertIsNone(first["posted_at"])
-        self.assertTrue(first["speedgrader_url"].endswith("&student_id=4"))
-
-    def test_refusals_name_the_student_and_both_numbers(self):
-        cases = [
-            ({"grades": [{"student_id": 4, "grade": 14, "expected_total": 13}]}, None,
-             "expected_total 13 but the stored criteria sum to 14"),
-            ({"grades": [{"student_id": 5, "grade": 1, "expected_total": 1}]},
-             {5: self.submission(5)}, "no stored rubric assessment"),
-            ({"grades": [{"student_id": 4, "grade": 14, "expected_total": 14}]},
-             {4: self.submission(4, self.STORED, score=12.0)}, "already has score 12.0"),
-            ({"grades": [{"student_id": 4, "grade": -1, "expected_total": 14}]}, None, "non-negative"),
-            ({"grades": [{"student_id": 4, "grade": 14}]}, None, "missing required field"),
-            ({"grades": [{"student_id": 4, "grade": 1, "expected_total": 14},
-                         {"student_id": 4, "grade": 1, "expected_total": 14}]}, None, "repeats"),
-            ({"grades": []}, None, "non-empty"),
-        ]
-        for definition, submissions, message in cases:
-            with self.subTest(message=message):
-                with self.assertRaises(operations.OperationError) as caught:
-                    self.enter(self.enter_args(definition=definition), submissions=submissions)
-                self.assertIn(message, str(caught.exception))
-                self.assertNotIsInstance(caught.exception, operations.GuardUncertain)
-
-    def test_the_already_scored_refusal_names_the_guard_call_that_changes_a_grade(self):
-        with self.assertRaises(operations.OperationError) as caught:
-            self.enter(self.enter_args(definition={"grades": [{"student_id": 4, "grade": 14, "expected_total": 14}]}),
-                       submissions={4: self.submission(4, self.STORED, score=12.0)})
-        self.assertIn("put courses/12/assignments/22/submissions/4", str(caught.exception))
-
-    def test_a_grade_above_points_possible_is_allowed_as_extra_credit(self):
-        plan, _, _ = self.enter(self.enter_args(definition={"grades": [{"student_id": 4, "grade": 25, "expected_total": 14}]}))
-        self.assertEqual(plan["grades"][0]["difference"], 11)
-
-    def test_a_canvas_failure_part_way_through_is_uncertain_and_counts(self):
-        with self.assertRaises(operations.GuardUncertain) as caught:
-            self.enter(self.enter_args(), write=2)
-        self.assertIn("1 of 2", str(caught.exception))
-```
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-Run: `/usr/bin/python3 -m unittest test_canvas_api_operations.TestEnterRubricGrade -v`
-Expected: ERROR, `no attribute 'enter_rubric_grade'`.
-
-- [ ] **Step 3: Implement**
-
-3a. Add after `assess_with_rubric`:
-
-```python
-def enter_entry(value):
-    definition = exact_object(value, ("student_id", "grade", "expected_total"), ())
-    student_id = canvas_id(str(definition["student_id"]), "student ID")
-    grade = nonnegative(definition["grade"], "grade")
-    expected = nonnegative(definition["expected_total"], "expected_total")
-    return student_id, grade, expected
-
-
-def enter_rubric_grade(args):
-    """Write the grade the instructor stated for 1-50 students whose criteria are already
-    stored. The grade is stated, not derived: expected_total is the criterion sum the assess
-    run printed, and a grade that differs from it is written and labelled. Under manual
-    posting every grade written here stays hidden until the instructor clicks Post grades."""
-    grades = grade_list(definition_file(args.definition), "enter-rubric-grade")
-    guard_get("courses/%s" % args.course_id)
-    assignment, rubric = live_rubric(args)
-    limits = criterion_limits(rubric)
-    rows, writes = [], []
-    for entry in grades:                                      # every entry, before any write
-        student_id, grade, expected = enter_entry(entry)
-        submission = guard_get(submission_path(args, student_id, ("rubric_assessment", "user"))
-                               ).get("object") or {}
-        assessment = submission.get("rubric_assessment")
-        if not isinstance(assessment, dict) or not assessment:
-            raise OperationError("student %s has no stored rubric assessment; run "
-                                 "assess-with-rubric first" % student_id)
-        live = stored_total(assessment, limits)
-        if abs(live - expected) > SCORE_TOLERANCE:
-            raise OperationError("student %s: expected_total %s but the stored criteria sum to %s; "
-                                 "review the assessment in SpeedGrader and restate the total"
-                                 % (student_id, expected, live))
-        if submission.get("score") is not None:
-            raise OperationError(
-                "student %s already has score %s (grade %s, graded_at %s); changing a grade is a "
-                "guard call: put courses/%s/assignments/%s/submissions/%s -d "
-                "'{\"submission\": {\"posted_grade\": N}}' --dry-run"
-                % (student_id, submission.get("score"), submission.get("grade"),
-                   submission.get("graded_at"), args.course_id, args.assignment_id, student_id))
-        row = {"student_id": student_id, "student_name": (submission.get("user") or {}).get("name"),
-               "stored_criteria": assessment, "criterion_total": live, "expected_total": expected,
-               "grade": grade, "points_possible": assignment.get("points_possible"),
-               "current_grade": current_grade(submission), "posted_at": submission.get("posted_at"),
-               "speedgrader_url": speedgrader_url(assignment, student_id)}
-        if abs(grade - live) > SCORE_TOLERANCE:
-            row["difference"] = grade - live
-        rows.append(row)
-        writes.append((submission_path(args, student_id, ("user",)),
-                       {"submission": {"posted_grade": grade}}))
-    phase = operation_phase(args)
-    policy = "manual" if assignment.get("post_manually") else "automatic"
-    print(json.dumps({"operation": "enter-rubric-grade", "phase": phase,
-                      "course_id": args.course_id, "assignment_id": args.assignment_id,
-                      "post_policy": policy, "grades": rows}, indent=2, sort_keys=True))
-    written = 0
-    try:
-        for path, body in writes:
-            guard_write("put", path, body, phase)
-            written += 1
-    except GuardUncertain:
-        raise
-    except OperationError as err:
-        if not written or phase == "dry-run":
-            raise
-        raise GuardUncertain("enter-rubric-grade stopped after %d of %d students; the grades "
-                             "already written stand and are not retried: %s"
-                             % (written, len(writes), err))
-    if phase == "dry-run":
-        return None
-    hidden = written if policy == "manual" else 0
-    return {"operation": "enter-rubric-grade", "phase": phase, "grades_written": written,
-            "grades_not_yet_visible": hidden,
-            "release": ("click Post grades, then Graded, in the gradebook to release these "
-                        "grades with their criteria and comments" if hidden
-                        else "posted automatically as written")}
-```
-
-3b. `OPERATIONS`: add `"enter-rubric-grade": enter_rubric_grade,` after the `assess-with-rubric` entry.
-
-3c. `parser()`: after the `assess` block add:
-
-```python
-    enter = subs.add_parser("enter-rubric-grade", parents=[write])
-    enter.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)
-```
-
-3d. `codex/canvas-api-guard.rules`: in `OPERATION_PROMPTS` add `"enter-rubric-grade",` after `"assess-with-rubric",`; add to that rule's `match` list
-`"/usr/local/libexec/canvas_api_operations.py enter-rubric-grade --course-id 1 --assignment-id 2 --definition enter.json --yes"`.
-
-- [ ] **Step 4: Run the tests, then the whole suite**
-
-Run: `/usr/bin/python3 -m unittest test_canvas_api_operations -v 2>&1 | tail -5` — Expected: OK.
-Run: `/usr/bin/python3 -m unittest` — Expected: OK.
-Run: `grep -n "grade_one\|bulk_grade\|grade_with_rubric\|verify_rubric_assessment\|grade_payload" level2/canvas_api_operations.py` — Expected: no output.
-
-- [ ] **Step 5: Red-proof**
-
-(a) Change the write body to `{"submission": {"posted_grade": grade}, "rubric_assessment": assessment}`: the first test must fail. (b) Drop the `expected_total` check: the refusals test must fail on its first case. (c) Compute `hidden = written` unconditionally: the automatic-posting test must fail. Restore each; record.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add level2/canvas_api_operations.py test_canvas_api_operations.py codex/canvas-api-guard.rules
-git commit -m "feat(level2): enter-rubric-grade - a stated grade for students whose criteria are stored"
-```
-
----
-
-### Task 6: Skills, docs and versions
+### Task 5: Skills, docs and versions
 
 **Files:**
 - Modify: `level2/SKILL.md`, `level2/README.md`, `codex/skills/canvas-api-guard/SKILL.md`, `README.md`, `docs/IT-REVIEW.md`
 - Modify: `canvas_api_guard.py:63` (`USER_AGENT`), `level2/canvas_api_operations.py:20` (`USER_AGENT`), `test_canvas_api_guard.py:2719` (the pinned version string)
 
-**Interfaces:** none produced; this task documents Tasks 1–5.
+**Interfaces:** none produced; this task documents Tasks 1–4.
 
 - [ ] **Step 1: Bump the versions and update the version test**
 
@@ -1382,12 +1230,14 @@ Run: `/usr/bin/python3 -m unittest` — Expected: OK.
 
 - [ ] **Step 2: `level2/SKILL.md`**
 
+Line 12: change `There are eight operations` to `There are seven operations`.
+
 Replace lines 49-51 (`Both copy confidential ... use \`grade-with-rubric --dry-run\`.`) with:
 
 ```
 Both copy confidential student records into a user-private review directory, so Codex prompts
 before either runs. Neither infers a score or writes a grade. Review the files against the live
-rubric, then use `assess-with-rubric --dry-run`.
+rubric, then use `grade-with-rubric --dry-run`.
 ```
 
 Replace the whole `## Writes` section (lines 65-121) with:
@@ -1397,8 +1247,7 @@ Replace the whole `## Writes` section (lines 65-121) with:
 
 ```sh
 /usr/local/libexec/canvas_api_operations.py create-rubric --course-id 123 --assignment-id 20 --definition rubric.json --dry-run
-/usr/local/libexec/canvas_api_operations.py assess-with-rubric --course-id 123 --assignment-id 20 --definition assess.json --dry-run
-/usr/local/libexec/canvas_api_operations.py enter-rubric-grade --course-id 123 --assignment-id 20 --definition enter.json --dry-run
+/usr/local/libexec/canvas_api_operations.py grade-with-rubric --course-id 123 --assignment-id 20 --definition grades.json --dry-run
 /usr/local/libexec/canvas_api_operations.py regrade-quiz-question --course-id 123 --definition regrade.json --dry-run
 /usr/local/libexec/canvas_api_operations.py run-plan --course-id 123 --definition plan.json --dry-run
 /usr/local/libexec/canvas_api_operations.py regrade-quiz-question --course-id 123 --definition regrade.json --expect-plan DIGEST --yes
@@ -1418,26 +1267,27 @@ Replace the whole `## Writes` section (lines 65-121) with:
   "use this rubric for grading" OFF, proven by reading the assignment back, so a saved rubric
   assessment never posts a grade by itself. It refuses an assignment that already has a rubric.
   Without the flag the rubric is created on the course, for reuse.
-- **Grading is two verbs, and the instructor releases.** `assess-with-rubric` writes every
-  criterion's points and comments for 1-50 students and NO grade. If the assignment posts
-  grades automatically, the run first switches it to manual posting (one audited guard write,
-  shown in the dry run), so nothing it writes is visible to any student. The dry run reports
-  each student's criteria, the total Canvas will show (criteria the rubric marks
-  `ignore_for_scoring` are listed in `excluded_from_total`), the current grade, and the
-  `speedgrader_url`. `--keep-post-policy` leaves an automatic assignment automatic, and then
-  every criterion and comment is visible to its student the moment it is written; the dry run
-  says which case applies.
-- `enter-rubric-grade` writes the grade the instructor stated, for students whose criteria
-  are stored. Each entry carries `grade` and `expected_total` (the sum the assess run printed);
-  it refuses when the stored criteria no longer sum to `expected_total`, when Canvas already
-  holds a score, or when no assessment is stored. A grade that is not the sum - a late penalty,
-  extra credit - is written and labelled `difference`. Under manual posting the grades stay
-  hidden; the run ends with `grades_not_yet_visible`.
-- **Releasing is the instructor's click, never this tool's.** In the gradebook they choose
-  Post grades, then **Graded**: grade, criteria and comments appear together for the students
-  who have a grade, and the rest stay hidden for SpeedGrader. Never suggest "Everyone", which
-  also marks ungraded students posted. Never switch an assignment back to automatic: an
-  assessed but ungraded student would become visible at once.
+- **`grade-with-rubric` writes the whole assignment in one approved run, and nothing it writes
+  is visible to a student.** Each entry (1-50 students) carries the criteria points and comments
+  and, optionally, a `grade`. If the assignment posts grades automatically, the run first
+  switches it to manual posting (one audited guard write, shown in the dry run). The dry run
+  reports, per student, the criteria, the total Canvas will show (criteria the rubric marks
+  `ignore_for_scoring` are listed in `excluded_from_total`), the stated grade or null, a
+  `difference` when the grade is not the sum, the current grade, and the `speedgrader_url`.
+  When the instructor says "enter all", "proceed", or simply approves the table, every entry
+  carries its grade as the total. "Enter the ones above 85" (or any rule they give) means
+  those entries carry a grade and the rest carry none: criteria stored, grade box empty, theirs
+  to finish in SpeedGrader. A late penalty or extra credit is a stated `grade` that is not the
+  sum. It refuses a grade for a student Canvas already scored, naming what it holds; changing a
+  grade is a guard `put`. `--keep-post-policy` leaves an automatic assignment automatic, and
+  then everything is visible to each student the moment it is written; the dry run says which
+  case applies. Never pass it unless the instructor asked for that.
+- **Releasing is the instructor's click, never this tool's.** Under manual posting the run ends
+  with `grades_not_yet_visible`. In the gradebook they choose Post grades, then **Graded**:
+  grade, criteria and comments appear together for the students who have a grade, and the rest
+  stay hidden for SpeedGrader. Never suggest "Everyone", which also marks ungraded students
+  posted. Never switch an assignment back to automatic: a student with criteria and no grade
+  would become visible at once.
 - `regrade-quiz-question` rewrites one classic multiple-choice or true/false question's answer
   key and rescores every completed attempt of that question. It refuses anything that is not a
   graded classic quiz (a New Quizzes quiz is not in this API at all) and any other question
@@ -1457,12 +1307,11 @@ with `--yes`; Codex prompts for the write. A failed command, `WRITE STATUS UNCER
 3 is not a completed write: read the object back, report what Canvas holds, and ask; never resend the
 same write. A refusal or a Canvas 4xx wrote nothing: fix the request and propose a new dry run.
 
-Definitions are deliberately narrow: a rubric has `title` and criteria/rating points; an
-assessment has `student_id` plus points and comments keyed by the live rubric criterion IDs; a
-grade entry has `student_id`, `grade` and `expected_total`; both grading verbs take
-`{"grades": [...]}` and are capped at 50 students. Always read the assignment's live rubric
-immediately before scoring, and apply the instructor's current grading direction; this skill
-supplies no scoring calibration examples.
+Definitions are deliberately narrow: a rubric has `title` and criteria/rating points; a grading
+entry has `student_id`, points and comments keyed by the live rubric criterion IDs, and an
+optional `grade`; the file is `{"grades": [...]}` and is capped at 50 students. Always read the
+assignment's live rubric immediately before scoring, and apply the instructor's current grading
+direction; this skill supplies no scoring calibration examples.
 ```
 
 In `## Not here`, change the attach example's `"use_for_grading": true` to `"use_for_grading": false` and replace the sentence before it with:
@@ -1477,11 +1326,10 @@ Run: `wc -l level2/SKILL.md` — Expected: at most 150 lines (this file has no e
 
 - [ ] **Step 3: `level2/README.md`**
 
-Replace the `grade-with-rubric` and `bulk-grade-with-rubric` table rows with:
+Replace the `grade-with-rubric` and `bulk-grade-with-rubric` table rows with one row:
 
 ```
-| `assess-with-rubric` | reads the live rubric, rejects criterion IDs absent from it, switches an automatic-posting assignment to manual posting through the guard's `post-policy` verb, then writes each student's criteria and comments (no grade) as an individually audited write the guard proves criterion by criterion; up to 50 students |
-| `enter-rubric-grade` | writes the grade the instructor stated for students whose criteria are stored, refusing when the stored criteria no longer sum to the stated `expected_total` or when Canvas already holds a score; up to 50 students; releasing the grades is the instructor's Post grades click, never the tool's |
+| `grade-with-rubric` | reads the live rubric, rejects criterion IDs absent from it, switches an automatic-posting assignment to manual posting through the guard's `post-policy` verb, then writes each student's criteria and comments - and the stated grade, when the entry carries one - as an individually audited write the guard proves criterion by criterion; up to 50 students; releasing the grades is the instructor's Post grades click, never the tool's |
 ```
 
 Change `create-rubric`'s row to end `...attaches it to that assignment with "use this rubric for grading" off, proven by reading the assignment back`.
@@ -1563,9 +1411,21 @@ Run: `/usr/bin/python3 -m unittest test_canvas_api_guard -k skill -v` — Expect
 
 - [ ] **Step 5: `README.md` and `docs/IT-REVIEW.md`**
 
-`README.md` line 33-36: change `and rubric\ncreation and grading.` to `and rubric\ncreation, rubric assessment and grade entry.`. Line 321: change `rubric creation and rubric grading for one student or for\na batch.` to `rubric creation, rubric assessment (criteria and comments, no grade, hidden by manual posting) and grade\nentry, each for up to 50 students.`.
+`README.md` lines 33-36: change `add the six
+operations` to `add the seven
+operations`, and `and rubric
+creation and grading.` to `and rubric
+creation and rubric grading with a hidden review window.`. Line 321: change `rubric creation and rubric grading for one student or for
+a batch.` to `rubric creation and rubric grading for up to 50 students, with the grade optional per
+student and the assignment switched to manual posting so nothing is visible until the instructor
+posts.`.
 
-`docs/IT-REVIEW.md`, paragraph at lines 354-361: replace `grading rejects stale or\ninvented rubric criterion IDs; batches are capped at 50 students` with `rubric grading is two verbs - an assessment write of criteria and comments with no grade, and a\nseparate grade-entry write of a number the instructor stated - both rejecting stale or invented\ncriterion IDs; an assessment run first switches an automatic-posting assignment to manual\nposting so nothing it writes is visible to a student, and releasing grades is the instructor's\nown Post grades click in Canvas, never a request from this program; batches are capped at 50 students`.
+`docs/IT-REVIEW.md`, paragraph at lines 354-361: replace `grading rejects stale or
+invented rubric criterion IDs; batches are capped at 50 students` with `rubric grading writes each student's criteria and comments and, only where the instructor
+stated one, a grade, rejecting stale or invented criterion IDs; a run first switches an
+automatic-posting assignment to manual posting so nothing it writes is visible to a student,
+and releasing grades is the instructor's own Post grades click in Canvas, never a request from
+this program; batches are capped at 50 students`.
 
 In the API Only section `### Keep the token on one destination` (around line 101), add a bullet:
 
