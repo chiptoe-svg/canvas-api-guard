@@ -770,14 +770,36 @@ def matches(requested, got):
     norm = lambda v: aliases.get(str(v).strip().lower(), str(v).strip().lower())
     return norm(got) == norm(requested)
 
+# Body keys that are response fields rather than resource wrappers. flatten_leaves() would
+# reduce {"rubric_assessment": {"_1234": {"points": 8}}} to the leaf "points", which is not a
+# field of the submission object. Canvas returns the assessment under the same key, one level
+# deeper, keyed by criterion id (with include[]=rubric_assessment), so each criterion is
+# compared there as a structured value - matches() already does dicts member by member.
+RESPONSE_FIELDS = ("rubric_assessment",)
+
 def compare_fields(body, before, after):
     """Canvas wraps a write body in a resource key ({"submission": {...}}) while the read-back
     object does not, so each requested leaf is compared BY NAME with the field that proves it.
     Before and after are read from that one field, chosen from the after object, so a single
     name labels both. A leaf the object does not expose at all cannot prove or disprove
-    anything: its match is null, and the caller treats that as unverified, never as failed."""
-    rows, flat = [], flatten_leaves(body or {})
+    anything: its match is null, and the caller treats that as unverified, never as failed.
+    A key in RESPONSE_FIELDS is not a wrapper: one row per sub-key, resolved at "key.sub"."""
+    rows, plain = [], {}
     after_obj = after if isinstance(after, dict) else {}
+    before_obj = before if isinstance(before, dict) else {}
+    for key in (body or {}):
+        if key in RESPONSE_FIELDS and isinstance(body[key], dict):
+            got = after_obj.get(key) if isinstance(after_obj.get(key), dict) else {}
+            was = before_obj.get(key) if isinstance(before_obj.get(key), dict) else {}
+            for sub in sorted(body[key]):
+                name = "%s.%s" % (key, sub)
+                exposed = isinstance(after, dict) and sub in got
+                rows.append({"field": name, "read_field": name, "requested": body[key][sub],
+                             "before": was.get(sub), "after": got.get(sub),
+                             "match": matches(body[key][sub], got[sub]) if exposed else None})
+        else:
+            plain[key] = body[key]
+    flat = flatten_leaves(plain)
     for dotted in sorted(flat):
         leaf, requested = dotted.split(".")[-1], flat[dotted]
         names = read_field_for(leaf, requested)

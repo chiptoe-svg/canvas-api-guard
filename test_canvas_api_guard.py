@@ -161,6 +161,74 @@ class TestHostPinning(GuardTestCase):
         self.assertEqual(self.log_lines(), [])
 
 
+class TestRubricAssessmentVerification(GuardTestCase):
+    """A rubric_assessment-only PUT: the body key IS the response field, one level deeper,
+    keyed by criterion id. flatten_leaves would reduce it to the leaf "points", which is not a
+    field of the submission object, and the write would be UNVERIFIABLE on every student."""
+
+    PATH = "courses/12/assignments/22/submissions/34?include[]=rubric_assessment&include[]=user"
+    BODY = {"rubric_assessment": {"_1234": {"points": 8, "comments": "Clear thesis."},
+                                  "_1235": {"points": 6}}}
+    STORED = {"_1234": {"points": 8.0, "comments": "Clear thesis.", "rating_id": "blank"},
+              "_1235": {"points": 6.0, "comments": None}}
+    BEFORE = {"id": 34, "user_id": 34, "score": None, "user": {"id": 34, "name": "Casey Kim"}}
+
+    def run_put(self, after):
+        responses = [FakeResponse(payload=self.BEFORE), FakeResponse(payload=after),
+                     FakeResponse(payload=after)]
+        with mock.patch("urllib.request.urlopen", side_effect=responses):
+            return self.run_main(["put", self.PATH, "--yes", "-o", "json",
+                                  "-d", json.dumps(self.BODY)])
+
+    def test_an_assessment_only_write_verifies_one_row_per_criterion(self):
+        code, out = self.run_put(dict(self.BEFORE, rubric_assessment=self.STORED))
+        self.assertEqual(code, 0, self.last_stderr)
+        evidence = json.loads(out)
+        self.assertEqual(evidence["verification"], "passed")
+        rows = {row["field"]: row for row in evidence["changes"]}
+        self.assertEqual(sorted(rows), ["rubric_assessment._1234", "rubric_assessment._1235"])
+        self.assertTrue(all(row["match"] is True for row in rows.values()))
+        self.assertEqual(rows["rubric_assessment._1234"]["read_field"], "rubric_assessment._1234")
+        self.assertIsNone(rows["rubric_assessment._1234"]["before"])
+        self.assertEqual(rows["rubric_assessment._1234"]["after"]["points"], 8.0)
+        self.assertEqual(rows["rubric_assessment._1234"]["requested"],
+                         {"points": 8, "comments": "Clear thesis."})
+
+    def test_one_criterion_reading_back_wrong_is_uncertain_and_named(self):
+        wrong = dict(self.STORED, _1235={"points": 3.0})
+        code, _ = self.run_put(dict(self.BEFORE, rubric_assessment=wrong))
+        self.assertEqual(code, 3)
+        self.assertIn("WRITE STATUS UNCERTAIN", self.last_stderr)
+        self.assertIn("rubric_assessment._1235", self.last_stderr)
+        self.assertNotIn("did not match requested field(s): rubric_assessment._1234",
+                         self.last_stderr)
+
+    def test_a_read_back_without_the_assessment_proves_nothing(self):
+        code, _ = self.run_put(self.BEFORE)          # as if include[] had been left off
+        self.assertEqual(code, 3)
+        self.assertIn("exposed none", self.last_stderr)
+
+    def test_the_confirmation_lines_name_each_criterion(self):
+        """confirm() prints the requested changes to stderr under -o json, for every student
+        in a run; each row must carry its criterion id, not a bare "points"."""
+        code, _ = self.run_put(dict(self.BEFORE, rubric_assessment=self.STORED))
+        self.assertEqual(code, 0, self.last_stderr)
+        self.assertIn("rubric_assessment._1234", self.last_stderr)
+        self.assertIn("rubric_assessment._1235", self.last_stderr)
+        self.assertNotRegex(self.last_stderr, r"\n\s+points\s")
+
+    def test_wrappers_still_resolve_by_leaf_name(self):
+        rows = guard.compare_fields({"submission": {"posted_grade": 95}}, {"score": 60.0},
+                                    {"score": 95.0, "entered_score": 95.0})
+        self.assertEqual([(r["field"], r["read_field"], r["match"]) for r in rows],
+                         [("posted_grade", "entered_score", True)])
+        mixed = guard.compare_fields(
+            {"submission": {"posted_grade": 95}, "rubric_assessment": {"_1": {"points": 5}}},
+            {}, {"entered_score": 95.0, "rubric_assessment": {"_1": {"points": 5.0}}})
+        self.assertEqual(sorted(r["field"] for r in mixed), ["posted_grade", "rubric_assessment._1"])
+        self.assertTrue(all(r["match"] is True for r in mixed))
+
+
 class TestFixedProductionConfig(GuardTestCase):
     """The host and audit destination are fixed outside the agent-controlled arguments."""
 
@@ -1132,7 +1200,7 @@ class TestOneVerificationRule(GuardTestCase):
                        '{"criterion_1": {"points": 8}}}'])
         self.assertEqual(code, 0)
         self.assertEqual({row["field"]: row["match"] for row in json.loads(output)["changes"]},
-                         {"posted_grade": True, "points": None})
+                         {"posted_grade": True, "rubric_assessment.criterion_1": None})
 
     def test_a_leaf_the_object_exposes_and_contradicts_still_fails(self):
         graded = {"id": 3, "grade": "60", "entered_grade": "60", "score": 60.0,
