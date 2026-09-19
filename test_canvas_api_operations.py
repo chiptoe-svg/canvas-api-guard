@@ -73,15 +73,40 @@ class TestLevel2Operations(unittest.TestCase):
             "description": "Craft", "points": 10, "ratings": [{"description": "Complete", "points": 10}]}]})
         self.assertIs(body["rubric"]["free_form_criterion_comments"], True)
 
-    def test_rubric_grade_uses_only_live_criterion_ids(self):
-        rubric = {"data": [{"id": "criterion_1", "points": 10}]}
-        student, criteria, total = operations.grade_payload(
-            {"student_id": 4, "criteria": {"criterion_1": {"points": 8}}}, rubric)
-        self.assertEqual((student, total), ("4", 8))
-        self.assertEqual(criteria["criterion_1"]["points"], 8)
-        with self.assertRaises(operations.OperationError):
-            operations.grade_payload({"student_id": 4,
-                                      "criteria": {"criterion_404": {"points": 8}}}, rubric)
+    def test_a_grade_entry_uses_live_ids_and_excludes_ignored_criteria_from_the_total(self):
+        limits = operations.criterion_limits({"data": [
+            {"id": "_1", "points": 10}, {"id": "_2", "points": 5, "ignore_for_scoring": True}]})
+        self.assertEqual(limits, {"_1": (10, False), "_2": (5, True)})
+        student, criteria, total, excluded, grade = operations.grade_entry(
+            {"student_id": 4, "grade": 7,
+             "criteria": {"_1": {"points": 8}, "_2": {"points": 5, "comments": "n/a"}}}, limits)
+        self.assertEqual((student, total, excluded, grade), ("4", 8, ["_2"], 7))
+        self.assertEqual(criteria["_2"], {"points": 5, "comments": "n/a"})   # still sent as given
+        _, _, _, _, grade = operations.grade_entry({"student_id": 4, "criteria": {"_1": {"points": 8}}}, limits)
+        self.assertIsNone(grade)
+        _, _, _, _, grade = operations.grade_entry({"student_id": 4, "grade": None, "criteria": {"_1": {"points": 8}}}, limits)
+        self.assertIsNone(grade)
+        for bad, message in (
+                ({"student_id": 4, "criteria": {"_404": {"points": 8}}}, "_404"),
+                ({"student_id": 4, "criteria": {"_1": {"points": 11}}}, "exceeds the live maximum 10"),
+                ({"student_id": 4, "criteria": {"_1": {"points": 1, "x": 1}}}, "unsupported field"),
+                ({"student_id": 4, "grade": -1, "criteria": {"_1": {"points": 1}}}, "non-negative"),
+                ({"student_id": 4, "grade": "A", "criteria": {"_1": {"points": 1}}}, "non-negative")):
+            with self.assertRaises(operations.OperationError) as caught:
+                operations.grade_entry(bad, limits)
+            self.assertIn(message, str(caught.exception))
+
+    def test_the_grades_envelope_is_bounded_free_of_duplicates_and_names_the_old_shape(self):
+        grades = [{"student_id": n} for n in range(1, 51)]
+        self.assertEqual(len(operations.grade_list({"grades": grades})), 50)
+        for bad, message in (({"grades": []}, "non-empty"),
+                             ({"grades": grades + [{"student_id": 51}]}, "50 students"),
+                             ({"grades": [{"student_id": 1}, {"student_id": 1}]}, "repeats student ID 1"),
+                             ({"grades": grades, "extra": 1}, "unsupported field"),
+                             ({"student_id": 4, "criteria": {"_1": {"points": 8}}}, 'wrap this entry')):
+            with self.assertRaises(operations.OperationError) as caught:
+                operations.grade_list(bad)
+            self.assertIn(message, str(caught.exception))
 
     def test_live_rubric_comes_from_the_assignment_object_alone(self):
         """Canvas puts the attached rubric's criteria on the assignment and documents no read
@@ -209,11 +234,11 @@ class TestLevel2Operations(unittest.TestCase):
         self.assertEqual(command[:3], [operations.GUARD, "post", "courses/12/assignments"])
         self.assertIn("--dry-run", command)
         self.assertNotIn("--yes", command)
+        self.assertEqual(command[-3:], ["-o", "json", "--dry-run"])
 
-    def test_only_the_eight_operations_remain(self):
+    def test_only_the_seven_operations_remain(self):
         self.assertEqual(sorted(operations.OPERATIONS), [
-            "bulk-grade-with-rubric", "create-rubric",
-            "download-assignment-submissions", "grade-with-rubric",
+            "create-rubric", "download-assignment-submissions", "grade-with-rubric",
             "prepare-submission-review", "regrade-quiz-question", "run-plan", "student-attention"])
         with open(SOURCE) as handle:
             source = handle.read()
@@ -223,7 +248,9 @@ class TestLevel2Operations(unittest.TestCase):
                      "def excuse_submission", "def create_assignment",
                      "def create_or_update_page", "def create_announcement",
                      "def quote_query", "def compact_course", "def assignment_rows",
-                     "def iso_time", "def page_body", "def announcement_body"):
+                     "def iso_time", "def page_body", "def announcement_body",
+                     "def grade_one", "def bulk_grade_with_rubric", "def verify_rubric_assessment",
+                     "def grade_payload"):
             self.assertNotIn(gone, source, "%s should have moved to Level 1" % gone)
 
     def test_a_rubric_whose_criteria_do_not_read_back_is_uncertain_not_a_refusal(self):
@@ -264,7 +291,7 @@ class TestLevel2Operations(unittest.TestCase):
             result = operations.create_rubric(args)["result"]
         association = write.call_args[0][2]["rubric_association"]
         self.assertEqual(association, {"association_type": "Assignment", "association_id": 22,
-                                       "purpose": "grading", "use_for_grading": True})
+                                       "purpose": "grading", "use_for_grading": False})
         self.assertEqual(get.call_args_list[0][0][0], "courses/12/assignments/22")   # pre-read
         self.assertEqual(get.call_args[0][0], "courses/12/assignments/22")            # proof
         self.assertEqual(result, {"rubric_id": 7, "assignment_id": "22", "speedgrader_url":
@@ -411,86 +438,6 @@ class TestLevel2Operations(unittest.TestCase):
                 operations.run_plan(self.plan_args(dry_run=False))
         self.assertNotIn("stopped after", str(caught.exception))
 
-    def grade_args(self):
-        args = Args()
-        args.assignment_id, args.definition = "22", "unused"
-        args.dry_run, args.yes = False, True
-        return args
-
-    def graded(self, args, assessment, points=8):
-        """One grade-with-rubric write with the rubric assessment Canvas reads back."""
-        rubric = {"data": [{"id": "criterion_1", "points": 10}]}
-        value = {"student_id": 4, "criteria": {"criterion_1": {"points": points}}}
-        reads = [{"object": {}}, {"object": {}}, {"object": assessment}]
-        with mock.patch.object(operations, "live_rubric", return_value=({}, rubric)), \
-                mock.patch.object(operations, "guard_get", side_effect=reads) as get, \
-                mock.patch.object(operations, "guard_write", return_value={}) as write, \
-                mock.patch("sys.stdout", io.StringIO()):
-            result = operations.grade_one(args, value)
-        return result, get, write
-
-    def test_a_graded_rubric_criterion_is_read_back_by_level_2_itself(self):
-        """API Only proves the grade; the rubric criteria are leaves it cannot see on the
-        submission object, so this layer reads the assessment back and compares each one."""
-        result, get, write = self.graded(
-            self.grade_args(), {"rubric_assessment": {"criterion_1": {"points": 8}}})
-        self.assertEqual(result["posted_grade"], 8)
-        self.assertEqual(write.call_args[0][4:], ())     # no verification flags left to pass
-        read_back = get.call_args[0][0]
-        self.assertEqual(read_back,
-                         "courses/12/assignments/22/submissions/4?include[]=rubric_assessment")
-
-    def test_a_graded_rubric_criterion_that_does_not_read_back_is_uncertain(self):
-        with self.assertRaises(operations.GuardUncertain) as caught:
-            self.graded(self.grade_args(),
-                        {"rubric_assessment": {"criterion_1": {"points": 3}}})
-        self.assertIn("criterion_1", str(caught.exception))
-        self.assertIn("WRITE STATUS UNCERTAIN", str(caught.exception))
-
-    def test_a_grade_with_no_rubric_assessment_at_all_is_uncertain(self):
-        with self.assertRaises(operations.GuardUncertain):
-            self.graded(self.grade_args(), {"id": 4})
-
-    def test_a_dry_run_grade_reads_nothing_back(self):
-        args = self.grade_args()
-        args.dry_run, args.yes = True, False
-        result, get, _ = self.graded(args, {"rubric_assessment": {}})
-        self.assertEqual(result["posted_grade"], 8)
-        self.assertEqual(get.call_count, 2)      # the submission pre-read and write_plan's
-
-    def test_a_bulk_batch_that_stops_after_a_write_is_uncertain(self):
-        args = Args()
-        args.assignment_id, args.definition = "22", "unused"
-        args.dry_run, args.yes = False, True
-        graded = []
-
-        def grade(_, value):
-            if graded:
-                raise operations.OperationError("the live rubric changed mid-batch")
-            graded.append(value)
-            return {"student_id": "1"}
-
-        with mock.patch.object(operations, "definition_file",
-                               return_value={"grades": [{"student_id": 1}, {"student_id": 2}]}), \
-                mock.patch.object(operations, "grade_one", side_effect=grade), \
-                mock.patch("sys.stdout", io.StringIO()):
-            with self.assertRaises(operations.GuardUncertain) as caught:
-                operations.bulk_grade_with_rubric(args)
-        self.assertIn("1 of 2", str(caught.exception))
-
-    def test_a_bulk_batch_that_stops_before_any_write_is_an_ordinary_refusal(self):
-        args = Args()
-        args.assignment_id, args.definition = "22", "unused"
-        args.dry_run, args.yes = False, True
-        with mock.patch.object(operations, "definition_file",
-                               return_value={"grades": [{"student_id": 1}, {"student_id": 2}]}), \
-                mock.patch.object(operations, "grade_one",
-                                  side_effect=operations.OperationError("no live rubric")), \
-                mock.patch("sys.stdout", io.StringIO()):
-            with self.assertRaises(operations.OperationError) as caught:
-                operations.bulk_grade_with_rubric(args)
-        self.assertNotIsInstance(caught.exception, operations.GuardUncertain)
-
     def test_a_missing_guard_prints_one_line_and_never_a_traceback(self):
         with mock.patch.object(operations.subprocess, "run",
                                side_effect=FileNotFoundError(2, "No such file or directory")), \
@@ -566,6 +513,226 @@ class TestLevel2Operations(unittest.TestCase):
             code = operations.main(["student-attention", "--course-id", "12"])
         self.assertEqual(code, 0)
         self.assertNotIn("null", out.getvalue())
+
+
+class GradeFixtures(object):
+    ASSIGNMENT = {"id": 22, "points_possible": 20, "post_manually": False,
+                  "use_rubric_for_grading": False, "rubric_settings": {"id": 9},
+                  "html_url": "https://canvas.example.edu/courses/12/assignments/22",
+                  "rubric": [{"id": "_1", "points": 10, "description": "Thesis"},
+                             {"id": "_2", "points": 10, "description": "Evidence"},
+                             {"id": "_3", "points": 5, "description": "Outcome",
+                              "ignore_for_scoring": True}]}
+    DEFINITION = {"grades": [
+        {"student_id": 4, "grade": 14,
+         "criteria": {"_1": {"points": 8, "comments": "Clear thesis."}, "_2": {"points": 6}, "_3": {"points": 5}}},
+        {"student_id": 5, "criteria": {"_1": {"points": 10}}}]}
+
+    def args(self, dry_run=False, keep=False, definition=None):
+        args = Args()
+        args.assignment_id, args.definition = "22", "unused"
+        args.dry_run, args.yes, args.keep_post_policy = dry_run, not dry_run, keep
+        self.definition = definition or self.DEFINITION
+        return args
+
+    def submission(self, student_id, assessment=None, score=None):
+        return {"id": 100 + student_id, "user_id": student_id, "score": score,
+                "grade": None if score is None else str(score), "graded_at": None,
+                "workflow_state": "submitted", "posted_at": None,
+                "user": {"id": student_id, "name": "Student %d" % student_id},
+                "rubric_assessment": assessment or {}}
+
+    def reads(self, assignment=None, submissions=None):
+        assignment = assignment or self.ASSIGNMENT
+        def read(path):
+            if path == "courses/12":
+                return {"object": {"id": 12}}
+            if path == "courses/12/assignments/22":
+                return {"object": assignment}
+            for student_id in (4, 5, 6):
+                if "/submissions/%d?" % student_id in path:
+                    self.assertIn("include[]=rubric_assessment", path)
+                    self.assertIn("include[]=user", path)
+                    return {"object": (submissions or {}).get(student_id, self.submission(student_id))}
+            raise AssertionError("unexpected read %s" % path)
+        return read
+
+    def run_grade(self, args, assignment=None, submissions=None, switch=None, fail_write=None):
+        calls = []
+        def policy(course_id, assignment_id, policy, phase):
+            calls.append(("post-policy", course_id, assignment_id, policy, phase))
+            if switch:
+                raise switch
+            return None if phase == "dry-run" else {"verification": "passed"}
+        def put(verb, path, body, phase, extra=None):
+            calls.append((verb, path, body, phase))
+            if fail_write and len([c for c in calls if c[0] == "put"]) == fail_write:
+                raise operations.OperationError("API Only guard failed: 500")
+            return None if phase == "dry-run" else {"verification": "passed"}
+        with mock.patch.object(operations, "definition_file", return_value=self.definition), \
+                mock.patch.object(operations, "guard_get", side_effect=self.reads(assignment, submissions)), \
+                mock.patch.object(operations, "guard_post_policy", side_effect=policy), \
+                mock.patch.object(operations, "guard_write", side_effect=put), \
+                mock.patch("sys.stdout", io.StringIO()) as out:
+            result = operations.grade_with_rubric(args)
+        plan = json.loads(out.getvalue().split("\n}\n")[0] + "\n}")
+        return plan, result, calls
+
+
+class TestGradeWithRubric(GradeFixtures, unittest.TestCase):
+    def test_an_automatic_assignment_is_switched_to_manual_before_the_first_write(self):
+        plan, result, calls = self.run_grade(self.args())
+        self.assertEqual(plan["post_policy"], {"before": "automatic", "after": "manual",
+                                               "switched_by_this_run": True})
+        self.assertIn("until you click Post grades", plan["student_visibility"])
+        self.assertEqual(calls[0], ("post-policy", "12", "22", "manual", "yes"))
+        self.assertEqual([c[0] for c in calls[1:]], ["put", "put"])
+        self.assertEqual(result["students_written"], 2)
+        self.assertEqual(result["grades_written"], 1)
+        self.assertEqual(result["assessments_only"], 1)
+        self.assertEqual(result["grades_not_yet_visible"], 1)
+        self.assertIn("Post grades, then Graded", result["release"])
+        self.assertEqual(result["post_policy"]["switched_by_this_run"], True)
+
+    def test_an_entry_with_a_grade_writes_both_and_an_entry_without_writes_criteria_only(self):
+        _, _, calls = self.run_grade(self.args())
+        _, path, body, phase = calls[1]
+        self.assertEqual(path, "courses/12/assignments/22/submissions/4"
+                               "?include[]=rubric_assessment&include[]=user")
+        self.assertEqual(body, {"submission": {"posted_grade": 14},
+                                "rubric_assessment": {"_1": {"points": 8, "comments": "Clear thesis."},
+                                                      "_2": {"points": 6}, "_3": {"points": 5}}})
+        self.assertEqual(phase, "yes")
+        _, path, body, _ = calls[2]
+        self.assertIn("/submissions/5?", path)
+        self.assertEqual(body, {"rubric_assessment": {"_1": {"points": 10}}})
+
+    def test_the_dry_run_reports_totals_grades_visibility_and_current_state_and_writes_nothing_live(self):
+        plan, result, calls = self.run_grade(self.args(dry_run=True),
+                                       submissions={4: self.submission(4, {"_1": {"points": 3.0}})})
+        self.assertIsNone(result)
+        self.assertEqual(plan["phase"], "dry-run")
+        self.assertTrue(all(c[-1] == "dry-run" for c in calls))
+        first, second = plan["grades"]
+        self.assertEqual((first["criterion_total"], first["grade"]), (14, 14))   # _3 excluded
+        self.assertNotIn("difference", first)
+        self.assertEqual(first["excluded_from_total"], ["_3"])
+        self.assertEqual(first["points_possible"], 20)
+        self.assertEqual(first["student_name"], "Student 4")
+        self.assertTrue(first["existing_assessment"])
+        self.assertIsNone(first["posted_at"])
+        self.assertEqual(first["current_grade"]["score"], None)
+        self.assertTrue(first["speedgrader_url"].endswith("speed_grader?assignment_id=22&student_id=4"))
+        self.assertIsNone(second["grade"])
+        self.assertFalse(second["existing_assessment"])
+
+    def test_a_stated_grade_that_is_not_the_sum_is_written_and_labelled(self):
+        definition = {"grades": [{"student_id": 4, "grade": 12,
+                                  "criteria": {"_1": {"points": 8}, "_2": {"points": 6}}}]}
+        plan, _, calls = self.run_grade(self.args(definition=definition))
+        self.assertEqual(plan["grades"][0]["difference"], -2)
+        self.assertEqual(calls[1][2]["submission"], {"posted_grade": 12})
+        extra = {"grades": [{"student_id": 4, "grade": 25, "criteria": {"_1": {"points": 8}}}]}
+        plan, _, _ = self.run_grade(self.args(definition=extra))
+        self.assertEqual(plan["grades"][0]["difference"], 17)          # extra credit is allowed
+
+    def test_keep_post_policy_skips_the_switch_and_says_everything_will_be_visible(self):
+        plan, result, calls = self.run_grade(self.args(keep=True))
+        self.assertEqual(plan["post_policy"], {"before": "automatic", "after": "automatic",
+                                               "switched_by_this_run": False})
+        self.assertIn("visible to its student when written", plan["student_visibility"])
+        self.assertNotIn("post-policy", [c[0] for c in calls])
+        self.assertEqual(result["grades_not_yet_visible"], 0)
+        self.assertIn("posted automatically", result["release"])
+
+    def test_an_assignment_already_manual_is_left_alone(self):
+        plan, _, calls = self.run_grade(self.args(), assignment=dict(self.ASSIGNMENT, post_manually=True))
+        self.assertEqual(plan["post_policy"], {"before": "manual", "after": "manual",
+                                               "switched_by_this_run": False})
+        self.assertNotIn("post-policy", [c[0] for c in calls])
+
+    def test_a_switch_the_guard_refuses_or_cannot_prove_ends_the_run_before_any_write(self):
+        for failure in (operations.OperationError("API Only guard failed: Canvas refused"),
+                        operations.GuardUncertain("WRITE STATUS UNCERTAIN: post_manually")):
+            with self.assertRaises(type(failure)):
+                self.run_grade(self.args(), switch=failure)
+
+    def test_refusals_happen_before_any_write(self):
+        fifty_one = {"grades": [{"student_id": n, "criteria": {"_1": {"points": 1}}} for n in range(1, 52)]}
+        cases = [
+            (dict(self.ASSIGNMENT, rubric=[]), None, None, "no attached Canvas rubric"),
+            (dict(self.ASSIGNMENT, use_rubric_for_grading=True), None, None, "use_rubric_for_grading"),
+            (None, {"grades": [{"student_id": 4, "criteria": {"_9": {"points": 1}}}]}, None, "_9"),
+            (None, {"grades": [{"student_id": 4, "criteria": {"_1": {"points": 11}}}]}, None, "exceeds"),
+            (None, {"grades": [{"student_id": 4, "grade": -1, "criteria": {"_1": {"points": 1}}}]}, None, "non-negative"),
+            (None, {"grades": [{"student_id": 4, "criteria": {"_1": {"points": 1}}},
+                               {"student_id": 4, "criteria": {"_1": {"points": 1}}}]}, None, "repeats"),
+            (None, {"grades": []}, None, "non-empty"),
+            (None, fifty_one, None, "50 students"),
+            (None, {"student_id": 4, "criteria": {"_1": {"points": 1}}}, None, "wrap this entry"),
+            (None, {"grades": [{"student_id": 4, "grade": 14, "criteria": {"_1": {"points": 8}}}]},
+             {4: self.submission(4, {"_1": {"points": 8.0}}, score=12.0)}, "already has score 12.0"),
+        ]
+        for assignment, definition, submissions, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaises(operations.OperationError) as caught:
+                    self.run_grade(self.args(definition=definition), assignment=assignment, submissions=submissions)
+                self.assertIn(message, str(caught.exception))
+                self.assertNotIsInstance(caught.exception, operations.GuardUncertain)
+
+    def test_a_criteria_only_entry_may_replace_criteria_on_a_student_already_scored(self):
+        definition = {"grades": [{"student_id": 4, "criteria": {"_1": {"points": 9}}}]}
+        plan, result, calls = self.run_grade(self.args(definition=definition),
+                                       submissions={4: self.submission(4, {"_1": {"points": 8.0}}, score=12.0)})
+        self.assertEqual(result["assessments_only"], 1)
+        self.assertEqual(calls[-1][2], {"rubric_assessment": {"_1": {"points": 9}}})
+        self.assertEqual(plan["grades"][0]["current_grade"]["score"], 12.0)
+
+    def test_the_already_scored_refusal_names_the_guard_call_that_changes_a_grade(self):
+        definition = {"grades": [{"student_id": 4, "grade": 14, "criteria": {"_1": {"points": 8}}}]}
+        with self.assertRaises(operations.OperationError) as caught:
+            self.run_grade(self.args(definition=definition),
+                     submissions={4: self.submission(4, {"_1": {"points": 8.0}}, score=12.0)})
+        self.assertIn("put courses/12/assignments/22/submissions/4", str(caught.exception))
+        self.assertIn("graded_at", str(caught.exception))
+
+    def test_the_auto_grading_refusal_names_both_remedy_commands(self):
+        with self.assertRaises(operations.OperationError) as caught:
+            self.run_grade(self.args(), assignment=dict(self.ASSIGNMENT, use_rubric_for_grading=True))
+        text = str(caught.exception)
+        self.assertIn('get "courses/12/rubrics/9?include[]=assignment_associations"', text)
+        self.assertIn("put courses/12/rubric_associations/<ID>", text)
+        self.assertIn('"use_for_grading": false', text)
+
+    def test_a_bad_third_entry_writes_nothing_at_all(self):
+        definition = {"grades": self.DEFINITION["grades"]
+                      + [{"student_id": 6, "criteria": {"_1": {"points": 99}}}]}
+        seen = []
+        def record(*a, **k):
+            seen.append(a)
+        with mock.patch.object(operations, "definition_file", return_value=definition), \
+                mock.patch.object(operations, "guard_get", side_effect=self.reads()), \
+                mock.patch.object(operations, "guard_post_policy", side_effect=record), \
+                mock.patch.object(operations, "guard_write", side_effect=record), \
+                mock.patch("sys.stdout", io.StringIO()):
+            with self.assertRaises(operations.OperationError):
+                operations.grade_with_rubric(self.args(definition=definition))
+        self.assertEqual(seen, [])
+
+    def test_a_canvas_failure_part_way_through_is_uncertain_and_counts(self):
+        with self.assertRaises(operations.GuardUncertain) as caught:
+            self.run_grade(self.args(), fail_write=2)
+        self.assertIn("1 of 2", str(caught.exception))
+
+    def test_guard_post_policy_delegates_to_the_fixed_guard(self):
+        completed = mock.Mock(return_value=mock.Mock(returncode=0, stdout='{"verification": "passed"}\n', stderr=""))
+        with mock.patch.object(operations.subprocess, "run", completed), \
+                mock.patch("sys.stdout", io.StringIO()):
+            evidence = operations.guard_post_policy("12", "22", "manual", "yes")
+        self.assertEqual(evidence["verification"], "passed")
+        self.assertEqual(completed.call_args[0][0], [
+            operations.GUARD, "post-policy", "--course-id", "12", "--assignment-id", "22",
+            "manual", "-o", "json", "--yes"])
 
 
 QUESTION = {"id": 789, "quiz_id": 5, "question_type": "multiple_choice_question",
@@ -1012,3 +1179,38 @@ class TestGuardWriteContract(GuardTestCase):
         self.assertEqual(evidence["verification"], "passed")
         self.assertEqual(evidence["url"],
                          "https://" + HOST + "/api/v1/courses/12/quizzes/5/submissions/55")
+
+    def test_the_real_guard_proves_a_criteria_only_write(self):
+        path = "courses/12/assignments/22/submissions/34?include[]=rubric_assessment&include[]=user"
+        body = {"rubric_assessment": {"_1": {"points": 8, "comments": "Clear thesis."}}}
+        stored = {"id": 34, "user_id": 34, "rubric_assessment": {"_1": {"points": 8.0, "comments": "Clear thesis."}}}
+        with mock.patch("urllib.request.urlopen", side_effect=[
+                FakeResponse(payload={"id": 34, "user_id": 34}), FakeResponse(payload=stored),
+                FakeResponse(payload=stored)]):
+            code, captured = self.run_main(["put", path, "--yes", "-o", "json", "-d", json.dumps(body)])
+        self.assertEqual(code, 0)
+        completed = mock.Mock(returncode=0, stdout=captured, stderr="")
+        with mock.patch.object(operations.subprocess, "run", return_value=completed), \
+                mock.patch("sys.stdout", io.StringIO()):
+            evidence = operations.guard_write("put", path, body, "yes")
+        self.assertEqual(evidence["verification"], "passed")
+        self.assertEqual([row["field"] for row in evidence["changes"]], ["rubric_assessment._1"])
+
+    def test_the_real_guard_proves_a_grade_and_criteria_in_one_write(self):
+        path = "courses/12/assignments/22/submissions/34?include[]=rubric_assessment&include[]=user"
+        body = {"submission": {"posted_grade": 8}, "rubric_assessment": {"_1": {"points": 8}}}
+        stored = {"id": 34, "user_id": 34, "score": 8.0, "entered_score": 8.0,
+                  "rubric_assessment": {"_1": {"points": 8.0}}}
+        with mock.patch("urllib.request.urlopen", side_effect=[
+                FakeResponse(payload={"id": 34, "user_id": 34, "score": None}),
+                FakeResponse(payload=stored), FakeResponse(payload=stored)]):
+            code, captured = self.run_main(["put", path, "--yes", "-o", "json", "-d", json.dumps(body)])
+        self.assertEqual(code, 0)
+        completed = mock.Mock(returncode=0, stdout=captured, stderr="")
+        with mock.patch.object(operations.subprocess, "run", return_value=completed), \
+                mock.patch("sys.stdout", io.StringIO()):
+            evidence = operations.guard_write("put", path, body, "yes")
+        self.assertEqual(evidence["verification"], "passed")
+        self.assertEqual(sorted(row["field"] for row in evidence["changes"]),
+                         ["posted_grade", "rubric_assessment._1"])
+        self.assertTrue(all(row["match"] is True for row in evidence["changes"]))

@@ -59,11 +59,10 @@ def guard_get(path):
     return response
 
 
-def guard_write(verb, path, body, phase, extra=None):
-    """Delegate a reviewed write to API Only; Specialized Functions never get a token or HTTP client."""
-    command = [GUARD, verb, path, "-d", json.dumps(body, sort_keys=True), "-o", "json"]
-    command.extend(extra or [])
-    command.append("--dry-run" if phase == "dry-run" else "--yes")
+def guard_command(command, phase):
+    """Run one API Only write command and enforce its exit-status contract; Specialized
+    Functions never get a token or HTTP client."""
+    command = list(command) + ["-o", "json", "--dry-run" if phase == "dry-run" else "--yes"]
     result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.stdout:
         print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
@@ -82,10 +81,23 @@ def guard_write(verb, path, body, phase, extra=None):
     # "passed" means every requested leaf API Only could see matched, and at least one was
     # checked. It does not promise a PARTICULAR field was proved: a leaf the read-back object
     # does not expose is reported null. A caller that needs a specific field proved reads it
-    # back itself - create_rubric and verify_rubric_assessment below both do.
+    # back itself - create_rubric does.
     if evidence.get("verification") != "passed":
         raise OperationError("API Only guard did not prove the write")
     return evidence
+
+
+def guard_write(verb, path, body, phase, extra=None):
+    """Delegate a reviewed write to API Only."""
+    return guard_command([GUARD, verb, path, "-d", json.dumps(body, sort_keys=True)] + list(extra or []),
+                         phase)
+
+
+def guard_post_policy(course_id, assignment_id, policy, phase):
+    """Set an assignment's grade post policy through API Only's post-policy verb: one fixed
+    mutation in the guard, read back through the REST assignment object."""
+    return guard_command([GUARD, "post-policy", "--course-id", str(course_id),
+                          "--assignment-id", str(assignment_id), policy], phase)
 
 
 def attachment_suffix(attachment):
@@ -201,7 +213,11 @@ def rubric_body(value):
 
 def create_rubric(args):
     """One write. With --assignment-id, Canvas's create call also attaches the new rubric to
-    that assignment for grading; the assignment is then read back to prove it."""
+    that assignment, with "use this rubric for grading" OFF: a rubric assessment saved on an
+    association with use_for_grading false stores criteria and comments and returns before
+    touching the grade (source: app/models/rubric_assessment.rb#update_artifact), which is what
+    lets grade-with-rubric write criteria for a student and no grade. The assignment is then
+    read back to prove it."""
     body = rubric_body(definition_file(args.definition))
     assignment_id = getattr(args, "assignment_id", None)
     if assignment_id:
@@ -211,7 +227,7 @@ def create_rubric(args):
             raise OperationError("assignment %s already has rubric %s attached for grading; detach it in Canvas "
                                  "first, or create this rubric without --assignment-id" % (assignment_id, attached["id"]))
         body["rubric_association"] = {"association_type": "Assignment", "association_id": int(assignment_id),
-                                      "purpose": "grading", "use_for_grading": True}
+                                      "purpose": "grading", "use_for_grading": False}
     else:
         body["rubric_association"]["association_id"] = int(args.course_id)
     path = "courses/%s/rubrics" % args.course_id
@@ -248,10 +264,10 @@ def create_rubric(args):
 
 
 def live_rubric(args):
-    """The assignment object carries its attached rubric's criteria (ids and points) in
-    `rubric`; Canvas exposes no read for the association itself, and the grade write below
-    needs none: the rubric rows ride the submission update, and the rubric total is posted
-    as the grade, so the "use for grading" setting is not consulted."""
+    """The assignment object carries its attached rubric's criteria (ids, points and the
+    ignore_for_scoring flag Canvas sets on outcome-linked rows; source: lib/api/v1/assignment.rb
+    line 344) in `rubric`, plus use_rubric_for_grading and post_manually. One read is the whole
+    preflight; Canvas exposes no read for the association itself."""
     assignment = guard_get("courses/%s/assignments/%s" % (args.course_id, args.assignment_id)).get("object") or {}
     criteria = assignment.get("rubric")
     if not isinstance(criteria, list) or not criteria:
@@ -259,63 +275,71 @@ def live_rubric(args):
     return assignment, {"data": criteria}
 
 
-def grade_payload(value, rubric):
-    definition = exact_object(value, ("student_id", "criteria"), ())
+def criterion_limits(rubric):
+    """id -> (maximum points, ignore_for_scoring) from the assignment's live rubric rows."""
+    return {str(row.get("id")): (number(row.get("points")), bool(row.get("ignore_for_scoring")))
+            for row in rubric.get("data") or []}
+
+
+def grade_entry(value, limits):
+    """One entry -> (student_id, criteria exactly as they will be sent, the total Canvas would
+    compute, the ids excluded from it, the stated grade or None). The total skips
+    ignore_for_scoring criteria, matching Canvas (source:
+    app/models/rubric_association.rb#assess); the flag changes the arithmetic, never what is
+    stored. A missing or null grade means criteria only: the instructor's own marker."""
+    definition = exact_object(value, ("student_id", "criteria"), ("grade",))
     student_id = canvas_id(str(definition["student_id"]), "student ID")
+    grade = definition.get("grade")
+    if grade is not None:
+        grade = nonnegative(grade, "grade")
     criteria = definition["criteria"]
     if not isinstance(criteria, dict) or not criteria:
-        raise OperationError("grade criteria must be a non-empty object keyed by live criterion ID")
-    limits = {str(row.get("id")): number(row.get("points")) for row in rubric.get("data") or []}
-    valid = set(limits)
-    if not set(criteria).issubset(valid):
-        raise OperationError("grade references a criterion not present in this assignment's live rubric")
-    normalized, total = {}, 0
+        raise OperationError("criteria must be a non-empty object keyed by live criterion ID")
+    unknown = sorted(set(map(str, criteria)) - set(limits))
+    if unknown:
+        raise OperationError("criteria name %s, which the assignment's live rubric does not have"
+                             % ", ".join(unknown))
+    normalized, total, excluded = {}, 0, []
     for criterion_id, score in criteria.items():
         score = exact_object(score, ("points",), ("comments", "rating_id"))
         points = nonnegative(score["points"], "rubric points")
-        if points > limits[str(criterion_id)]:
-            raise OperationError("rubric points cannot exceed the live criterion maximum")
+        maximum, ignored = limits[str(criterion_id)]
+        if points > maximum:
+            raise OperationError("criterion %s: %s points exceeds the live maximum %s"
+                                 % (criterion_id, points, maximum))
         normalized[str(criterion_id)] = score
-        total += points
-    return student_id, normalized, total
+        if ignored:
+            excluded.append(str(criterion_id))
+        else:
+            total += points
+    return student_id, normalized, total, sorted(excluded), grade
 
 
-def verify_rubric_assessment(args, student_id, criteria):
-    """API Only proves the grade it wrote, but a rubric criterion is not a field of the
-    submission object, so it reports those leaves as null. Read the assessment back here and
-    compare each criterion's points; the write has already happened, so a difference is
-    uncertain, never a refusal."""
-    submission = guard_get("courses/%s/assignments/%s/submissions/%s?include[]=rubric_assessment"
-                           % (args.course_id, args.assignment_id, student_id)).get("object") or {}
-    assessment = submission.get("rubric_assessment")
-    if not isinstance(assessment, dict):
-        raise GuardUncertain("WRITE STATUS UNCERTAIN: Canvas returned no rubric assessment for "
-                             "student %s" % student_id)
-    for criterion_id, score in criteria.items():
-        scored = assessment.get(criterion_id)
-        if (not isinstance(scored, dict)
-                or abs(number(scored.get("points")) - score["points"]) > SCORE_TOLERANCE):
-            raise GuardUncertain("WRITE STATUS UNCERTAIN: rubric criterion %s did not read back "
-                                 "for student %s" % (criterion_id, student_id))
+def grade_list(definition):
+    """The {"grades": [...]} envelope: 1-50 entries, no student twice. The old single-student
+    shape is named so a pinned caller fails loudly rather than confusingly."""
+    if isinstance(definition, dict) and "student_id" in definition and "grades" not in definition:
+        raise OperationError('grade-with-rubric now takes {"grades": [...]}: wrap this entry in '
+                             "that list (a grade per entry is optional)")
+    definition = exact_object(definition, ("grades",), ())
+    grades = definition["grades"]
+    if not isinstance(grades, list) or not grades:
+        raise OperationError("grades must be a non-empty array")
+    if len(grades) > 50:
+        raise OperationError("grade-with-rubric is limited to 50 students per reviewed batch")
+    seen = set()
+    for index, entry in enumerate(grades):
+        student_id = str(entry.get("student_id")) if isinstance(entry, dict) else ""
+        if student_id in seen:
+            raise OperationError("entry %d repeats student ID %s" % (index + 1, student_id))
+        seen.add(student_id)
+    return grades
 
 
-def grade_one(args, value):
-    assignment, rubric = live_rubric(args)
-    student_id, criteria, total = grade_payload(value, rubric)
-    path = "courses/%s/assignments/%s/submissions/%s?include[]=rubric_assessment&include[]=user" % (
-        args.course_id, args.assignment_id, student_id)
-    guard_get(path)
-    body = {"submission": {"posted_grade": total}, "rubric_assessment": criteria}
-    write_plan("grade-with-rubric", args, path, body)
-    guard_write("put", path, body, operation_phase(args))
-    if operation_phase(args) != "dry-run":
-        verify_rubric_assessment(args, student_id, criteria)
-    return {"student_id": student_id, "posted_grade": total,
-            "speedgrader_url": speedgrader_url(assignment, student_id)}
-
-
-def grade_with_rubric(args):
-    print(json.dumps({"result": grade_one(args, definition_file(args.definition))}, indent=2, sort_keys=True))
+def submission_path(args, student_id, includes):
+    return "courses/%s/assignments/%s/submissions/%s?%s" % (
+        args.course_id, args.assignment_id, student_id,
+        "&".join("include[]=%s" % include for include in includes))
 
 
 def submission_attachments(submission):
@@ -421,30 +445,101 @@ def download_assignment_submissions(args):
             "next_step": "Files are private local review copies. Review against the live rubric; no grade has been written."}
 
 
-def bulk_grade_with_rubric(args):
-    definition = exact_object(definition_file(args.definition), ("grades",), ())
-    if not isinstance(definition["grades"], list) or not definition["grades"]:
-        raise OperationError("grades must be a non-empty array")
-    if len(definition["grades"]) > 50:
-        raise OperationError("bulk grading is limited to 50 students per reviewed batch")
-    seen, results = set(), []
+VISIBILITY = {
+    "manual": "hidden from every student until you click Post grades in the gradebook",
+    "automatic": "each grade, criterion and comment becomes visible to its student when written",
+}
+
+
+def refuse_auto_grading(args, assignment):
+    """With use_for_grading on, Canvas re-derives the grade from the criteria the instant an
+    assessment is saved: a stated grade is overridden and an entry without one is graded."""
+    if not assignment.get("use_rubric_for_grading"):
+        return
+    rubric_id = (assignment.get("rubric_settings") or {}).get("id")
+    raise OperationError(
+        "assignment %s grades automatically from its rubric (use_rubric_for_grading is true), so "
+        "a stated grade would be overridden and an entry without one would be graded; turn it off "
+        "with two guard calls, then rerun:\n"
+        "  get \"courses/%s/rubrics/%s?include[]=assignment_associations\"   # find the association id\n"
+        "  put courses/%s/rubric_associations/<ID> -d '{\"rubric_association\": "
+        "{\"use_for_grading\": false}}' --dry-run"
+        % (args.assignment_id, args.course_id, rubric_id, args.course_id))
+
+
+def grade_with_rubric(args):
+    """Write every criterion and comment for 1-50 students, and the stated grade for the
+    entries that carry one. On an assignment that posts automatically the run first switches
+    it to manual posting (unless --keep-post-policy), so nothing here is visible to a student
+    until the instructor clicks Post grades. Everything is validated before anything is sent."""
+    grades = grade_list(definition_file(args.definition))
+    guard_get("courses/%s" % args.course_id)
+    assignment, rubric = live_rubric(args)
+    refuse_auto_grading(args, assignment)
+    limits = criterion_limits(rubric)
+    before_policy = "manual" if assignment.get("post_manually") else "automatic"
+    switch = before_policy == "automatic" and not getattr(args, "keep_post_policy", False)
+    after_policy = "manual" if switch else before_policy
+    rows, writes = [], []
+    for entry in grades:                                      # every entry, before any write
+        student_id, criteria, total, excluded, grade = grade_entry(entry, limits)
+        path = submission_path(args, student_id, ("rubric_assessment", "user"))
+        submission = guard_get(path).get("object") or {}
+        if grade is not None and submission.get("score") is not None:
+            raise OperationError(
+                "student %s already has score %s (grade %s, graded_at %s); changing a grade is a "
+                "guard call: put courses/%s/assignments/%s/submissions/%s -d "
+                "'{\"submission\": {\"posted_grade\": N}}' --dry-run; an entry without a grade "
+                "would replace the criteria only"
+                % (student_id, submission.get("score"), submission.get("grade"),
+                   submission.get("graded_at"), args.course_id, args.assignment_id, student_id))
+        stored = submission.get("rubric_assessment")
+        row = {"student_id": student_id,
+               "student_name": (submission.get("user") or {}).get("name"),
+               "criteria": criteria, "criterion_total": total, "excluded_from_total": excluded,
+               "points_possible": assignment.get("points_possible"), "grade": grade,
+               "current_grade": current_grade(submission), "posted_at": submission.get("posted_at"),
+               "existing_assessment": isinstance(stored, dict) and bool(stored),
+               "speedgrader_url": speedgrader_url(assignment, student_id)}
+        if grade is not None and abs(grade - total) > SCORE_TOLERANCE:
+            row["difference"] = grade - total
+        rows.append(row)
+        body = {"rubric_assessment": criteria}
+        if grade is not None:
+            body["submission"] = {"posted_grade": grade}
+        writes.append((path, body))
+    phase = operation_phase(args)
+    policy = {"before": before_policy, "after": after_policy, "switched_by_this_run": switch}
+    print(json.dumps({"operation": "grade-with-rubric", "phase": phase,
+                      "course_id": args.course_id, "assignment_id": args.assignment_id,
+                      "post_policy": policy, "student_visibility": VISIBILITY[after_policy],
+                      "grades": rows}, indent=2, sort_keys=True))
+    if switch:                                # before the first student; a refusal or an
+        guard_post_policy(args.course_id, args.assignment_id, "manual", phase)   # uncertain ends it
+    written = 0
     try:
-        for grade in definition["grades"]:
-            student_id = str(grade.get("student_id")) if isinstance(grade, dict) else ""
-            if student_id in seen:
-                raise OperationError("bulk grading contains duplicate student ID %s" % student_id)
-            seen.add(student_id)
-            results.append(grade_one(args, grade))
+        for path, body in writes:
+            guard_write("put", path, body, phase)
+            written += 1
     except GuardUncertain:
         raise
     except OperationError as err:
-        if not results or operation_phase(args) == "dry-run":
-            raise                     # nothing was written, so this is an ordinary refusal
-        raise GuardUncertain("bulk grading stopped after %d of %d students; the grades already "
-                             "written stand and are not retried: %s"
-                             % (len(results), len(definition["grades"]), err))
-    print(json.dumps({"operation": "bulk-grade-with-rubric", "phase": operation_phase(args),
-                      "results": results}, indent=2, sort_keys=True))
+        if not written or phase == "dry-run":
+            raise                      # nothing was written, so this is an ordinary refusal
+        raise GuardUncertain("grade-with-rubric stopped after %d of %d students; the writes "
+                             "already made stand and are not retried: %s"
+                             % (written, len(writes), err))
+    if phase == "dry-run":
+        return None
+    graded = sum(1 for _, body in writes[:written] if "submission" in body)
+    hidden = graded if after_policy == "manual" else 0
+    return {"operation": "grade-with-rubric", "phase": phase, "students_written": written,
+            "grades_written": graded, "assessments_only": written - graded,
+            "grades_not_yet_visible": hidden, "post_policy": policy,
+            "student_visibility": VISIBILITY[after_policy],
+            "release": ("click Post grades, then Graded, in the gradebook to release these grades "
+                        "with their criteria and comments" if hidden
+                        else "posted automatically as written")}
 
 
 QUIZ_REGRADE_LIMIT = 100       # attempts in one reviewed batch: one section, refused whole
@@ -836,7 +931,6 @@ def run_plan(args):
 
 
 OPERATIONS = {"run-plan": run_plan, "create-rubric": create_rubric, "grade-with-rubric": grade_with_rubric,
-              "bulk-grade-with-rubric": bulk_grade_with_rubric,
               "prepare-submission-review": prepare_submission_review,
               "download-assignment-submissions": download_assignment_submissions,
               "student-attention": student_attention,
@@ -866,9 +960,11 @@ def parser():
     create = subs.add_parser("create-rubric", parents=[write])
     create.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"),
                         help="also attach the new rubric to this assignment for grading, in the same write")
-    for name in ("grade-with-rubric", "bulk-grade-with-rubric"):
-        grade = subs.add_parser(name, parents=[write])
-        grade.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)
+    grade = subs.add_parser("grade-with-rubric", parents=[write])
+    grade.add_argument("--assignment-id", type=lambda value: canvas_id(value, "assignment ID"), required=True)
+    grade.add_argument("--keep-post-policy", action="store_true",
+                       help="leave an automatic-posting assignment automatic: every grade, criterion "
+                            "and comment is visible to its student the moment it is written")
     subs.add_parser("run-plan", parents=[write])
     regrade = subs.add_parser("regrade-quiz-question", parents=[write])
     regrade.add_argument("--expect-plan", metavar="DIGEST",
