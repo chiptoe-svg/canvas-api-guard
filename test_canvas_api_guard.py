@@ -208,6 +208,15 @@ class TestRubricAssessmentVerification(GuardTestCase):
         self.assertEqual(code, 3)
         self.assertIn("exposed none", self.last_stderr)
 
+    def test_a_criterion_missing_from_an_exposed_assessment_is_disproved(self):
+        """Canvas returned the assessment without one of the criteria we sent: that criterion
+        did not land, and one proved neighbour must not carry the write."""
+        partial = {"_1234": self.STORED["_1234"]}            # _1235 absent
+        code, _ = self.run_put(dict(self.BEFORE, rubric_assessment=partial))
+        self.assertEqual(code, 3)
+        self.assertIn("rubric_assessment._1235", self.last_stderr)
+        self.assertIn("did not match", self.last_stderr)
+
     def test_the_confirmation_lines_name_each_criterion(self):
         """confirm() prints the requested changes to stderr under -o json, for every student
         in a run; each row must carry its criterion id, not a bare "points"."""
