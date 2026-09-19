@@ -47,10 +47,10 @@ JSON whenever stdout is not a terminal, so never pipe it through `jq`. Reads nee
 
 ## download-submission-file
 
-Not a documented REST endpoint - one of the guard's two added verbs. It saves one submitted attachment to a private
-review directory, bearer-free, and prints the local path and its sha256:
-`/usr/local/libexec/canvas_api_guard.py download-submission-file --course-id 123 --file-id 456 --submission-id 789 --suffix .pdf`
-`--file-id` is that submission's `attachments[].id`; show it first, like a write; the file stays here (rule below).
+Not a documented REST endpoint - one of the guard's two added verbs. It saves one submitted attachment to a private review directory, bearer-free, prints the local path and its sha256, and takes `--file-id` from that submission's `attachments[].id`; show it first, like a write, and the file stays here (rule below):
+```sh
+/usr/local/libexec/canvas_api_guard.py download-submission-file --course-id 123 --file-id 456 --submission-id 789 --suffix .pdf
+```
 
 ## audit prune
 
@@ -63,10 +63,10 @@ is 180 days. It reaches no network:
 
 ## post-policy
 
-The guard's one non-REST verb: one fixed GraphQL mutation that sets an assignment's grade post policy, read
-back from the assignment. `manual` hides new grades and rubric assessments from students until the instructor
-clicks Post grades; nothing already posted changes. Dry-run and show it, then
-`/usr/local/libexec/canvas_api_guard.py post-policy --course-id 123 --assignment-id 20 manual --yes`.
+The guard's one non-REST verb: one fixed GraphQL mutation that sets an assignment's grade post policy, read back from the assignment. `manual` hides new grades and rubric assessments from students until the instructor clicks Post grades; nothing already posted changes. Dry-run and show it, then:
+```sh
+/usr/local/libexec/canvas_api_guard.py post-policy --course-id 123 --assignment-id 20 manual --yes
+```
 
 ## The five disciplines
 
