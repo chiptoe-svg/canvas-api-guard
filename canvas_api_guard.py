@@ -60,7 +60,7 @@ import argparse, datetime, getpass, hashlib, json, os, pwd, re, stat, subprocess
 import urllib.parse, urllib.request
 
 # --------------------------------------------------------------------------------- constants
-USER_AGENT = "canvas-api-guard/1.18.0"
+USER_AGENT = "canvas-api-guard/1.19.0"
 KEYCHAIN_SERVICE = "canvas-api-guard"
 SECURITY_BIN = "/usr/bin/security"
 SECRET_TOOL_PATHS = ("/usr/bin/secret-tool", "/usr/local/bin/secret-tool")

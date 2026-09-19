@@ -30,10 +30,10 @@ and help are byte-identical before and after a change; it runs on every change t
   separate, token-free request, described under "Optional Specialized Functions" below.
 
 **Specialized Functions** are an additive layer, not a second transport, an allow-list, or a
-more privileged token. They leave API Only available for all general API work and add the six
+more privileged token. They leave API Only available for all general API work and add the seven
 operations that compute across several Canvas calls or validate structured input: participation
 and activity analysis, submission-file review for one student or a whole assignment, and rubric
-creation and grading. An operation that would be a single documented API call is
+creation and rubric grading with a hidden review window. An operation that would be a single documented API call is
 deliberately absent - API Only does those, with the Canvas documentation. These writes use the
 same dry-run, explicit approval, and verified read-back as API Only.
 
@@ -318,8 +318,9 @@ sudo ./install.sh --profile specialized-functions --host school.instructure.com
 ```
 
 The read operation is `student-attention`, which reports Canvas activity, not verified
-attendance. The write operations are rubric creation and rubric grading for one student or for
-a batch. They accept a reviewed, allowlisted JSON definition and require
+attendance. The write operations are rubric creation and rubric grading for up to 50 students, with the grade optional per
+student and the assignment switched to manual posting so nothing is visible until the instructor
+posts. They accept a reviewed, allowlisted JSON definition and require
 `--dry-run` followed by explicit approval for `--yes`. See
 [level2/README.md](level2/README.md) for the exact boundary.
 

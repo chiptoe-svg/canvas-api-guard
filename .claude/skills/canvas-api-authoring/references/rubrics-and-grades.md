@@ -369,13 +369,11 @@ pattern: given a rubric whose criteria have ids `crit1` and `crit2`, a caller se
   submitted on its own, without `submission[posted_grade]` in the same request — the consequence is
   not documented on `rubrics.html` or `submissions.html` (docs:
   https://canvas.instructure.com/doc/api/rubrics.html; docs:
-  https://canvas.instructure.com/doc/api/submissions.html). Repo-verified: this project's own
-  tested write does not depend on the association setting at all. It totals the criterion points
-  itself and sends `submission[posted_grade]` and `rubric_assessment` in the same `PUT`, so the
-  reliable pattern is to total the criteria and write the grade in the same request as the
-  assessment, not to rely on `use_for_grading` (repo: `level2/canvas_api_operations.py`, the
-  `grade_one` function, line 308: `body = {"submission": {"posted_grade": total},
-  "rubric_assessment": criteria}`). Source-confirmed: Canvas's own source states the consequence
+  https://canvas.instructure.com/doc/api/submissions.html). Repo-verified: this project's own tested write refuses an assignment whose association has
+  `use_for_grading` on, and otherwise sends `rubric_assessment` alone, or together with
+  `submission[posted_grade]` in the same `PUT` when the instructor stated a grade, so it never
+  relies on Canvas summing the criteria (repo: `level2/canvas_api_operations.py`, the
+  `grade_with_rubric` function, where `body` is built per entry). Source-confirmed: Canvas's own source states the consequence
   the docs leave silent. Every `RubricAssessment` save runs `update_artifact` afterward, which
   reads: `return if artifact.blank? || !rubric_association&.use_for_grading? || artifact.score ==
   score`. When `use_for_grading` is false, it returns immediately — a `rubric_assessment` sent

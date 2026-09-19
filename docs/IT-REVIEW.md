@@ -124,6 +124,13 @@ is never printed or logged.
   the next route, plus each hop's status and hostname - never the signed URL.
 - Pagination links are returned only when their host matches; they are never followed
   automatically.
+- One path outside `/api/v1/` is reachable: `POST /api/graphql`, sent only by the `post-policy`
+  verb with one mutation string embedded in the program (`POST_POLICY_MUTATION`) and two
+  validated variables, an assignment id and a boolean. The caller supplies no query text, and
+  the ordinary `post` verb cannot address that path, because every path it takes is prefixed
+  `/api/v1/`. The result is read back through the REST assignment object. A GraphQL error is
+  treated as a refusal (exit 2, a refusal record); a read-back that does not show the requested
+  policy is exit 3.
 
 ### Require and record write approval
 
@@ -355,8 +362,11 @@ It also provides named rubric, rubric-grading, and submission-review workflows. 
 only an allowlisted JSON definition, resolves the live Canvas target before acting, requires a
 reviewed `--dry-run` before `--yes`, and delegates the write and its read-back to API Only.
 Rubric creates name the created rubric's ID in the create response (`--created-id rubric.id`)
-so the read-back is the rubric itself; grading rejects stale or
-invented rubric criterion IDs; batches are capped at 50 students and are individually audited
+so the read-back is the rubric itself; rubric grading writes each student's criteria and comments and, only where the instructor
+stated one, a grade, rejecting stale or invented criterion IDs; a run first switches an
+automatic-posting assignment to manual posting so nothing it writes is visible to a student,
+and releasing grades is the instructor's own Post grades click in Canvas, never a request from
+this program; batches are capped at 50 students and are individually audited
 and read back rather than sent through an opaque asynchronous bulk endpoint. Codex rules prompt
 for each Specialized Functions write and for each of the two operations that download student
 work. An API Only exit status of 3 - a write that was sent and could not be verified -

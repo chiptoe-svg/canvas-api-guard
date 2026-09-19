@@ -17,7 +17,7 @@ import sys
 import time
 
 GUARD = "/usr/local/libexec/canvas_api_guard.py"
-USER_AGENT = "canvas-api-operations/0.15.0"
+USER_AGENT = "canvas-api-operations/0.16.0"
 MAX_REVIEW_ATTACHMENTS = 500
 SCORE_TOLERANCE = 0.005        # API Only's own tolerance: Canvas rounds a score to two decimals
 
