@@ -402,8 +402,7 @@ nobody classified fails the tests — which is the point of writing them that wa
 `changes` rows, and each row carries `requested`, `before` and `after`. Today a grading write's
 values are numbers. After this change they include per-criterion comments: instructor free text
 about a named student, written into an append-only log with no retention. The rest of the audit
-design is careful about exactly this — request bodies never reach the log, and `:228` states that
-response bodies and the token never do either — so the gap is new and this branch opens it.
+design is careful about exactly this — the request record carries the body, capped the same way, and response bodies and the token never reach the log at all — so the gap is new and this branch opens it.
 
 Cap any value recorded in a `changes` row at a named constant, with an explicit truncation
 marker. The cap applies to what is **logged** only. `matches` still compares the full value, and

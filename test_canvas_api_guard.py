@@ -229,6 +229,41 @@ class TestRubricAssessmentVerification(GuardTestCase):
         self.assertTrue(all(r["match"] is True for r in mixed))
 
 
+class TestLoggedValueCap(GuardTestCase):
+    """Rubric comments are instructor free text about a named student. The audit log is
+    append-only and long-lived, so its copy of a changes row (and of the request body) keeps
+    enough to recognise the value and no more. Stdout, which the instructor reads, is whole."""
+
+    def test_a_long_comment_is_truncated_in_the_log_and_whole_on_stdout(self):
+        long = "x" * (guard.LOG_VALUE_CHARS + 50)
+        body = {"rubric_assessment": {"_1": {"points": 5, "comments": long}}}
+        after = {"id": 34, "rubric_assessment": {"_1": {"points": 5.0, "comments": long}}}
+        with mock.patch("urllib.request.urlopen", side_effect=[
+                FakeResponse(payload={"id": 34}), FakeResponse(payload=after),
+                FakeResponse(payload=after)]):
+            code, out = self.run_main([
+                "put", "courses/1/assignments/2/submissions/34?include[]=rubric_assessment",
+                "--yes", "-o", "json", "-d", json.dumps(body)])
+        self.assertEqual(code, 0, self.last_stderr)
+        self.assertIn(long, out)                       # the instructor sees the whole comment
+        self.assertNotIn(long, self.log_text())        # neither the request nor the evidence record
+        self.assertIn("...[truncated]", self.log_text())
+        evidence = [r for r in self.log_lines() if r.get("event") == "evidence"][-1]
+        logged = evidence["changes"][0]["requested"]["comments"]
+        self.assertEqual(logged, "x" * guard.LOG_VALUE_CHARS + "...[truncated]")
+        request = [r for r in self.log_lines() if r.get("event") == "request"][-1]
+        self.assertEqual(request["request_body"]["rubric_assessment"]["_1"]["comments"], logged)
+
+    def test_short_and_numeric_values_are_logged_unchanged(self):
+        self.assertEqual(guard.cap_logged(95), 95)
+        self.assertEqual(guard.cap_logged(None), None)
+        self.assertEqual(guard.cap_logged("x" * guard.LOG_VALUE_CHARS), "x" * guard.LOG_VALUE_CHARS)
+        self.assertEqual(guard.cap_logged({"points": 8, "comments": "ok", "ids": [1, "b"]}),
+                         {"points": 8, "comments": "ok", "ids": [1, "b"]})
+        self.assertEqual(guard.logged_changes(None), None)
+        self.assertEqual(guard.logged_changes([]), [])
+
+
 class TestFixedProductionConfig(GuardTestCase):
     """The host and audit destination are fixed outside the agent-controlled arguments."""
 

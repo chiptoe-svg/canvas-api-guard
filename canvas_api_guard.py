@@ -509,7 +509,7 @@ def send_request(cfg, method, path, body=None):
     if is_write:
         log_event(cfg.log_path, {
             "event": "request", "verb": method, "path": npath, "url": url, "kind": "write",
-            "dry_run": cfg.dry_run, "confirmation": cfg.confirmation, "request_body": body})
+            "dry_run": cfg.dry_run, "confirmation": cfg.confirmation, "request_body": cap_logged(body)})
     headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
     payload = None
     if body is not None:
@@ -875,6 +875,28 @@ def next_link(headers, host):
         raise GuardError("next-page link points off the pinned host: %r" % parsed.netloc)
     return parsed.path + (("?" + parsed.query) if parsed.query else "")
 
+LOG_VALUE_CHARS = 200          # per logged value; stdout evidence always carries the whole value
+
+def cap_logged(value):
+    """The audit copy of a value. Rubric comments are instructor free text about a named
+    student, and the log is append-only and long-lived: keep enough to recognise the value and
+    no more. Numbers, short strings and None pass through; dicts and lists recurse."""
+    if isinstance(value, str):
+        return value if len(value) <= LOG_VALUE_CHARS else value[:LOG_VALUE_CHARS] + "...[truncated]"
+    if isinstance(value, dict):
+        return dict((k, cap_logged(v)) for k, v in value.items())
+    if isinstance(value, list):
+        return [cap_logged(v) for v in value]
+    return value
+
+def logged_changes(rows):
+    """The changes rows as the log records them: requested, before and after each capped."""
+    if not rows:
+        return rows
+    return [dict(row, requested=cap_logged(row.get("requested")),
+                 before=cap_logged(row.get("before")), after=cap_logged(row.get("after")))
+            for row in rows]
+
 def emit(cfg, ev):
     """Render the evidence. A write also records a short form of it (before/after) in the log;
     a read is already there as its own single line, and a download as its own pair."""
@@ -884,7 +906,7 @@ def emit(cfg, ev):
                                  "status": ev.get("status"),
                                  "confirmation": ev.get("confirmation"),
                                  "verification": ev.get("verification"),
-                                 "target": ev.get("target"), "changes": ev.get("changes")})
+                                 "target": ev.get("target"), "changes": logged_changes(ev.get("changes"))})
     if cfg.out == "json":
         # Sort only the evidence's own top-level keys, for a stable diff; a nested "object" or
         # "items" keeps the order project() built, which --fields promises to preserve. A dry
