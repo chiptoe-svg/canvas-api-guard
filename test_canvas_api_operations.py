@@ -746,6 +746,15 @@ class TestGradeWithRubric(GradeFixtures, unittest.TestCase):
         self.assertIn("student 4", str(caught.exception))
         self.assertIn("0 of 2", str(caught.exception))
 
+    def test_a_grade_on_an_already_posted_submission_is_counted_visible(self):
+        posted = self.submission(4, score=None)
+        posted["posted_at"] = "2026-09-01T00:00:00Z"
+        _, result, _ = self.run_grade(self.args(), assignment=dict(self.ASSIGNMENT, post_manually=True),
+                                      submissions={4: posted})
+        self.assertEqual(result["grades_written"], 1)
+        self.assertEqual(result["grades_not_yet_visible"], 0)
+        self.assertEqual(result["already_visible"], 1)
+
     def test_guard_post_policy_delegates_to_the_fixed_guard(self):
         completed = mock.Mock(return_value=mock.Mock(returncode=0, stdout='{"verification": "passed"}\n', stderr=""))
         with mock.patch.object(operations.subprocess, "run", completed), \

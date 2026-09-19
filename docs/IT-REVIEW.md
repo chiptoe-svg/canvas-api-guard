@@ -369,7 +369,8 @@ reviewed `--dry-run` before `--yes`, and delegates the write and its read-back t
 Rubric creates name the created rubric's ID in the create response (`--created-id rubric.id`)
 so the read-back is the rubric itself; rubric grading writes each student's criteria and comments and, only where the instructor
 stated one, a grade, rejecting stale or invented criterion IDs; a run first switches an
-automatic-posting assignment to manual posting so nothing it writes is visible to a student,
+automatic-posting assignment to manual posting so nothing it writes is visible to a student
+whose submission is not already posted (the dry run reports each submission's `posted_at`),
 and releasing grades is the instructor's own Post grades click in Canvas, never a request from
 this program; batches are capped at 50 students and are individually audited
 and read back rather than sent through an opaque asynchronous bulk endpoint. Codex rules prompt

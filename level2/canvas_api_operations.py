@@ -541,11 +541,13 @@ def grade_with_rubric(args):
     if phase == "dry-run":
         return None
     graded = sum(1 for _, body in writes[:written] if "submission" in body)
-    hidden = graded if after_policy == "manual" else 0
+    hidden = sum(1 for row, (_, body) in list(zip(rows, writes))[:written]
+                 if "submission" in body and after_policy == "manual" and not row.get("posted_at"))
     return {"operation": "grade-with-rubric", "phase": phase, "students_written": written,
             "grades_written": graded, "assessments_only": written - graded,
             "grades_not_yet_visible": hidden, "post_policy": policy,
             "student_visibility": VISIBILITY[after_policy],
+            "already_visible": graded - hidden if after_policy == "manual" else 0,
             "release": ("click Post grades, then Graded, in the gradebook to release these grades "
                         "with their criteria and comments" if hidden
                         else "posted automatically as written")}

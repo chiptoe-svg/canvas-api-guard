@@ -87,7 +87,7 @@ which is enough for OCR and reading handwriting. Otherwise render once per page 
   assessment never posts a grade by itself. It refuses an assignment that already has a rubric.
   Without the flag the rubric is created on the course, for reuse.
 - **`grade-with-rubric` writes the whole assignment in one approved run, and nothing it writes
-  is visible to a student.** Each entry (1-50 students) carries the criteria points and comments
+  is visible to a student whose submission is not already posted.** Each entry (1-50 students) carries the criteria points and comments
   and, optionally, a `grade`. If the assignment posts grades automatically, the run first
   switches it to manual posting (one audited guard write, shown in the dry run). The dry run
   reports, per student, the criteria, the total Canvas will show (criteria the rubric marks
@@ -102,7 +102,7 @@ which is enough for OCR and reading handwriting. Otherwise render once per page 
   then everything is visible to each student the moment it is written; the dry run says which
   case applies. Never pass it unless the instructor asked for that.
 - **Releasing is the instructor's click, never this tool's.** Under manual posting the run ends
-  with `grades_not_yet_visible`. In the gradebook they choose Post grades, then **Graded**:
+  with `grades_not_yet_visible`. A submission Canvas already posted (its `posted_at` is set) shows a grade the moment it is written; the dry run reports `posted_at` per student and the summary counts them as `already_visible`. In the gradebook they choose Post grades, then **Graded**:
   grade, criteria and comments appear together for the students who have a grade, and the rest
   stay hidden for SpeedGrader. Never suggest "Everyone", which also marks ungraded students
   posted. Never switch an assignment back to automatic: a student with criteria and no grade
