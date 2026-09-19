@@ -47,7 +47,7 @@ JSON whenever stdout is not a terminal, so never pipe it through `jq`. Reads nee
 
 ## download-submission-file
 
-Not a documented REST endpoint - the guard's one added verb. It saves one submitted attachment to a private
+Not a documented REST endpoint - one of the guard's two added verbs. It saves one submitted attachment to a private
 review directory, bearer-free, and prints the local path and its sha256:
 `/usr/local/libexec/canvas_api_guard.py download-submission-file --course-id 123 --file-id 456 --submission-id 789 --suffix .pdf`
 `--file-id` is that submission's `attachments[].id`; show it first, like a write; the file stays here (rule below).
