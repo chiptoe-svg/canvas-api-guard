@@ -656,8 +656,15 @@ class TestGradeWithRubric(GradeFixtures, unittest.TestCase):
     def test_a_switch_the_guard_refuses_or_cannot_prove_ends_the_run_before_any_write(self):
         for failure in (operations.OperationError("API Only guard failed: Canvas refused"),
                         operations.GuardUncertain("WRITE STATUS UNCERTAIN: post_manually")):
-            with self.assertRaises(type(failure)):
-                self.run_grade(self.args(), switch=failure)
+            puts = []
+            with mock.patch.object(operations, "definition_file", return_value=self.DEFINITION), \
+                    mock.patch.object(operations, "guard_get", side_effect=self.reads()), \
+                    mock.patch.object(operations, "guard_post_policy", side_effect=failure), \
+                    mock.patch.object(operations, "guard_write", side_effect=lambda *a, **k: puts.append(a)), \
+                    mock.patch("sys.stdout", io.StringIO()):
+                with self.assertRaises(type(failure)):
+                    operations.grade_with_rubric(self.args())
+            self.assertEqual(puts, [])
 
     def test_refusals_happen_before_any_write(self):
         fifty_one = {"grades": [{"student_id": n, "criteria": {"_1": {"points": 1}}} for n in range(1, 52)]}

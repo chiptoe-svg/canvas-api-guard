@@ -2933,7 +2933,7 @@ class TestGuardHeader(unittest.TestCase):
         with open(self.SOURCE) as handle:
             return handle.read()
 
-    def test_the_version_is_1_18_0(self):
+    def test_the_version_is_1_19_0(self):
         self.assertEqual(guard.USER_AGENT, "canvas-api-guard/1.19.0")
 
     def test_the_header_reading_order_matches_the_files_banners_exactly(self):
