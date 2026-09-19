@@ -197,7 +197,9 @@ correlation sources.
   pre-read and read-back each add their own `read` line, so a `put` command produces five audit
   lines in total.
 - Write evidence includes the Canvas user ID and student name when Canvas returns the user
-  object, plus requested/before/after fields and the verification result.
+  object, plus requested/before/after fields and the verification result. String values in those
+  fields, and in the request record's body, are cut at 200 characters with an explicit
+  `...[truncated]` marker; the instructor's own output carries the whole value.
 - Every record carries a per-run correlation id, assigned once when the process starts so no
   two runs can race to create it, letting a request, its evidence, and its refusal be read as
   belonging to the same run even when a reused process ID would not distinguish them. Each

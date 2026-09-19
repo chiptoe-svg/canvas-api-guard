@@ -402,7 +402,8 @@ Events include:
 - `read`: one line per read, written after the response: verb, normalized path, status, and
   byte count or error type;
 - `request`: a write, recorded before it is sent: method, normalized path, URL, confirmation
-  mode, and the request body;
+  mode, and the request body, its string values cut at 200 characters with a `...[truncated]`
+  marker;
 - `response`: that write's status, success, and byte count or error type;
 - `download`/`download-response`: one submission-file fetch attempt, recorded before and after -
   route, attempt number, and on failure whether it `will_retry` and the `next_route`; the
