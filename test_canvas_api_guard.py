@@ -3677,11 +3677,15 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertIn("--verbose) VERBOSE=yes ;;", script)
         self.assertIn("[--verbose]", script)                                  # in the usage text
         # the suite and the plan both run to a file; only --verbose shows them in full
-        self.assertIn('/usr/bin/python3 -m unittest > "\$CHECK_LOG" 2>&1', script)
-        self.assertIn('./install.sh --plan --profile "$PROFILE" --host "$CANVAS_HOST" > "\$PLAN_FILE" 2>&1 || plan_status=\$?', script)
-        self.assertIn('if [ "$VERBOSE" = yes ]; then cat "\$PLAN_FILE"; fi', script)
+        # CHECK_LOG and PLAN_FILE are the bootstrap's variables, expanded when the launcher is
+        # written; escaped, they would be unbound inside the launcher under set -u (seen live).
+        self.assertNotIn('\\$CHECK_LOG', script)
+        self.assertNotIn('\\$PLAN_FILE', script)
+        self.assertIn('/usr/bin/python3 -m unittest > "$CHECK_LOG" 2>&1', script)
+        self.assertIn('./install.sh --plan --profile "$PROFILE" --host "$CANVAS_HOST" > "$PLAN_FILE" 2>&1 || plan_status=\$?', script)
+        self.assertIn('if [ "$VERBOSE" = yes ]; then cat "$PLAN_FILE"; fi', script)
         # a failing check still shows its whole output, quiet or not
-        self.assertIn('cat "\$CHECK_LOG"', script)
+        self.assertIn('cat "$CHECK_LOG"', script)
         # the summary names what changes, derived from the plan's own [state] markers
         for phrase in ("Nothing to update", "no password needed", "Your Mac password is needed once",
                        "Full details:"):
@@ -3690,6 +3694,53 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertIn("Press Return to continue, or Ctrl-C to stop.", script)
         # the version, not the 40-character hash, is what a person sees
         self.assertIn("printf 'Version %s (commit %s)", script)
+
+    def test_the_generated_launcher_references_only_variables_it_defines(self):
+        """The launcher is written by a heredoc: a bootstrap variable must be expanded there
+        (unescaped), a launcher variable escaped. Mixing them up passes sh -n and fails at run
+        time under set -u, as CHECK_LOG did live. Generate the launcher with a fake git and
+        check every $name it references against what it defines or the shell supplies."""
+        import subprocess
+        directory = tempfile.mkdtemp(prefix="cag-launcher-")
+        self.addCleanup(shutil.rmtree, directory, True)
+        fake_git = os.path.join(directory, "git")
+        with open(fake_git, "w") as handle:
+            handle.write('#!/bin/sh\ncase "$1" in\n'
+                         '  clone) mkdir -p "$3" ;;\n'
+                         '  -C) shift 2; [ "$1" = rev-parse ] && echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;\n'
+                         "  --version) echo 'git version fake' ;;\nesac\nexit 0\n")
+        os.chmod(fake_git, 0o755)
+        saved = os.path.join(directory, "launcher.sh")
+        with open(self.BOOTSTRAP) as handle:
+            script = handle.read()
+        script = script.replace("GIT_BIN=/usr/bin/git", "GIT_BIN=%s" % fake_git, 1)
+        script = script.replace("if { exec 3</dev/tty; } 2>/dev/null; then", "if true; then", 1)
+        script = script.replace('CANVAS_GUARD_INLINE=1 exec /bin/sh "$LAUNCHER" </dev/tty',
+                                'cp "$LAUNCHER" %s; exit 0' % shlex.quote(saved), 1)
+        copy = os.path.join(directory, "bootstrap.sh")
+        with open(copy, "w") as handle:
+            handle.write(script)
+        os.chmod(copy, 0o755)
+        proc = subprocess.run([copy, "--ref", "a" * 40, "--host", HOST], stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        with open(saved) as handle:
+            launcher = handle.read()
+        self.assertEqual(subprocess.run(["sh", "-n", saved]).returncode, 0)
+        defined = set(re.findall(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=", launcher, re.M))
+        defined |= set(re.findall(r"\bread\s+([A-Za-z_][A-Za-z0-9_]*)", launcher))
+        shell_supplied = {"HOME", "CANVAS_GUARD_INLINE"}
+        code = re.sub(r"(?m)^\s*#.*$", "", launcher)            # comments hold apostrophes ("Terminal's")
+        unquoted = re.sub(r"'[^']*'", "''", code)               # the shell expands nothing in single quotes
+        referenced = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", unquoted))
+        unbound = sorted(referenced - defined - shell_supplied)
+        self.assertEqual(unbound, [], "launcher references bootstrap-only variables: %s" % unbound)
+        # the bootstrap's paths were expanded into the launcher as absolute paths
+        self.assertRegex(launcher, r'> "/private/tmp/canvas-api-guard-install\.[^/"]+/check\.log" 2>&1')
+        self.assertRegex(launcher, r'> "/private/tmp/canvas-api-guard-install\.[^/"]+/plan\.txt" 2>&1')
+        # and the closing trap cannot report success unless the last line ran
+        self.assertIn('[ "$status" -eq 0 ] && [ "$completed" = yes ]', launcher)
+        self.assertTrue(launcher.rstrip().endswith("completed=yes"))
 
     def test_github_bootstrap_pauses_for_review_before_sudo(self):
         """The plan is worth printing only if a person can stop before the privileged step."""

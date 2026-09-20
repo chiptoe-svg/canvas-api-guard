@@ -126,14 +126,18 @@ set -eu
 # the path while the shell was starting. mkdir is atomic; a second copy exits quietly.
 mkdir "$INSTALL_ROOT/running.lock" 2>/dev/null || exit 0
 settings=ok
+completed=no
 
 finish() {
     status=\$?
     trap - EXIT HUP INT TERM
-    if [ "\$status" -eq 0 ]; then
+    # A shell error (an unbound variable under set -u, a syntax slip) can reach this trap with
+    # status 0; only the launcher's own last line sets completed=yes.
+    if [ "\$status" -eq 0 ] && [ "\$completed" = yes ]; then
         state=succeeded
     else
         state=failed
+        [ "\$status" -eq 0 ] && status=1
     fi
     status_temp="$STATUS_FILE.\$\$.tmp"
     (umask 077; printf '{"state":"%s","commit":"%s","profile":"%s","exit_status":%s,"codex_settings":"%s"}\n' \
@@ -168,34 +172,34 @@ cd "$CHECKOUT"
 # status (3 nothing, 4 user files only, 5 settings need a person, 0 root files) still decides.
 printf 'Checking the download (about 20 seconds)... '
 /usr/bin/python3 -m py_compile canvas_api_guard.py test_canvas_api_guard.py
-if /usr/bin/python3 -m unittest > "\$CHECK_LOG" 2>&1 && sh -n install.sh && git diff --check; then
-    if [ "$VERBOSE" = yes ]; then printf '\n'; cat "\$CHECK_LOG"; else
-        printf 'ok (%s)\n' "\$(grep -o 'Ran [0-9]* tests' "\$CHECK_LOG" | sed 's/Ran //')"
+if /usr/bin/python3 -m unittest > "$CHECK_LOG" 2>&1 && sh -n install.sh && git diff --check; then
+    if [ "$VERBOSE" = yes ]; then printf '\n'; cat "$CHECK_LOG"; else
+        printf 'ok (%s)\n' "\$(grep -o 'Ran [0-9]* tests' "$CHECK_LOG" | sed 's/Ran //')"
     fi
 else
-    printf 'FAILED\n'; cat "\$CHECK_LOG"; exit 1
+    printf 'FAILED\n'; cat "$CHECK_LOG"; exit 1
 fi
 printf 'Version %s (commit %s)\n\n' "\$(sed -n 's|^USER_AGENT = "canvas-api-guard/\(.*\)"|\1|p' canvas_api_guard.py)" "\$(printf '%s' "$SOURCE_REF" | cut -c1-7)"
 plan_status=0
-./install.sh --plan --profile "$PROFILE" --host "$CANVAS_HOST" > "\$PLAN_FILE" 2>&1 || plan_status=\$?
-if [ "$VERBOSE" = yes ]; then cat "\$PLAN_FILE"; fi
+./install.sh --plan --profile "$PROFILE" --host "$CANVAS_HOST" > "$PLAN_FILE" 2>&1 || plan_status=\$?
+if [ "$VERBOSE" = yes ]; then cat "$PLAN_FILE"; fi
 # What the plan found, in one sentence, from its own [state] markers.
-root_changes=\$(grep -c '^  \(executable\|config\|Specialized Functions executable\):.*\[\(differs\|missing\|perms\)\]' "\$PLAN_FILE" || true)
-user_changes=\$(grep -c '^  \(Codex rules\|Codex skill\|Specialized Functions skill\):.*\[\(differs\|missing\)\]' "\$PLAN_FILE" || true)
+root_changes=\$(grep -c '^  \(executable\|config\|Specialized Functions executable\):.*\[\(differs\|missing\|perms\)\]' "$PLAN_FILE" || true)
+user_changes=\$(grep -c '^  \(Codex rules\|Codex skill\|Specialized Functions skill\):.*\[\(differs\|missing\)\]' "$PLAN_FILE" || true)
 if [ "\$plan_status" -eq 3 ]; then
     printf 'Nothing to update: this Mac already has this version.\n'
 elif [ "\$plan_status" -eq 5 ]; then
     printf 'Nothing to update: this Mac already has this version. The Codex settings need your attention:\n'
-    sed -n '/^WARNING:/,\$p' "\$PLAN_FILE"
+    sed -n '/^WARNING:/,\$p' "$PLAN_FILE"
     settings=attention
 elif [ "\$plan_status" -eq 4 ]; then
     printf 'Updating the Codex rules and skills (%s file(s)); no password needed.\n' "\$user_changes"
-    [ "$VERBOSE" = yes ] || printf 'Full details: %s\n' "\$PLAN_FILE"
+    [ "$VERBOSE" = yes ] || printf 'Full details: %s\n' "$PLAN_FILE"
     printf '\n'
-    "$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST" > "\$PLAN_FILE.apply" 2>&1 || { cat "\$PLAN_FILE.apply"; exit 1; }
-    [ "$VERBOSE" = yes ] && cat "\$PLAN_FILE.apply"
+    "$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST" > "$PLAN_FILE.apply" 2>&1 || { cat "$PLAN_FILE.apply"; exit 1; }
+    [ "$VERBOSE" = yes ] && cat "$PLAN_FILE.apply"
 elif [ "\$plan_status" -ne 0 ]; then
-    cat "\$PLAN_FILE"
+    cat "$PLAN_FILE"
     exit "\$plan_status"
 else
     if [ "\$user_changes" -gt 0 ]; then
@@ -204,15 +208,15 @@ else
         printf 'This update changes the guard (%s file(s)).\n' "\$root_changes"
     fi
     printf 'Your Mac password is needed once. Nothing has changed yet.\n'
-    [ "$VERBOSE" = yes ] || printf 'Full details: %s\n' "\$PLAN_FILE"
+    [ "$VERBOSE" = yes ] || printf 'Full details: %s\n' "$PLAN_FILE"
     printf '\nPress Return to continue, or Ctrl-C to stop. '
     if ! read reviewed; then
         printf '\nNo terminal to confirm on; not installing.\n' >&2
         exit 1
     fi
     printf '\nMac password (nothing appears while you type it):\n'
-    /usr/bin/sudo "$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST" > "\$PLAN_FILE.apply" 2>&1 || { cat "\$PLAN_FILE.apply"; exit 1; }
-    [ "$VERBOSE" = yes ] && cat "\$PLAN_FILE.apply"
+    /usr/bin/sudo "$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST" > "$PLAN_FILE.apply" 2>&1 || { cat "$PLAN_FILE.apply"; exit 1; }
+    [ "$VERBOSE" = yes ] && cat "$PLAN_FILE.apply"
 fi
 
 # After an install, the same plan must find nothing left to change.
@@ -245,6 +249,7 @@ printf '%s\n' "$SOURCE_REF" > "\$HOME/.canvas-api-guard/installed-commit"
 printf '\nInstalled: %s\n' "\$(/usr/local/libexec/canvas_api_guard.py --version)"
 printf 'Done. Quit and reopen the ChatGPT app, start a new conversation, and ask it:\n'
 printf '  In Canvas, what are my current classes?\n'
+completed=yes
 EOF
 
 chmod 0700 "$LAUNCHER"
