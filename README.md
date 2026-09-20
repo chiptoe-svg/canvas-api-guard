@@ -197,15 +197,18 @@ curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/FULL_C
   | sh -s -- --ref FULL_COMMIT_SHA --host school.instructure.com
 ```
 
-The Terminal workflow compiles and tests the downloaded source and prints the installation
+The Terminal workflow checks and tests the downloaded source, then runs the installation
 plan, which marks every installed file `[same]`, `[differs]`, `[missing]`, `[link]`, or
 `[perms]` by comparing its SHA-256 with the downloaded commit, plus owner and mode for the
-root-owned files. When every file is `[same]` the plan exits
-with status 3 and the workflow skips the privileged step, so no administrator password is asked
-for. When only the Codex rules, skills, or settings differ, the plan exits with status 4 and the workflow
-replaces those files as you, again without a password and without a second pause, since the
-plan is already on screen. Otherwise it pauses for Return and installs with `sudo`, which
-rewrites the root-owned files and backs up any file that differed. It then stores a token
+root-owned files. On screen a person sees one line per step and a one-sentence summary of
+what the plan found (the version, how many guard files and how many Codex files change, and
+whether a password is needed); the full plan is written to a file whose path is printed, and
+`--verbose` on the command line shows it and the whole test run on screen instead. When every
+file is `[same]` the plan exits with status 3 and the workflow skips the privileged step, so no
+administrator password is asked for. When only the Codex rules, skills, or settings differ, the
+plan exits with status 4 and the workflow replaces those files as you, again without a
+password and without a second pause. Otherwise it pauses for Return and installs with `sudo`,
+which rewrites the root-owned files and backs up any file that differed. It then stores a token
 only if the Keychain holds none, found by an attribute lookup that never reads the secret; an
 existing token is kept unchanged. Finally it
 reports the installed version and waits for Return before closing. It makes no Canvas API

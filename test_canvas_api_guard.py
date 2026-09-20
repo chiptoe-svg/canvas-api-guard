@@ -3586,7 +3586,7 @@ class TestInstallerPlan(unittest.TestCase):
             script = handle.read()
         record = script.index('printf \'%s\\n\' "$SOURCE_REF" > "\\$HOME/.canvas-api-guard/installed-commit"')
         self.assertLess(script.index('cat > "$LAUNCHER" <<EOF'), record)     # inside the launcher
-        self.assertLess(record, script.index("Installed version:"))
+        self.assertLess(record, script.index("Installed: %s"))
         with open(os.path.join(self.ROOT, "codex", "skills", "canvas-api-guard", "SKILL.md")) as handle:
             skill = handle.read()
         self.assertIn("installed-commit", skill)
@@ -3641,12 +3641,36 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertNotIn(" -g", lookup[0])
         self.assertIn('"$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST"', script)
 
+    def test_github_bootstrap_is_quiet_by_default_and_verbose_on_request(self):
+        """A faculty member sees one line per step and a one-sentence summary of what will
+        change; the hashes, modes and ancestor check that IT reviews are in the plan file and
+        on screen only with --verbose. Either way the same install.sh --plan runs, its exit
+        status still drives the branches, and the pause before sudo is unchanged."""
+        with open(self.BOOTSTRAP) as handle:
+            script = handle.read()
+        self.assertIn("--verbose) VERBOSE=yes ;;", script)
+        self.assertIn("[--verbose]", script)                                  # in the usage text
+        # the suite and the plan both run to a file; only --verbose shows them in full
+        self.assertIn('/usr/bin/python3 -m unittest > "\$CHECK_LOG" 2>&1', script)
+        self.assertIn('./install.sh --plan --profile "$PROFILE" --host "$CANVAS_HOST" > "\$PLAN_FILE" 2>&1 || plan_status=\$?', script)
+        self.assertIn('if [ "$VERBOSE" = yes ]; then cat "\$PLAN_FILE"; fi', script)
+        # a failing check still shows its whole output, quiet or not
+        self.assertIn('cat "\$CHECK_LOG"', script)
+        # the summary names what changes, derived from the plan's own [state] markers
+        for phrase in ("Nothing to update", "no password needed", "Your Mac password is needed once",
+                       "Full details:"):
+            self.assertIn(phrase, script)
+        self.assertNotIn("That plan is what the next step will do", script)
+        self.assertIn("Press Return to continue, or Ctrl-C to stop.", script)
+        # the version, not the 40-character hash, is what a person sees
+        self.assertIn("printf 'Version %s (commit %s)", script)
+
     def test_github_bootstrap_pauses_for_review_before_sudo(self):
         """The plan is worth printing only if a person can stop before the privileged step."""
         with open(self.BOOTSTRAP) as handle:
             script = handle.read()
         plan = script.index("./install.sh --plan --profile")
-        pause = script.index("Press Return to continue with the installation")
+        pause = script.index("Press Return to continue, or Ctrl-C to stop.")
         sudo = script.index('/usr/bin/sudo "$CHECKOUT/install.sh"')
         self.assertLess(plan, pause)
         self.assertLess(pause, sudo)

@@ -307,8 +307,10 @@ that exact commit into a private `/private/tmp` directory, verifies the checked-
 state, then creates a mode-`0700`, token-free `.command` launcher. It opens that launcher with
 the explicit system application path `/System/Applications/Utilities/Terminal.app`, avoiding
 dependence on an application-name lookup or `.command` file association. The test suite and
-installation plan run there, and the workflow waits for Return between the printed plan and
-`sudo`, so a person can stop before the privileged step rather than watch it scroll past.
+installation plan run there, and the workflow waits for Return between the plan's summary
+(the version and which files change; the full plan is in a file whose path is printed, or on
+screen with `--verbose`) and `sudo`, so a person can stop before the privileged step rather
+than watch it scroll past.
 `sudo` then requests the user's administrator password. After a successful installation, the
 guard itself requests the Canvas token with hidden input and stores it in Keychain. The
 launcher deletes only itself; the reviewed checkout remains available for inspection. No

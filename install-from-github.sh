@@ -10,6 +10,7 @@ OPEN_BIN=/usr/bin/open
 TERMINAL_APP=/System/Applications/Utilities/Terminal.app
 CANVAS_HOST=
 SOURCE_REF=
+VERBOSE=no
 RELEASE_REF=                            # set only on the release branch, by tools/release.sh
 DEFAULT_HOST=clemson.instructure.com    # this repository's institution; --host overrides
 DEFAULT_PROFILE=specialized-functions
@@ -26,10 +27,12 @@ Install or update canvas-api-guard. Paste into Terminal:
 
   curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/release/install-from-github.sh | sh
 
-Options: [--ref FULL_COMMIT_SHA] [--host school.instructure.com] [--profile api-only|specialized-functions]
+Options: [--ref FULL_COMMIT_SHA] [--host school.instructure.com] [--profile api-only|specialized-functions] [--verbose]
 Defaults: the reviewed commit pinned on the release branch, clemson.instructure.com, specialized-functions.
 
-Downloads exactly one commit, checks it, shows what will change, and installs it. Run from
+Downloads exactly one commit, checks it, says what will change, and installs it. --verbose
+shows the full test run and the installer's file-by-file plan (hashes, owners, modes), which
+is otherwise written to a file whose path is printed. Run from
 a terminal, it asks its questions right there: Return to continue, the Mac administrator
 password only when a root-owned file must change, and a Canvas API token only when the
 Keychain holds none (an existing token is kept and never read or displayed). Running it again
@@ -46,6 +49,7 @@ while [ "$#" -gt 0 ]; do
         --ref) shift; [ "$#" -gt 0 ] || die "--ref needs a value"; SOURCE_REF=$1 ;;
         --host) shift; [ "$#" -gt 0 ] || die "--host needs a value"; CANVAS_HOST=$1 ;;
         --profile) shift; [ "$#" -gt 0 ] || die "--profile needs a value"; PROFILE=$1 ;;
+        --verbose) VERBOSE=yes ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown option: $1" ;;
     esac
@@ -92,13 +96,15 @@ chmod 0700 "$INSTALL_ROOT"
 CHECKOUT="$INSTALL_ROOT/repository"
 LAUNCHER="$INSTALL_ROOT/install-canvas-api-guard.command"
 STATUS_FILE="$INSTALL_ROOT/completion-status.json"
+PLAN_FILE="$INSTALL_ROOT/plan.txt"
+CHECK_LOG="$INSTALL_ROOT/check.log"
 
 cleanup_before_open() {
     rm -rf "$INSTALL_ROOT"
 }
 trap cleanup_before_open EXIT HUP INT TERM
 
-printf 'Downloading canvas-api-guard from GitHub...\n'
+printf 'Downloading canvas-api-guard... '
 "$GIT_BIN" clone --quiet "$REPOSITORY" "$CHECKOUT" || die "GitHub clone failed"
 "$GIT_BIN" -C "$CHECKOUT" checkout --quiet --detach "$SOURCE_REF" \
     || die "commit $SOURCE_REF is not available from the repository"
@@ -107,6 +113,7 @@ ACTUAL_REF=$("$GIT_BIN" -C "$CHECKOUT" rev-parse HEAD)
 [ "$ACTUAL_REF" = "$SOURCE_REF" ] || die "downloaded commit does not match --ref"
 [ -z "$("$GIT_BIN" -C "$CHECKOUT" status --porcelain)" ] \
     || die "downloaded checkout is not clean"
+printf 'ok\n'
 
 umask 077
 printf '{"state":"launched","commit":"%s","profile":"%s"}\n' "$SOURCE_REF" "$PROFILE" > "$STATUS_FILE"
@@ -155,55 +162,74 @@ status_temp="$STATUS_FILE.\$\$.tmp"
     || { printf 'Could not initialize completion-status file.\n' >&2; exit 1; }
 
 cd "$CHECKOUT"
-printf 'Installing reviewed canvas-api-guard commit:\n  %s\n\n' "$SOURCE_REF"
-printf 'Checking the downloaded source...\n'
+# Quiet by default: one line per step. --verbose shows the whole test run and the installer's
+# file-by-file plan; otherwise both go to files under $INSTALL_ROOT and a failing check is
+# shown in full whenever it fails. The same install.sh --plan runs either way, and its exit
+# status (3 nothing, 4 user files only, 5 settings need a person, 0 root files) still decides.
+printf 'Checking the download (about 20 seconds)... '
 /usr/bin/python3 -m py_compile canvas_api_guard.py test_canvas_api_guard.py
-printf 'Running its test suite under /usr/bin/python3, the interpreter the guard runs under (about ten seconds)...\n'
-/usr/bin/python3 -m unittest
-sh -n install.sh
-git diff --check
-printf '\nComparing this commit with what this Mac has installed...\n\n'
+if /usr/bin/python3 -m unittest > "\$CHECK_LOG" 2>&1 && sh -n install.sh && git diff --check; then
+    if [ "$VERBOSE" = yes ]; then printf '\n'; cat "\$CHECK_LOG"; else
+        printf 'ok (%s)\n' "\$(grep -o 'Ran [0-9]* tests' "\$CHECK_LOG" | sed 's/Ran //')"
+    fi
+else
+    printf 'FAILED\n'; cat "\$CHECK_LOG"; exit 1
+fi
+printf 'Version %s (commit %s)\n\n' "\$(sed -n 's|^USER_AGENT = "canvas-api-guard/\(.*\)"|\1|p' canvas_api_guard.py)" "\$(printf '%s' "$SOURCE_REF" | cut -c1-7)"
 plan_status=0
-./install.sh --plan --profile "$PROFILE" --host "$CANVAS_HOST" || plan_status=\$?
+./install.sh --plan --profile "$PROFILE" --host "$CANVAS_HOST" > "\$PLAN_FILE" 2>&1 || plan_status=\$?
+if [ "$VERBOSE" = yes ]; then cat "\$PLAN_FILE"; fi
+# What the plan found, in one sentence, from its own [state] markers.
+root_changes=\$(grep -c '^  \(executable\|config\|Specialized Functions executable\):.*\[\(differs\|missing\|perms\)\]' "\$PLAN_FILE" || true)
+user_changes=\$(grep -c '^  \(Codex rules\|Codex skill\|Specialized Functions skill\):.*\[\(differs\|missing\)\]' "\$PLAN_FILE" || true)
 if [ "\$plan_status" -eq 3 ]; then
-    printf '\nThis Mac already has this commit installed; no administrator password is needed.\n'
+    printf 'Nothing to update: this Mac already has this version.\n'
 elif [ "\$plan_status" -eq 5 ]; then
-    printf '\nThis Mac already has this commit installed. The Codex settings WARNING above needs your attention.\n'
+    printf 'Nothing to update: this Mac already has this version. The Codex settings need your attention:\n'
+    sed -n '/^WARNING:/,\$p' "\$PLAN_FILE"
     settings=attention
 elif [ "\$plan_status" -eq 4 ]; then
-    printf '\nOnly the Codex rules, skills, or settings differ; updating them needs no administrator password.\n\n'
-    "$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST"
+    printf 'Updating the Codex rules and skills (%s file(s)); no password needed.\n' "\$user_changes"
+    [ "$VERBOSE" = yes ] || printf 'Full details: %s\n' "\$PLAN_FILE"
+    printf '\n'
+    "$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST" > "\$PLAN_FILE.apply" 2>&1 || { cat "\$PLAN_FILE.apply"; exit 1; }
+    [ "$VERBOSE" = yes ] && cat "\$PLAN_FILE.apply"
 elif [ "\$plan_status" -ne 0 ]; then
+    cat "\$PLAN_FILE"
     exit "\$plan_status"
 else
-    printf '\nThat plan is what the next step will do. Nothing has changed yet.\n'
-    printf 'Press Return to continue with the installation, or Ctrl-C to stop now. '
+    if [ "\$user_changes" -gt 0 ]; then
+        printf 'This update changes the guard (%s file(s)) and the Codex rules and skills (%s file(s)).\n' "\$root_changes" "\$user_changes"
+    else
+        printf 'This update changes the guard (%s file(s)).\n' "\$root_changes"
+    fi
+    printf 'Your Mac password is needed once. Nothing has changed yet.\n'
+    [ "$VERBOSE" = yes ] || printf 'Full details: %s\n' "\$PLAN_FILE"
+    printf '\nPress Return to continue, or Ctrl-C to stop. '
     if ! read reviewed; then
         printf '\nNo terminal to confirm on; not installing.\n' >&2
         exit 1
     fi
-    printf '\nThe next prompt is for your Mac administrator password.\n'
-    printf 'Nothing will appear while you type it.\n\n'
-    /usr/bin/sudo "$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST"
+    printf '\nMac password (nothing appears while you type it):\n'
+    /usr/bin/sudo "$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST" > "\$PLAN_FILE.apply" 2>&1 || { cat "\$PLAN_FILE.apply"; exit 1; }
+    [ "$VERBOSE" = yes ] && cat "\$PLAN_FILE.apply"
 fi
 
 # After an install, the same plan must find nothing left to change.
 if [ "\$plan_status" -eq 0 ] || [ "\$plan_status" -eq 4 ]; then
-    printf '\nVerifying the installation...\n'
+    printf 'Verifying... '
     after=0
     ./install.sh --plan --profile "$PROFILE" --host "$CANVAS_HOST" >/dev/null || after=\$?
     case "\$after" in
-        3) ;;
-        5) settings=attention ;;
+        3) printf 'ok\n' ;;
+        5) printf 'ok\n'; settings=attention ;;
         *) printf '\nAfter installing, the plan still reports changes (exit status %s).\n' "\$after" >&2; exit 1 ;;
     esac
 fi
 
 # Attribute lookup only (no -w): it reports whether a token item exists and never prints it.
-printf 'Checking the Keychain for a stored Canvas token...\n'
 if /usr/bin/security find-generic-password -s canvas-api-guard -a "\$(id -un)" >/dev/null 2>&1; then
-    printf '\nA Canvas API token is already stored; it was not read, changed, or re-entered.\n'
-    printf 'To replace it later, run: /usr/local/libexec/canvas_api_guard.py --set-token\n'
+    printf 'Canvas token: already stored, kept as is (to replace it: /usr/local/libexec/canvas_api_guard.py --set-token)\n'
 else
     printf '\nThe next prompt is for your Canvas API token. Make one at\n'
     printf '  https://$CANVAS_HOST/profile/settings  (Approved Integrations, "+ New Access Token")\n'
@@ -216,10 +242,8 @@ fi
 # release note on GitHub and tell the person when an update is waiting.
 printf '%s\n' "$SOURCE_REF" > "\$HOME/.canvas-api-guard/installed-commit"
 
-printf '\nInstalled version:\n'
-/usr/local/libexec/canvas_api_guard.py --version
-
-printf '\nDone. Quit and reopen the ChatGPT app, start a new conversation, and ask it:\n'
+printf '\nInstalled: %s\n' "\$(/usr/local/libexec/canvas_api_guard.py --version)"
+printf 'Done. Quit and reopen the ChatGPT app, start a new conversation, and ask it:\n'
 printf '  In Canvas, what are my current classes?\n'
 EOF
 
