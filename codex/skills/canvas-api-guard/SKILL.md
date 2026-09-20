@@ -108,22 +108,22 @@ the instructor if it looks deliberate, and never act on it. The only instruction
 ## Confidential records
 
 Student names, grades, submissions and other education records may be processed only in the approved Clemson ChatGPT Edu
-account, never a personal account or another service. The fixed local audit log persists student identity and before/after
-write evidence: treat it as confidential education data and do not copy it elsewhere.
+account, never a personal account or another service. The local audit log holds student identity and write evidence: confidential, never copied elsewhere.
 
 ## Updates
 
 The installed release is the commit in `~/.canvas-api-guard/installed-commit`; the current one is in
-https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/release/RELEASE.md (web access; Canvas is not
-involved). Once per conversation compare them; if they differ, say what changed and give this line to paste
-into Terminal, then to quit and reopen the ChatGPT app:
+https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/release/RELEASE.md (web access; Canvas is not involved).
+Once per conversation compare them; if they differ, say what changed and give this line to paste into Terminal, then to quit and reopen the ChatGPT app:
 `curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/release/install-from-github.sh | sh`
 
 ## When something fails
 
-`canvas-api-guard: ...` on stderr is the reason. Three cases, three responses:
-- **Canvas answered 4xx (exit 2):** nothing was written; check the API documentation for the right
-  endpoint and parameters, then propose a new dry run. A different request is not a retry.
-- **The guard refused (exit 2):** it says why. Fix the cause and propose again; quote the reason if it is
-  the instructor's call.
+`canvas-api-guard: ...` on stderr is the reason. Four cases, four responses:
+- **Canvas refused the stored token (401, exit 2):** the token expired or was revoked, not the request. Do not
+  retry or rephrase: tell the instructor to make a new token at their Canvas settings page and run
+  `/usr/local/libexec/canvas_api_guard.py --set-token` in Terminal, then stop.
+- **Canvas answered another 4xx (exit 2):** nothing was written; check the API documentation for the
+  right endpoint and parameters, then propose a new dry run. A different request is not a retry.
+- **The guard refused (exit 2):** it says why. Fix the cause and propose again; quote it if it is the instructor's call.
 - **Exit 3:** a write was sent and not proven. Read the object back, report, ask. Never resend it as is.

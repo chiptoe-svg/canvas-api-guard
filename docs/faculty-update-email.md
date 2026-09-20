@@ -38,5 +38,11 @@ Then paste the same command above.
 that the Command Line Tools were not installed yet, and the fix is step 1 above, then paste
 the command again. Anything else, send me the last few lines of what Terminal showed.
 
+**If Codex ever says your Canvas token was refused**, it has expired or been revoked. Make a
+new token (same place as step 2), then paste this into Terminal and enter the token when
+asked; nothing else needs reinstalling:
+
+    /usr/local/libexec/canvas_api_guard.py --set-token
+
 Thanks,
 [name]

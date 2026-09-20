@@ -559,6 +559,14 @@ def send_request(cfg, method, path, body=None, graphql=False):
         status = getattr(err, "code", None)
         log_event(cfg.log_path, {"event": event, "verb": method, "path": npath, "ok": False,
                                  "status": status, "error": type(err).__name__})
+        if status == 401:
+            # The token, not the request: expired, revoked, or deleted from Approved
+            # Integrations. Name the one fix, or the agent rewrites the request instead.
+            raise RequestFailure("%s %s failed: Canvas refused the stored token (401): it has "
+                                 "expired or been revoked. Make a new token at https://%s/profile/"
+                                 "settings, then run in Terminal: /usr/local/libexec/"
+                                 "canvas_api_guard.py --set-token" % (method, url, cfg.host),
+                                 status=status)
         raise RequestFailure("%s %s failed: %s: %s"
                              % (method, url, type(err).__name__, err), status=status)
     if len(text) > MAX_RESPONSE_BYTES:

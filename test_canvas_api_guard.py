@@ -1275,6 +1275,32 @@ class TestEvidence(GuardTestCase):
         self.assertEqual(evidence[0]["verification"], "failed")
 
 
+class TestARefusedToken(GuardTestCase):
+    """Canvas answering 401 means the token, not the request: expired, revoked, or deleted
+    from Approved Integrations. The message must say so and name the one command that fixes
+    it, or the agent's skill treats it like any other 4xx and rewrites the request instead."""
+
+    def test_a_401_names_the_token_and_the_set_token_command(self):
+        error = urllib.error.HTTPError("https://" + HOST, 401, "Unauthorized", {}, io.BytesIO(b""))
+        with mock.patch("urllib.request.urlopen", side_effect=[error]):
+            code, _ = self.run_main(["get", "courses/1"])
+        self.assertEqual(code, 2)
+        self.assertIn("Canvas refused the stored token (401)", self.last_stderr)
+        self.assertIn("https://" + HOST + "/profile/settings", self.last_stderr)
+        self.assertIn("/usr/local/libexec/canvas_api_guard.py --set-token", self.last_stderr)
+        self.assertNotIn(TOKEN, self.last_stderr)
+        read = [line for line in self.log_lines() if line.get("event") == "read"][-1]
+        self.assertEqual((read["status"], read["ok"]), (401, False))
+
+    def test_a_403_is_still_an_ordinary_failure(self):
+        error = urllib.error.HTTPError("https://" + HOST, 403, "Forbidden", {}, io.BytesIO(b""))
+        with mock.patch("urllib.request.urlopen", side_effect=[error]):
+            code, _ = self.run_main(["get", "courses/1"])
+        self.assertEqual(code, 2)
+        self.assertNotIn("refused the stored token", self.last_stderr)
+        self.assertIn("HTTP Error 403", self.last_stderr)
+
+
 class TestAFailedWriteRequest(GuardTestCase):
     """Canvas answering 4xx means it did not apply the write; anything else - a timeout, a
     transport error, a 5xx - may have applied it, and the outcome is uncertain."""
