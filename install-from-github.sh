@@ -85,7 +85,7 @@ esac
 GIT_CHECK=$("$GIT_BIN" --version 2>&1) || {
     case "$GIT_CHECK" in
         *icense*) die "the Xcode license has not been accepted; in Terminal run: sudo xcodebuild -license accept   then rerun this command" ;;
-        *) die "the Xcode command line tools are not usable ($GIT_CHECK); run: xcode-select --install   then rerun this command" ;;
+        *) die "this Mac needs Apple's Command Line Tools first (a one-time, free install). If a dialog just appeared offering to install them, click Install and wait for it to finish; otherwise run: xcode-select --install   Then run this same command again ($GIT_CHECK)" ;;
     esac
 }
 [ -x "$OPEN_BIN" ] || die "the macOS open command is required at $OPEN_BIN"

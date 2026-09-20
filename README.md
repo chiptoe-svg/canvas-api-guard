@@ -70,6 +70,10 @@ review commands, and residual risks.
 
 ## Install or update (macOS)
 
+0. First time on this Mac only: it needs Apple's free Command Line Tools. Open Terminal
+   (Applications, Utilities) and paste `xcode-select --install`; click Install in the dialog
+   and wait for it to finish, a few minutes. If the tools are already there it says so. A Mac
+   without them stops at step 2 with a message saying exactly this.
 1. Make a Canvas access token once: in Canvas open Account, Settings, Approved Integrations,
    "+ New Access Token", and copy it. The installer opens that page for you when it needs it.
 2. Open Terminal and paste this one line:
