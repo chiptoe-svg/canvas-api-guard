@@ -123,7 +123,7 @@ Once per conversation compare them; if they differ, say what changed and give th
 - **Canvas refused the stored token (401, exit 2):** the token expired or was revoked, not the request. Do not
   retry or rephrase: tell the instructor to make a new token at their Canvas settings page and run
   `/usr/local/libexec/canvas_api_guard.py --set-token` in Terminal, then stop.
-- **Canvas answered another 4xx (exit 2):** nothing was written; check the API documentation for the
-  right endpoint and parameters, then propose a new dry run. A different request is not a retry.
+- **Canvas answered another 4xx (exit 2):** nothing was written. The line quotes Canvas's reason after
+  "Canvas says:" when it gave one; tell the instructor that reason, fix the request, propose a new dry run.
 - **The guard refused (exit 2):** it says why. Fix the cause and propose again; quote it if it is the instructor's call.
 - **Exit 3:** a write was sent and not proven. Read the object back, report, ask. Never resend it as is.

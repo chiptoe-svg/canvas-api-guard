@@ -559,6 +559,14 @@ def send_request(cfg, method, path, body=None, graphql=False):
         status = getattr(err, "code", None)
         log_event(cfg.log_path, {"event": event, "verb": method, "path": npath, "ok": False,
                                  "status": status, "error": type(err).__name__})
+        if is_write and isinstance(status, int) and 400 <= status < 500 and status != 401:
+            # Canvas refused the write and usually says why in the body ("Can't unpublish if
+            # there are student submissions"). A write 4xx is re-raised as a refusal and never
+            # recorded as evidence, so the body reaches the person on stderr and not the log;
+            # a read 4xx can become an uncertain note in the log, so reads keep the bare line.
+            raise RequestFailure("%s %s failed: %s: %s%s"
+                                 % (method, url, type(err).__name__, err, canvas_explanation(err)),
+                                 status=status)
         if status == 401:
             # The token, not the request: expired, revoked, or deleted from Approved
             # Integrations. Name the one fix, or the agent rewrites the request instead.
@@ -589,6 +597,45 @@ def send_request(cfg, method, path, body=None, graphql=False):
 # Reads need no confirmation. Writes need one, and the KIND of it is recorded in the log.
 # A write that cannot be confirmed is refused by refuse_unconfirmed_write() before anything
 # else happens; with a TTY the pre-read runs first so the prompt can show the change.
+EXPLANATION_CHARS = 300
+
+def error_messages(value):
+    """Every "message" inside Canvas's error JSON, with its field name when keyed by field:
+    [{"message": m}], {"field": [{"message": m}]}, or a bare {"message": m}."""
+    if isinstance(value, dict):
+        if "message" in value:
+            return [str(value["message"])]
+        found = []
+        for key, inner in value.items():
+            found.extend("%s: %s" % (key, m) for m in error_messages(inner))
+        return found
+    if isinstance(value, list):
+        found = []
+        for inner in value:
+            found.extend(error_messages(inner))
+        return found
+    return [str(value)] if value not in (None, "") else []
+
+def canvas_explanation(err):
+    """Canvas's stated reason for a refused write, from the error body: the messages of a JSON
+    errors object, else the body's text, cut at EXPLANATION_CHARS. Empty when there is none."""
+    try:
+        raw = err.read(MAX_RESPONSE_BYTES) if hasattr(err, "read") else b""
+    except Exception:
+        return ""
+    text = " ".join(raw.decode("utf-8", "replace").split())
+    if not text:
+        return ""
+    try:
+        data = json.loads(text)
+        messages = error_messages(data.get("errors", data.get("message"))) if isinstance(data, dict) else []
+        text = "; ".join(messages) or text
+    except ValueError:
+        pass
+    if len(text) > EXPLANATION_CHARS:
+        text = text[:EXPLANATION_CHARS] + "..."
+    return " - Canvas says: " + text
+
 def refuse_unconfirmed_write(cfg, verb, path):
     """Refuse an unconfirmable write BEFORE the keychain is touched, before the pre-read and
     before any network call - so the refusal can be demonstrated with no token at all."""
@@ -751,6 +798,20 @@ def number_or_none(value):
     except (TypeError, ValueError):
         return None
 
+def instant_or_none(value):
+    """The instant a timezone-aware ISO 8601 string names, or None. Canvas stores and returns
+    UTC ("2026-09-28T03:59:00Z") while a request may carry an offset
+    ("2026-09-27T23:59:00-04:00"); the same moment written two ways is not the same string,
+    and comparing strings declared every correct date write uncertain (seen live 2026-09-22).
+    A value without a zone names no instant - Canvas decides its zone - so it stays a string."""
+    if not isinstance(value, str) or "T" not in value:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
 def read_field_for(leaf, requested):
     """The response field name(s), in priority order, that can prove this requested write
     parameter. Canvas does not return the parameter it accepted: submission[excuse] comes back
@@ -790,6 +851,9 @@ def matches(requested, got):
     want, have = number_or_none(requested), number_or_none(got)
     if want is not None and have is not None:
         return abs(have - want) <= SCORE_TOLERANCE
+    when, stored = instant_or_none(requested), instant_or_none(got)
+    if when is not None and stored is not None:
+        return when == stored
     aliases = {"pass": "complete", "fail": "incomplete"}
     norm = lambda v: aliases.get(str(v).strip().lower(), str(v).strip().lower())
     return norm(got) == norm(requested)

@@ -152,7 +152,9 @@ correlation sources.
 - `POST`/`PUT`/`PATCH`: one rule. Every requested leaf field the read-back object exposes must
   match it. A requested field the object does not expose is reported with `match: null` and
   cannot fail, because it proves nothing either way; a write whose read-back proved none of the
-  requested fields is uncertain.
+  requested fields is uncertain. Numbers match within Canvas's two-decimal rounding; a
+  timezone-aware timestamp matches when it names the same instant (Canvas returns UTC, a request
+  may carry an offset); everything else matches as case-insensitive text.
 - The same rule applies one level deeper when a write body carries a list or an object: it is
   compared member by member, a member the read-back does not expose is unknown and disproves
   nothing, and the value counts as proved when at least one comparable member is proved and none
@@ -174,7 +176,10 @@ correlation sources.
   still-present delete target is `WRITE STATUS UNCERTAIN` and is never retried automatically. So is a write whose
   own request timed out, failed in transport, or returned 5xx: Canvas may have applied it.
   A 4xx on the write itself is Canvas answering that it did not apply the change, so that is
-  an ordinary failure. Submission-file downloads retry separately, on their own schedule.
+  an ordinary failure; Canvas's stated reason from the error body (its `errors` messages, at most
+  300 characters) is shown to the person on stderr and is not written to the log, and a read's
+  4xx keeps the bare status line because a read-back failure can become a logged note.
+  Submission-file downloads retry separately, on their own schedule.
 - Exit codes: `0` completed, and any write verified; `2` refused or failed with nothing
   applied; `3` a write may have been applied and could not be verified (`WRITE STATUS
   UNCERTAIN`).

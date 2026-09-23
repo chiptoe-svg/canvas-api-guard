@@ -1275,6 +1275,105 @@ class TestEvidence(GuardTestCase):
         self.assertEqual(evidence[0]["verification"], "failed")
 
 
+class TestTimestampMatching(GuardTestCase):
+    """Canvas stores and returns UTC; a request may carry an offset. The same instant written
+    two ways must prove, or every correct date write reports WRITE STATUS UNCERTAIN - seen
+    live 2026-09-22 on a due_at change (requested -04:00, read back Z, "match: false")."""
+
+    def test_the_same_instant_in_another_offset_matches(self):
+        self.assertTrue(guard.matches("2026-09-27T23:59:00-04:00", "2026-09-28T03:59:00Z"))
+        self.assertTrue(guard.matches("2026-09-28T03:59:00Z", "2026-09-28T03:59:00.000Z"))
+        self.assertTrue(guard.matches("2026-09-28T03:59:00+00:00", "2026-09-28T03:59:00Z"))
+
+    def test_a_different_instant_still_fails(self):
+        self.assertFalse(guard.matches("2026-09-27T23:59:00-04:00", "2026-09-27T23:59:00Z"))
+        self.assertFalse(guard.matches("2026-09-28T03:59:00Z", "2026-09-28T03:59:01Z"))
+
+    def test_only_timezone_aware_timestamps_compare_as_instants(self):
+        """A value without a zone names no instant - Canvas chooses its zone - so the string
+        rule stands for it, as for every other string and every number."""
+        self.assertFalse(guard.matches("2026-09-27T23:59:00", "2026-09-28T03:59:00Z"))
+        self.assertTrue(guard.matches("2026-09-28T03:59:00", "2026-09-28T03:59:00"))
+        self.assertFalse(guard.matches("2026-09-28", "2026-09-28T00:00:00Z"))
+        self.assertTrue(guard.matches("Lab 4", "lab 4"))
+        self.assertTrue(guard.matches(95, "95.0"))
+        self.assertIsNone(guard.matches({"a": 1}, "2026-09-28T03:59:00Z"))
+
+    def test_a_due_date_written_in_local_time_verifies_end_to_end(self):
+        before = {"id": 9, "name": "Essay", "due_at": "2026-10-19T03:59:00Z"}
+        after = dict(before, due_at="2026-09-28T03:59:00Z")
+        with mock.patch("urllib.request.urlopen", side_effect=[
+                FakeResponse(payload=before), FakeResponse(payload=after), FakeResponse(payload=after)]):
+            code, out = self.run_main(["put", "courses/1/assignments/9", "--yes", "-o", "json", "-d",
+                                       json.dumps({"assignment": {"due_at": "2026-09-27T23:59:00-04:00"}})])
+        self.assertEqual(code, 0, self.last_stderr)
+        evidence = json.loads(out)
+        self.assertEqual(evidence["verification"], "passed")
+        self.assertEqual([(r["field"], r["match"]) for r in evidence["changes"]], [("due_at", True)])
+
+
+class TestCanvasExplainsARefusedWrite(GuardTestCase):
+    """A 4xx on a write is Canvas refusing it, usually with a reason in the body ("Can't
+    unpublish if there are student submissions"). The person sees that reason on stderr; the
+    audit log never does, because a write 4xx is re-raised as a refusal, not recorded as
+    evidence, and response bodies never reach the log."""
+
+    def refused_put(self, body_bytes, status=400, reason="Bad Request"):
+        error = urllib.error.HTTPError("https://" + HOST, status, reason, {}, io.BytesIO(body_bytes))
+        with mock.patch("urllib.request.urlopen", side_effect=[
+                FakeResponse(payload={"id": 9, "published": True}), error]):
+            return self.run_main(["put", "courses/1/assignments/9", "--yes", "-d",
+                                  '{"assignment": {"published": false}}'])
+
+    def test_a_json_errors_body_is_shown_as_canvas_s_own_words(self):
+        body = json.dumps({"errors": [{"message": "Can't unpublish if there are student submissions"}]})
+        code, _ = self.refused_put(body.encode("utf-8"))
+        self.assertEqual(code, 2)
+        self.assertIn("HTTP Error 400", self.last_stderr)
+        self.assertIn("Canvas says: Can't unpublish if there are student submissions", self.last_stderr)
+        self.assertNotIn("unpublish", self.log_text())
+        self.assertEqual([r for r in self.log_lines() if r.get("event") == "evidence"], [])
+
+    def test_field_keyed_errors_name_the_field(self):
+        body = json.dumps({"errors": {"due_at": [{"attribute": "due_at", "type": "invalid",
+                                                  "message": "must be between the lock dates"}]}})
+        code, _ = self.refused_put(body.encode("utf-8"), 422, "Unprocessable Entity")
+        self.assertEqual(code, 2)
+        self.assertIn("Canvas says: due_at: must be between the lock dates", self.last_stderr)
+
+    def test_a_non_json_body_is_truncated_text(self):
+        code, _ = self.refused_put(b"<html><body>" + b"x" * 2000)
+        self.assertEqual(code, 2)
+        self.assertIn("Canvas says: <html><body>", self.last_stderr)
+        self.assertLess(len(self.last_stderr), 600)
+
+    def test_an_empty_body_adds_nothing(self):
+        code, _ = self.refused_put(b"")
+        self.assertEqual(code, 2)
+        self.assertNotIn("Canvas says", self.last_stderr)
+
+    def test_a_5xx_body_is_never_surfaced_because_its_note_reaches_the_log(self):
+        error = urllib.error.HTTPError("https://" + HOST, 500, "Server Error", {},
+                                       io.BytesIO(b'{"errors":[{"message":"internal detail"}]}'))
+        with mock.patch("urllib.request.urlopen", side_effect=[FakeResponse(payload={"id": 9}), error]):
+            code, _ = self.run_main(["put", "courses/1/assignments/9", "--yes", "-d",
+                                     '{"assignment": {"name": "x"}}'])
+        self.assertEqual(code, 3)
+        self.assertNotIn("internal detail", self.last_stderr)
+        self.assertNotIn("internal detail", self.log_text())
+
+    def test_a_read_4xx_is_unchanged(self):
+        """A read-back 4xx can be recorded as evidence (do_post's uncertain note), so reads
+        keep the bare status line and no body."""
+        error = urllib.error.HTTPError("https://" + HOST, 403, "Forbidden", {},
+                                       io.BytesIO(b'{"errors":[{"message":"user not authorized"}]}'))
+        with mock.patch("urllib.request.urlopen", side_effect=[error]):
+            code, _ = self.run_main(["get", "courses/1"])
+        self.assertEqual(code, 2)
+        self.assertIn("HTTP Error 403", self.last_stderr)
+        self.assertNotIn("user not authorized", self.last_stderr)
+
+
 class TestARefusedToken(GuardTestCase):
     """Canvas answering 401 means the token, not the request: expired, revoked, or deleted
     from Approved Integrations. The message must say so and name the one command that fixes
