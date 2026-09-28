@@ -3156,6 +3156,176 @@ class TestInstallerPlan(unittest.TestCase):
         with open(os.path.join(root, "etc", "config.json"), "w") as handle:
             handle.write('{"host":"%s","profile":"level-1"}\n' % HOST)
 
+    def uninstall_installer(self, as_root):
+        """redirected_installer plus: the uid the uninstall path sees, and a fake security(1)
+        that records its argv, so the Keychain step is observable without a keychain."""
+        root, copy = self.redirected_installer()
+        with open(copy) as handle:
+            script = handle.read()
+        fake = os.path.join(root, "security")
+        with open(fake, "w") as handle:
+            handle.write('#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' % shlex.quote(os.path.join(root, "security.calls")))
+        os.chmod(fake, 0o755)
+        for old, replacement in (("EUID_NOW=$(id -u)", "EUID_NOW=%d" % (0 if as_root else 501)),
+                                 ("SECURITY_BIN=/usr/bin/security", "SECURITY_BIN=%s" % fake)):
+            self.assertEqual(script.count(old), 1, old)
+            script = script.replace(old, replacement)
+        with open(copy, "w") as handle:
+            handle.write(script)
+        return root, copy
+
+    def populate_for_uninstall(self, root):
+        """A full Specialized Functions install plus data: the settings block the installer
+        appends, a setting the person had before it, the audit log, downloads, installed-commit."""
+        self.populate_installed(root)
+        shutil.copyfile(os.path.join(self.ROOT, "level2", "canvas_api_operations.py"),
+                        os.path.join(root, "libexec", "canvas_api_operations.py"))
+        os.makedirs(os.path.join(root, "codex", "skills", "canvas-api-operations"))
+        shutil.copyfile(os.path.join(self.ROOT, "level2", "SKILL.md"),
+                        os.path.join(root, "codex", "skills", "canvas-api-operations", "SKILL.md"))
+        with open(os.path.join(root, "codex", "rules", "canvas-api-guard.rules.bak-20260901T000000Z"), "w") as handle:
+            handle.write("old\n")
+        with open(os.path.join(root, "codex", "config.toml"), "w") as handle:
+            handle.write('model = "gpt-5"\n\n'
+                         '# canvas-api-guard: Codex runs sandboxed and a person answers every prompt\n'
+                         'sandbox_mode = "workspace-write"\napproval_policy = "on-request"\n'
+                         'approvals_reviewer = "user"\n\n[profiles.fast]\nmodel = "gpt-5-mini"\n')
+        os.makedirs(os.path.join(root, "log", "submission-reviews", "x"))
+        for name, text in (("audit.jsonl", '{"event":"read"}\n'), ("installed-commit", "abc\n"),
+                           (os.path.join("submission-reviews", "x", "essay.pdf"), "pdf")):
+            with open(os.path.join(root, "log", name), "w") as handle:
+                handle.write(text)
+
+    def run_uninstall(self, copy, *args):
+        import subprocess
+        return subprocess.run([copy, "--uninstall"] + list(args), cwd=self.ROOT,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+
+    def test_uninstall_plan_on_a_clean_mac_finds_nothing(self):
+        root, copy = self.uninstall_installer(as_root=False)
+        proc = self.run_uninstall(copy, "--plan")
+        self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
+        self.assertIn("uninstall plan (no changes made)", proc.stdout)
+        self.assertIn("Nothing to remove", proc.stdout)
+        self.assertNotIn("[present", proc.stdout)
+        self.assertGreaterEqual(proc.stdout.count("[absent]"), 6)
+        self.assertEqual(proc.stderr, "")                     # no --host needed to uninstall
+
+    def test_uninstall_plan_lists_what_would_go_and_what_stays(self):
+        root, copy = self.uninstall_installer(as_root=False)
+        self.populate_for_uninstall(root)
+        proc = self.run_uninstall(copy, "--plan")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)   # root-owned files present
+        for label in ("executable:", "Specialized Functions executable:", "config:", "Codex rules:",
+                      "Codex skill:", "Specialized Functions skill:", "Codex settings:", "audit log:",
+                      "review downloads:", "Keychain:"):
+            self.assertIn(label, proc.stdout, label)
+        self.assertGreaterEqual(proc.stdout.count("[present"), 6)
+        self.assertIn("kept", proc.stdout)
+        self.assertIn("--purge-data", proc.stdout)
+        self.assertIn("Run the same command through sudo", proc.stdout)
+        self.assertFalse(os.path.exists(os.path.join(root, "security.calls")))   # a plan touches nothing
+        self.assertTrue(os.path.exists(os.path.join(root, "libexec", "canvas_api_guard.py")))
+
+    def test_uninstall_without_root_refuses_while_program_files_remain(self):
+        root, copy = self.uninstall_installer(as_root=False)
+        self.populate_for_uninstall(root)
+        proc = self.run_uninstall(copy)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("requires root", proc.stderr)
+        self.assertTrue(os.path.exists(os.path.join(root, "codex", "rules", "canvas-api-guard.rules")))
+
+    def test_uninstall_as_root_removes_program_and_codex_files_and_keeps_the_data(self):
+        root, copy = self.uninstall_installer(as_root=True)
+        self.populate_for_uninstall(root)
+        proc = self.run_uninstall(copy)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        for gone in ("libexec/canvas_api_guard.py", "libexec/canvas_api_operations.py", "etc",
+                     "codex/rules/canvas-api-guard.rules",
+                     "codex/rules/canvas-api-guard.rules.bak-20260901T000000Z",
+                     "codex/skills/canvas-api-guard", "codex/skills/canvas-api-operations",
+                     "log/installed-commit"):
+            self.assertFalse(os.path.exists(os.path.join(root, gone)), gone)
+        for kept in ("libexec", "log/audit.jsonl", "log/submission-reviews/x/essay.pdf", "codex/config.toml"):
+            self.assertTrue(os.path.exists(os.path.join(root, kept)), kept)
+        with open(os.path.join(root, "codex", "config.toml")) as handle:
+            self.assertEqual(handle.read(), 'model = "gpt-5"\n\n[profiles.fast]\nmodel = "gpt-5-mini"\n')
+        self.assertTrue(any(name.startswith("config.toml.bak-")
+                            for name in os.listdir(os.path.join(root, "codex"))))
+        self.assertIn(os.path.join(root, "log", "audit.jsonl"), proc.stdout)     # the data, named
+        # root cannot reach the person's login keychain: it says what to run instead
+        self.assertFalse(os.path.exists(os.path.join(root, "security.calls")))
+        self.assertIn("delete-generic-password", proc.stdout)
+        self.assertIn("Approved Integrations", proc.stdout)
+        self.assertIn(HOST, proc.stdout)                                          # from config.json
+
+    def test_uninstall_leaves_settings_alone_when_the_marker_is_gone(self):
+        root, copy = self.uninstall_installer(as_root=True)
+        self.populate_for_uninstall(root)
+        with open(os.path.join(root, "codex", "config.toml"), "w") as handle:
+            handle.write('sandbox_mode = "workspace-write"\napproval_policy = "on-request"\n')
+        proc = self.run_uninstall(copy)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        with open(os.path.join(root, "codex", "config.toml")) as handle:
+            self.assertEqual(handle.read(), 'sandbox_mode = "workspace-write"\napproval_policy = "on-request"\n')
+        self.assertIn("left alone", proc.stdout)
+
+    def test_uninstall_as_the_user_removes_the_keychain_item_once_root_files_are_gone(self):
+        root, copy = self.uninstall_installer(as_root=False)
+        self.populate_for_uninstall(root)
+        for name in ("libexec/canvas_api_guard.py", "libexec/canvas_api_operations.py"):
+            os.remove(os.path.join(root, name))
+        shutil.rmtree(os.path.join(root, "etc"))
+        proc = self.run_uninstall(copy)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        with open(os.path.join(root, "security.calls")) as handle:
+            calls = handle.read()
+        self.assertIn("delete-generic-password -s canvas-api-guard -a", calls)
+        self.assertNotIn(" -w", calls)                                            # never reads it
+        self.assertFalse(os.path.exists(os.path.join(root, "codex", "rules", "canvas-api-guard.rules")))
+
+    def test_purge_data_removes_the_log_directory_and_says_so(self):
+        root, copy = self.uninstall_installer(as_root=True)
+        self.populate_for_uninstall(root)
+        proc = self.run_uninstall(copy, "--purge-data")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertFalse(os.path.exists(os.path.join(root, "log")))
+        self.assertIn("deleted", proc.stdout)
+
+    def test_uninstall_clears_the_hardening_flags_before_removing(self):
+        with open(self.INSTALLER) as handle:
+            script = handle.read()
+        self.assertIn('IMMUTABLE_OFF="chflags noschg"', script)
+        self.assertIn('IMMUTABLE_OFF="chattr -i"', script)
+        self.assertLess(script.index('$IMMUTABLE_OFF "$DEST"'), script.index('rm -f "$DEST"'))
+        self.assertLess(script.index('$APPEND_ONLY_OFF "$LOG"'), script.index('rm -rf "$LOG_DIR"'))
+
+    def test_help_documents_uninstall(self):
+        proc = self.run_installer("--help")
+        self.assertIn("--uninstall", proc.stdout)
+        self.assertIn("--purge-data", proc.stdout)
+
+    def test_github_bootstrap_uninstall_passes_through_to_the_installer(self):
+        """One command, one flag: the launcher skips the download check and the token prompt,
+        runs install.sh --uninstall under sudo, removes the person's Keychain item as the
+        person (root cannot reach their login keychain), and names the Canvas page where the
+        token itself must be deleted."""
+        with open(self.BOOTSTRAP) as handle:
+            script = handle.read()
+        self.assertIn("--uninstall) UNINSTALL=yes ;;", script)
+        self.assertIn("--purge-data) PURGE=yes ;;", script)
+        self.assertIn("[--uninstall [--purge-data]]", script)
+        branch = script.index('if [ "$UNINSTALL" = yes ]; then')
+        self.assertLess(script.index('cd "$CHECKOUT"'), branch)
+        self.assertLess(branch, script.index("Checking the download"))
+        sudo_line = script.index('"$CHECKOUT/install.sh" --uninstall $PURGE_FLAG')
+        keychain = script.index('delete-generic-password -s canvas-api-guard -a "\\$(id -un)"')
+        self.assertLess(branch, sudo_line)
+        self.assertLess(sudo_line, keychain)
+        self.assertLess(keychain, script.index("Checking the download"))
+        self.assertIn("Approved Integrations", script[branch:script.index("Checking the download")])
+        self.assertIn("completed=yes\n    exit 0", script[branch:script.index("Checking the download")])
+
     def test_plan_exits_3_only_when_every_installed_file_matches(self):
         import subprocess
         root, copy = self.redirected_installer()
@@ -3753,12 +3923,12 @@ class TestInstallerPlan(unittest.TestCase):
         self.assertIn('elif [ "\\$plan_status" -eq 5 ]; then', script)
         self.assertIn('"codex_settings":"%s"', script)
         self.assertIn("After an install, the same plan must find nothing left to change.", script)
-        self.assertLess(script.index('/usr/bin/sudo -p '),
+        self.assertLess(script.index('/usr/bin/sudo -p \'Mac password (nothing shows as you type): \' "$CHECKOUT/install.sh" --profile'),
                         script.index('./install.sh --plan --profile "$PROFILE" --host "$CANVAS_HOST" >/dev/null'))
         user_only = script.index('"$CHECKOUT/install.sh" --profile "$PROFILE" --host "$CANVAS_HOST"')
         self.assertLess(script.index('-eq 4 ]'), user_only)
-        self.assertLess(user_only, script.index('/usr/bin/sudo -p '))
-        self.assertLess(script.index("plan_status=0"), script.index('/usr/bin/sudo -p '))
+        self.assertLess(user_only, script.index('/usr/bin/sudo -p \'Mac password (nothing shows as you type): \' "$CHECKOUT/install.sh" --profile'))
+        self.assertLess(script.index("plan_status=0"), script.index('/usr/bin/sudo -p \'Mac password (nothing shows as you type): \' "$CHECKOUT/install.sh" --profile'))
         lookup = [line for line in script.splitlines() if "find-generic-password" in line]
         self.assertEqual(len(lookup), 1, lookup)
         self.assertIn('-s canvas-api-guard -a "\\$(id -un)"', lookup[0])
@@ -3846,7 +4016,7 @@ class TestInstallerPlan(unittest.TestCase):
             script = handle.read()
         plan = script.index("./install.sh --plan --profile")
         pause = script.index("Press Return to continue, or Ctrl-C to stop.")
-        sudo = script.index('/usr/bin/sudo -p ')
+        sudo = script.index('/usr/bin/sudo -p \'Mac password (nothing shows as you type): \' "$CHECKOUT/install.sh" --profile')
         self.assertLess(plan, pause)
         self.assertLess(pause, sudo)
         self.assertIn("if ! read reviewed; then", script)

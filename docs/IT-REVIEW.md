@@ -232,6 +232,17 @@ it opens a macOS Terminal window for the same launcher, printing a non-secret st
 Codex to watch. Host and profile default to this repository's institution and the
 Specialized Functions profile; `--host` and `--profile` override.
 
+`install.sh --uninstall` reverses the installation for the invoking user: the two root-owned
+programs (clearing the optional immutable flag first), the config directory, the Codex rules
+and skills with their backups, the settings block the installer appended to
+`~/.codex/config.toml` (only under the installer's own marker line, and only those three
+values, so a pre-existing setting is never removed), and `installed-commit`. The audit log and
+submission downloads are kept, as confidential records and audit evidence, unless
+`--purge-data` is given; the Keychain item is removed only when run as the person, since root
+cannot reach their login keychain, and the token itself must be deleted in Canvas, which the
+uninstaller names. `--plan --uninstall` lists all of this and changes nothing. The bootstrap
+passes `--uninstall` through, so a faculty member uses the same one-line command.
+
 `install.sh --plan --host <host>` runs without root and changes nothing. It reports:
 
 - source Git revision and whether tracked files differ;

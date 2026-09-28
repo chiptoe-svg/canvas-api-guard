@@ -11,6 +11,8 @@ TERMINAL_APP=/System/Applications/Utilities/Terminal.app
 CANVAS_HOST=
 SOURCE_REF=
 VERBOSE=no
+UNINSTALL=no
+PURGE=no
 RELEASE_REF=                            # set only on the release branch, by tools/release.sh
 DEFAULT_HOST=clemson.instructure.com    # this repository's institution; --host overrides
 DEFAULT_PROFILE=specialized-functions
@@ -27,7 +29,7 @@ Install or update canvas-api-guard. Paste into Terminal:
 
   curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/release/install-from-github.sh | sh
 
-Options: [--ref FULL_COMMIT_SHA] [--host school.instructure.com] [--profile api-only|specialized-functions] [--verbose]
+Options: [--ref FULL_COMMIT_SHA] [--host school.instructure.com] [--profile api-only|specialized-functions] [--verbose] [--uninstall [--purge-data]]
 Defaults: the reviewed commit pinned on the release branch, clemson.instructure.com, specialized-functions.
 
 Downloads exactly one commit, checks it, says what will change, and installs it. --verbose
@@ -35,7 +37,9 @@ shows the full test run and the installer's file-by-file plan (hashes, owners, m
 a terminal, it asks its questions right there: Return to continue, the Mac administrator
 password only when a root-owned file must change, and a Canvas API token only when the
 Keychain holds none (an existing token is kept and never read or displayed). Running it again
-is how you update; an up-to-date Mac is told so and nothing changes.
+is how you update; an up-to-date Mac is told so and nothing changes. --uninstall removes it
+again (programs, config, Codex rules, skills and settings, the Keychain token item); the audit
+log and review downloads stay unless --purge-data; the token itself is then deleted in Canvas.
 
 Run without a terminal (Codex), it opens a macOS Terminal window for those questions instead
 and prints a private, non-secret completion-status file for Codex to watch. Codex must run it
@@ -49,6 +53,8 @@ while [ "$#" -gt 0 ]; do
         --host) shift; [ "$#" -gt 0 ] || die "--host needs a value"; CANVAS_HOST=$1 ;;
         --profile) shift; [ "$#" -gt 0 ] || die "--profile needs a value"; PROFILE=$1 ;;
         --verbose) VERBOSE=yes ;;
+        --uninstall) UNINSTALL=yes ;;
+        --purge-data) PURGE=yes ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown option: $1" ;;
     esac
@@ -57,6 +63,8 @@ done
 
 CANVAS_HOST=${CANVAS_HOST:-$DEFAULT_HOST}
 PROFILE=${PROFILE:-$DEFAULT_PROFILE}
+PURGE_FLAG=""
+[ "$PURGE" = yes ] && PURGE_FLAG="--purge-data"
 case "$PROFILE" in
     api-only|level-1) PROFILE=level-1 ;;
     specialized-functions|level-2) PROFILE=level-2 ;;
@@ -161,6 +169,32 @@ status_temp="$STATUS_FILE.\$\$.tmp"
     || { printf 'Could not initialize completion-status file.\n' >&2; exit 1; }
 
 cd "$CHECKOUT"
+# --uninstall: no download check, no token prompt. install.sh --uninstall under sudo removes
+# the programs, config, Codex rules, skills and settings block; the Keychain item is removed
+# here, as the person, because root cannot reach their login keychain.
+if [ "$UNINSTALL" = yes ]; then
+    if [ "$PURGE" = yes ]; then
+        printf 'Removing canvas-api-guard from this Mac, INCLUDING the audit log and review downloads.\n'
+    else
+        printf 'Removing canvas-api-guard from this Mac. The audit log and review downloads stay in ~/.canvas-api-guard.\n'
+    fi
+    printf 'Your Mac password is needed once. Press Return to remove it, or Ctrl-C to stop. '
+    if ! read reviewed; then
+        printf '\nNo terminal to confirm on; not removing.\n' >&2
+        exit 1
+    fi
+    /usr/bin/sudo -p "Mac password (nothing shows as you type): " "$CHECKOUT/install.sh" --uninstall $PURGE_FLAG > "$PLAN_FILE.apply" 2>&1 || { cat "$PLAN_FILE.apply"; exit 1; }
+    [ "$VERBOSE" = yes ] && cat "$PLAN_FILE.apply"
+    if /usr/bin/security delete-generic-password -s canvas-api-guard -a "\$(id -un)" >/dev/null 2>&1; then
+        printf 'Canvas token removed from the Keychain.\n'
+    else
+        printf 'No Canvas token was in the Keychain.\n'
+    fi
+    printf 'Removed. The token itself stays valid until you delete it in Canvas: https://$CANVAS_HOST/profile/settings (Approved Integrations).\n'
+    printf 'Quit and reopen the ChatGPT app.\n'
+    completed=yes
+    exit 0
+fi
 # Quiet by default: a line per step, nothing on success that the next line does not imply.
 # --verbose shows the whole test run and the installer's file-by-file plan; otherwise both go
 # to files under $INSTALL_ROOT and a failing step is shown in full. The same install.sh --plan

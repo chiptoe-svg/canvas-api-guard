@@ -8,11 +8,16 @@ set -eu
 
 usage() {
     text="usage: $0 [--plan] [--allow-dirty] [--profile api-only|specialized-functions] --host school.instructure.com
+       $0 [--plan] --uninstall [--purge-data]
   --plan compares every installed file with the reviewed source (SHA-256; owner and mode for
   root-owned files) and changes nothing.
   It exits 0 when a root-owned file would change (rerun with sudo), 4 when only the Codex
   rules, skills, or settings in the user's home would change (rerun without sudo), 3 when
-  nothing needs to change, and 5 when nothing needs to change but the Codex settings need a person."
+  nothing needs to change, and 5 when nothing needs to change but the Codex settings need a person.
+  --uninstall removes the programs, the config, the Codex rules and skills, and the settings
+  block this installer added; the audit log and review downloads stay unless --purge-data;
+  the Keychain token item is removed when run as the person (not under sudo), and the token
+  itself must then be deleted in Canvas. With --plan it lists all of that and changes nothing."
     if [ "${1:-2}" = 1 ]; then
         echo "$text"
         exit 0
@@ -23,6 +28,8 @@ usage() {
 
 PLAN=no
 ALLOW_DIRTY=no
+UNINSTALL=no
+PURGE=no
 CANVAS_HOST=
 PROFILE=level-1                         # stable on-disk compatibility key
 PROFILE_LABEL="API Only"
@@ -32,6 +39,8 @@ while [ "$#" -gt 0 ]; do
         --allow-dirty) ALLOW_DIRTY=yes ;;
         --profile) shift; [ "$#" -gt 0 ] || usage; PROFILE=$1 ;;
         --host) shift; [ "$#" -gt 0 ] || usage; CANVAS_HOST=$1 ;;
+        --uninstall) UNINSTALL=yes ;;
+        --purge-data) PURGE=yes ;;
         -h|--help) usage 1 ;;
         *) usage ;;
     esac
@@ -44,12 +53,14 @@ case "$PROFILE" in
     *) echo "invalid profile: $PROFILE (expected api-only or specialized-functions)" >&2; exit 2 ;;
 esac
 
-case "$CANVAS_HOST" in
-    ""|*[!A-Za-z0-9.-]*|.*|*..*|*.)
-        echo "invalid Canvas host: $CANVAS_HOST" >&2
-        exit 2
-        ;;
-esac
+if [ "$UNINSTALL" != yes ] || [ -n "$CANVAS_HOST" ]; then     # uninstall needs no host
+    case "$CANVAS_HOST" in
+        ""|*[!A-Za-z0-9.-]*|.*|*..*|*.)
+            echo "invalid Canvas host: $CANVAS_HOST" >&2
+            exit 2
+            ;;
+    esac
+fi
 
 SRC_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SCRIPT="$SRC_DIR/canvas_api_guard.py"
@@ -82,6 +93,8 @@ case "$(uname -s)" in
         ROOT_GROUP=wheel
         IMMUTABLE="chflags schg"
         APPEND_ONLY="chflags sappnd"
+        IMMUTABLE_OFF="chflags noschg"
+        APPEND_ONLY_OFF="chflags nosappnd"
         hash_file() { shasum -a 256 "$1" | awk '{print $1}'; }
         hash_stdin() { shasum -a 256 | awk '{print $1}'; }
         stat_uid() { stat -f '%u' "$1"; }
@@ -92,6 +105,8 @@ case "$(uname -s)" in
         ROOT_GROUP=root
         IMMUTABLE="chattr +i"
         APPEND_ONLY="chattr +a"
+        IMMUTABLE_OFF="chattr -i"
+        APPEND_ONLY_OFF="chattr -a"
         hash_file() { sha256sum "$1" | awk '{print $1}'; }
         hash_stdin() { sha256sum | awk '{print $1}'; }
         stat_uid() { stat -c '%u' "$1"; }
@@ -249,6 +264,132 @@ for state in $USER_STATES; do [ "$state" = same ] || USER_CHANGES=yes; done
 # triple-quoted string, or a line whose [ ] do not balance): such a file is never edited.
 CODEX_CONFIG="$CODEX_DIR/config.toml"
 CODEX_SETTINGS="sandbox_mode=workspace-write approval_policy=on-request approvals_reviewer=user"
+SETTINGS_MARKER="# canvas-api-guard: Codex runs sandboxed and a person answers every prompt"
+SECURITY_BIN=/usr/bin/security
+
+# --uninstall. Everything install.sh put on this Mac for $USER_NAME, in reverse; the plan
+# form lists it and changes nothing. Three deliberate keeps: the audit log and the review
+# downloads (confidential education records, and the evidence the IT review relies on) stay
+# unless --purge-data says otherwise; a Codex setting the person had before this installer
+# stays - only the block under SETTINGS_MARKER, written by this installer, is removed, and
+# only if that marker is still there verbatim; and the Keychain item is removed only when this
+# runs as the person, because root cannot reach their login keychain - under sudo it prints
+# the one command instead. The token itself is revoked in Canvas, never from here.
+if [ "$UNINSTALL" = yes ]; then
+    EUID_NOW=$(id -u)
+    CONFIG_BACKUPS=$(ls "$CONFIG".bak-* 2>/dev/null || true)
+    RULE_BACKUPS=$(ls "$RULE_DEST".bak-* 2>/dev/null || true)
+    SKILL_DIR=$(dirname "$SKILL_DEST")
+    LEVEL2_SKILL_DIR=$(dirname "$LEVEL2_SKILL_DEST")
+    INSTALLED_COMMIT="$LOG_DIR/installed-commit"
+    REVIEWS="$LOG_DIR/submission-reviews"
+    present() { if [ -e "$1" ] || [ -L "$1" ]; then echo "[present]"; else echo "[absent]"; fi; }
+    marker_present() { [ -f "$CODEX_CONFIG" ] && grep -qxF "$SETTINGS_MARKER" "$CODEX_CONFIG"; }
+    ROOT_PRESENT=no
+    for path in "$DEST" "$LEVEL2_DEST" "$CONFIG" "$CONFIG_DIR"; do
+        [ -e "$path" ] || [ -L "$path" ] && ROOT_PRESENT=yes
+    done
+    USER_PRESENT=no
+    for path in "$RULE_DEST" "$SKILL_DIR" "$LEVEL2_SKILL_DIR" "$INSTALLED_COMMIT"; do
+        [ -e "$path" ] || [ -L "$path" ] && USER_PRESENT=yes
+    done
+    marker_present && USER_PRESENT=yes
+    [ -n "$RULE_BACKUPS" ] && USER_PRESENT=yes
+    if [ "$PURGE" = yes ]; then DATA_NOTE="deleted by --purge-data"; else DATA_NOTE="kept; --purge-data deletes it"; fi
+    if marker_present; then SETTINGS_NOTE="[present] the block this installer added is removed"; else SETTINGS_NOTE="[absent] left alone: this installer's marker is not there"; fi
+    # Where the token is revoked: the installed config knows the host; a fresh --host does too.
+    REVOKE_HOST=$(sed -n 's/.*"host":"\([^"]*\)".*/\1/p' "$CONFIG" 2>/dev/null || true)
+    REVOKE_HOST=${REVOKE_HOST:-$CANVAS_HOST}
+    if [ -n "$REVOKE_HOST" ]; then REVOKE_AT="https://$REVOKE_HOST/profile/settings (Approved Integrations)"
+    else REVOKE_AT="your Canvas site, under Account, Settings, Approved Integrations"; fi
+    if [ "$PLAN" = yes ]; then
+        cat <<EOP
+canvas-api-guard uninstall plan (no changes made)
+  executable:   $DEST $(present "$DEST")
+  Specialized Functions executable: $LEVEL2_DEST $(present "$LEVEL2_DEST")
+  config:       $CONFIG $(present "$CONFIG"), with its .bak-* copies and $CONFIG_DIR
+  Codex rules:  $RULE_DEST $(present "$RULE_DEST"), with its .bak-* copies
+  Codex skill:  $SKILL_DIR $(present "$SKILL_DIR")
+  Specialized Functions skill: $LEVEL2_SKILL_DIR $(present "$LEVEL2_SKILL_DIR")
+  Codex settings: $CODEX_CONFIG $SETTINGS_NOTE
+  installed-commit: $INSTALLED_COMMIT $(present "$INSTALLED_COMMIT")
+  audit log:    $LOG $(present "$LOG") $DATA_NOTE
+  review downloads: $REVIEWS $(present "$REVIEWS") $DATA_NOTE
+  Keychain:     item canvas-api-guard for $USER_NAME - removed when run as $USER_NAME, not under sudo
+  Canvas token: stays valid until deleted at $REVOKE_AT
+EOP
+        if [ "$ROOT_PRESENT" = no ] && [ "$USER_PRESENT" = no ] && { [ "$PURGE" = no ] || [ ! -e "$LOG_DIR" ]; }; then
+            echo; echo "Nothing to remove: canvas-api-guard is not installed for $USER_NAME (exit status 3)."
+            exit 3
+        fi
+        echo
+        if [ "$ROOT_PRESENT" = yes ]; then
+            echo "Run the same command through sudo without --plan to remove all of this (exit status 0)."
+            exit 0
+        fi
+        echo "Only files in $USER_NAME's home remain: rerun without --plan and without sudo (exit status 4)."
+        exit 4
+    fi
+    if [ "$EUID_NOW" -ne 0 ] && [ "$ROOT_PRESENT" = yes ]; then
+        echo "uninstall requires root while the program files are installed: rerun with sudo" >&2
+        exit 1
+    fi
+    STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+    if [ "$EUID_NOW" -eq 0 ]; then
+        [ -e "$DEST" ] && { $IMMUTABLE_OFF "$DEST" 2>/dev/null || true; }
+        rm -f "$DEST" "$LEVEL2_DEST" "$CONFIG"
+        for backup in $CONFIG_BACKUPS; do rm -f "$backup"; done
+        [ -d "$CONFIG_DIR" ] && rmdir "$CONFIG_DIR" 2>/dev/null || true
+        echo "removed the programs and $CONFIG_DIR"
+    fi
+    rm -f "$RULE_DEST"
+    for backup in $RULE_BACKUPS; do rm -f "$backup"; done
+    rm -rf "$SKILL_DIR" "$LEVEL2_SKILL_DIR"
+    rm -f "$INSTALLED_COMMIT"
+    echo "removed the Codex rules and skills"
+    if marker_present; then
+        cp -p "$CODEX_CONFIG" "$CODEX_CONFIG.bak-$STAMP"
+        # The marker line and the settings lines this installer wrote right after it, and only
+        # those: the run stops at the first line that is not one of the three known pairs.
+        # ...plus the one blank line the installer put after the block; a trailing blank
+        # from the appended-at-end case falls away with the command substitution.
+        pruned=$(awk -v marker="$SETTINGS_MARKER" '
+            BEGIN { inblock = 0; spacer = 0 }
+            {
+                if ($0 == marker) { inblock = 1; next }
+                if (inblock) {
+                    if ($0 == "sandbox_mode = \"workspace-write\"" || $0 == "approval_policy = \"on-request\"" || $0 == "approvals_reviewer = \"user\"") next
+                    inblock = 0; spacer = 1
+                }
+                if (spacer) { spacer = 0; if ($0 == "") next }
+                print
+            }' "$CODEX_CONFIG")
+        printf '%s\n' "$pruned" > "$CODEX_CONFIG"       # in place: keeps the file's owner and mode
+        echo "removed this installer's settings block from $CODEX_CONFIG (backup beside it)"
+    else
+        echo "Codex settings in $CODEX_CONFIG left alone: this installer's marker is not there"
+    fi
+    if [ "$PURGE" = yes ]; then
+        if [ -e "$LOG_DIR" ]; then
+            [ -e "$LOG" ] && { $APPEND_ONLY_OFF "$LOG" 2>/dev/null || true; }
+            rm -rf "$LOG_DIR"
+            echo "deleted $LOG_DIR (audit log and review downloads)"
+        fi
+    elif [ -e "$LOG_DIR" ]; then
+        echo "kept $LOG (audit log) and $REVIEWS: confidential records; rerun with --purge-data to delete them"
+    fi
+    if [ "$EUID_NOW" -eq 0 ]; then
+        echo "Keychain: run as $USER_NAME, not under sudo, to remove the token item:"
+        echo "  $SECURITY_BIN delete-generic-password -s canvas-api-guard -a $USER_NAME"
+    elif "$SECURITY_BIN" delete-generic-password -s canvas-api-guard -a "$USER_NAME" >/dev/null 2>&1; then
+        echo "removed the Canvas token item from $USER_NAME's Keychain"
+    else
+        echo "no Canvas token item in $USER_NAME's Keychain"
+    fi
+    echo "The token itself stays valid until you delete it in Canvas: $REVOKE_AT."
+    echo "Quit and reopen the ChatGPT app so Codex drops the removed skills."
+    exit 0
+fi
 CODEX_SCAN='/"""/ || /\047\047\047/ { print "complex" }
 {
     bare = $0; gsub(/"[^"]*"/, "", bare); gsub(/\047[^\047]*\047/, "", bare); sub(/#.*/, "", bare)
@@ -270,7 +411,7 @@ scan_has() { printf '%s\n' "$SCAN" | grep -q "^$1"; }          # one token per l
 SETTINGS_MISSING=
 SETTINGS_KEPT=
 SETTINGS_TABLE=
-SETTINGS_ADD="# canvas-api-guard: Codex runs sandboxed and a person answers every prompt"
+SETTINGS_ADD="$SETTINGS_MARKER"
 for pair in $CODEX_SETTINGS; do
     key=${pair%%=*}
     if scan_has "table:$key="; then SETTINGS_TABLE="$SETTINGS_TABLE $key"; fi

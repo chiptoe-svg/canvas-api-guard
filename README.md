@@ -98,6 +98,24 @@ Requirements: macOS with the Xcode Command Line Tools (macOS offers to install t
 time `git` runs) and `/usr/local` owned by root, which is the case on Apple silicon Macs.
 Other institutions add `--host school.instructure.com` after `sh -s --`.
 
+## Uninstall (macOS)
+
+The same command with one flag:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/chiptoe-svg/canvas-api-guard/release/install-from-github.sh | sh -s -- --uninstall
+```
+
+It asks for your Mac password once and removes the two programs, their config, the Codex
+rules, both skills, the three settings the installer added to `~/.codex/config.toml` (a
+setting you had before is left alone), and the Canvas token from your Keychain. Two things
+stay on purpose: `~/.canvas-api-guard/` with the audit log and any downloaded submissions,
+because they are confidential education records; add `--purge-data` to delete them too. And
+the token itself, which stays valid until you delete it in Canvas under Account, Settings,
+Approved Integrations; the uninstaller tells you the page. From a checkout,
+`install.sh --plan --uninstall` lists all of this without changing anything, and
+`sudo ./install.sh --uninstall` does it.
+
 ## Codex-led installation (alternative)
 
 Codex can perform the installation, but the person reviews the plan and approves the
